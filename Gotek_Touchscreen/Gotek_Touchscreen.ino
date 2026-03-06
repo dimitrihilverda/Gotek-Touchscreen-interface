@@ -1497,61 +1497,6 @@ void uiLine(int y, uint16_t c) {
   gfx_fillRect(0, y, gW, 1, c);
 }
 
-// Draw an Amiga WB 2.x style title bar with 3D bevel
-void drawThemedHeader(const String &title) {
-  // Try header PNG from active theme folder (use stack buffer to avoid String alloc issues)
-  char headerPath[64];
-  snprintf(headerPath, sizeof(headerPath), "%s/HEADER.png", theme_path.c_str());
-  Serial.print("Loading header: ");
-  Serial.println(headerPath);
-
-  if (drawPngFile(headerPath, 0, 0)) {
-    Serial.println("  -> PNG OK");
-    // Draw title text on top of the PNG header
-    text_transparent = true;
-    gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-    gfx_setTextSize(2);
-    gfx_setCursor(10, 15);
-    gfx_print(title);
-    text_transparent = false;
-    return;
-  }
-  Serial.println("  -> PNG FAILED, using fallback");
-
-  // Fallback: Amiga WB 2.x style drawn header
-  // Main bar in Amiga blue
-  gfx_fillRect(0, 0, gW, 50, WB_BLUE);
-
-  // Top highlight line (white)
-  gfx_fillRect(0, 0, gW, 1, WB_LIGHT);
-  // Left highlight
-  gfx_fillRect(0, 0, 1, 50, WB_LIGHT);
-  // Bottom shadow
-  gfx_fillRect(0, 49, gW, 1, WB_MED_GREY);
-  // Right shadow
-  gfx_fillRect(gW - 1, 0, 1, 50, WB_MED_GREY);
-
-  // Amiga-style depth gadget lines (horizontal stripes in title bar)
-  for (int sy = 4; sy < 46; sy += 4) {
-    gfx_fillRect(8, sy, gW - 16, 1, 0x0196);  // slightly darker blue stripe
-  }
-
-  // Title text with dark background block (Amiga style: text in a box)
-  gfx_setTextSize(2);
-  int tw = gfx_textWidth(title);
-  int tx = 10;
-  int ty = 15;
-  // Draw a filled rect behind the text (classic Amiga title text block)
-  gfx_fillRect(tx - 4, ty - 4, tw + 8, 22, WB_BLUE);
-  gfx_setTextColor(TFT_WHITE, WB_BLUE);
-  gfx_setCursor(tx, ty);
-  gfx_print(title);
-
-  // Separator line below header
-  gfx_fillRect(0, 50, gW, 2, WB_ORANGE);
-  gfx_fillRect(0, 52, gW, 1, WB_MED_GREY);
-}
-
 // Draw Amiga-style loading screen with themed progress bar
 void drawThemedLoadingScreen(const String &filename) {
   gfx_fillScreen(TFT_BLACK);
@@ -1703,11 +1648,9 @@ void drawWrappedTextBG(const String &text, int x, int y, int maxWidth,
 // ============================================================================
 // Theme system — PNG buttons with alpha blending.
 // Folder structure: /THEMES/<theme_name>/
-//   HEADER.png     — title bar background (480x53)
-//   BTN_SELECT.png, BTN_OPEN.png, BTN_INFO.png   — list page
-//   BTN_BACK.png,   BTN_LOAD.png, BTN_UNLOAD.png — detail page
-//   BTN_ADF.png,    BTN_DSK.png                   — mode switch
-//   RAMDISK.png                                    — indicator
+//   BTN_INFO.png, BTN_UP.png, BTN_DOWN.png        — list page
+//   BTN_BACK.png, BTN_LOAD.png, BTN_UNLOAD.png    — detail page
+//   BTN_THEME.png, BTN_ADF.png, BTN_DSK.png       — info page
 //
 // Active theme is set via THEME= in CONFIG.TXT or via INFO screen.
 // PNG files can be 32-bit RGBA (with transparency) or 24-bit RGB.
@@ -1867,23 +1810,6 @@ void drawModeSwitchButton() {
   } else {
     drawThemedButton(x, y, w, h, "BTN_DSK", "DSK", TFT_CYAN);
   }
-}
-
-void drawRamdiskIndicatorCircle() {
-  // Try theme PNG (with possible transparency), fallback to yellow circle
-  if (!drawPngFile((theme_path + "/RAMDISK.png").c_str(), gW - 30, 5)) {
-    gfx_fillCircle(gW - 15, 15, 8, TFT_YELLOW);
-  }
-}
-
-void drawButton(int x, int y, int w, int h, const String &label) {
-  gfx_drawRect(x, y, w, h, TFT_GREY);
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_setTextSize(1);
-  int textX = x + (w - gfx_textWidth(label)) / 2;
-  int textY = y + (h - 8) / 2;
-  gfx_setCursor(textX, textY);
-  gfx_print(label);
 }
 
 // ============================================================================
