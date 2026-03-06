@@ -285,22 +285,22 @@ class LGFX : public lgfx::LGFX_Device {
   lgfx::Light_PWM _light_instance;
 public:
   LGFX(void) {
-    // Bus config
+    // Bus config — Waveshare ESP32-S3-Touch-LCD-2.8 pinout
     auto cfg = _bus_instance.config();
     cfg.spi_host = SPI2_HOST;
     cfg.spi_mode = 0;
     cfg.freq_write = 80000000;
     cfg.freq_read = 16000000;
-    cfg.pin_sclk = 41;
-    cfg.pin_mosi = 40;
+    cfg.pin_sclk = 39;       // was 41
+    cfg.pin_mosi = 38;       // was 40
     cfg.pin_miso = -1;
-    cfg.pin_dc = 39;
+    cfg.pin_dc = 42;         // was 39
     _bus_instance.config(cfg);
     _panel_instance.setBus(&_bus_instance);
 
     // Panel config
     auto pcfg = _panel_instance.config();
-    pcfg.pin_cs = 42;
+    pcfg.pin_cs = 45;        // was 42
     pcfg.pin_rst = -1;
     pcfg.pin_busy = -1;
     pcfg.memory_width = 240;
@@ -317,21 +317,21 @@ public:
     pcfg.bus_shared = true;
     _panel_instance.config(pcfg);
 
-    // Backlight
+    // Backlight — GPIO 1 on Waveshare 2.8"
     auto bl = _light_instance.config();
-    bl.pin_bl = 2;
+    bl.pin_bl = 1;            // was 2
     bl.invert = false;
     bl.freq = 44100;
     bl.pwm_channel = 7;
     _light_instance.config(bl);
     _panel_instance.setLight(&_light_instance);
 
-    // Touch
+    // Touch — CST816S on Waveshare 2.8"
     auto tcfg = _touch_instance.config();
     tcfg.i2c_port = 1;
-    tcfg.i2c_addr = 0x1A;
-    tcfg.pin_sda = 1;
-    tcfg.pin_scl = 3;
+    tcfg.i2c_addr = 0x15;    // was 0x1A
+    tcfg.pin_sda = 48;       // was 1
+    tcfg.pin_scl = 47;       // was 3
     tcfg.freq = 400000;
     tcfg.x_min = 0;
     tcfg.x_max = 240;
