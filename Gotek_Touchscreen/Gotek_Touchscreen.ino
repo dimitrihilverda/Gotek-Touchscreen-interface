@@ -1799,19 +1799,6 @@ void drawThemedButton(int x, int y, int w, int h,
   }
 }
 
-// Convenience: draw mode switch button (ADF or DSK)
-void drawModeSwitchButton() {
-  int w = 110;
-  int h = 36;
-  int x = gW - w - 10;
-  int y = gH - 42;
-  if (g_mode == MODE_ADF) {
-    drawThemedButton(x, y, w, h, "BTN_ADF", "ADF", TFT_CYAN);
-  } else {
-    drawThemedButton(x, y, w, h, "BTN_DSK", "DSK", TFT_CYAN);
-  }
-}
-
 // ============================================================================
 // Cracktro splash screen (Amiga demoscene style)
 // ============================================================================
@@ -2090,10 +2077,17 @@ void drawInfoScreen() {
   gfx_setTextColor(WB_ORANGE, TFT_BLACK);
   gfx_print(cfg_theme);
 
-  // Bottom buttons: BACK + THEME + ADF/DSK mode switch
-  drawThemedButton(20, gH - 42, 90, 36, "BTN_BACK", "BACK", TFT_CYAN);
-  drawThemedButton(130, gH - 42, 100, 36, "BTN_THEME", "THEME", WB_ORANGE);
-  drawModeSwitchButton();  // ADF/DSK toggle (bottom-right)
+  // Bottom buttons: BACK + THEME + ADF/DSK — evenly spaced, uniform 148x36
+  int btnW = 148, btnH = 36, btnY = gH - 42, gap = 8, marginX = 10;
+  drawThemedButton(marginX,              btnY, btnW, btnH, "BTN_BACK",  "BACK",  TFT_CYAN);
+  drawThemedButton(marginX + btnW + gap, btnY, btnW, btnH, "BTN_THEME", "THEME", WB_ORANGE);
+  // ADF/DSK toggle (third button)
+  int modeBtnX = marginX + 2 * (btnW + gap);
+  if (g_mode == MODE_ADF) {
+    drawThemedButton(modeBtnX, btnY, btnW, btnH, "BTN_ADF", "ADF", TFT_CYAN);
+  } else {
+    drawThemedButton(modeBtnX, btnY, btnW, btnH, "BTN_DSK", "DSK", TFT_CYAN);
+  }
 
   gfx_flush();
 }
@@ -2338,15 +2332,18 @@ void drawDetailsFromNFO(const String &filename) {
     gfx_print(">");
   }
 
-  // Bottom action buttons: BACK + INSERT/EJECT toggle
-  drawThemedButton(20, btnTop, 120, 36, "BTN_BACK", "BACK", TFT_CYAN);
+  // Bottom action buttons: BACK + INSERT/EJECT — uniform 148x36, evenly spaced
+  int detBtnW = 148, detBtnH = 36;
+  int detBtn1X = 10;
+  int detBtn2X = gW - 10 - detBtnW;  // right-aligned
+  drawThemedButton(detBtn1X, btnTop, detBtnW, detBtnH, "BTN_BACK", "BACK", TFT_CYAN);
 
   // LOAD/UNLOAD toggle — one button, changes based on state
   bool isCurrentLoaded = (loaded_disk_index == selected_index && loaded_disk_index >= 0);
   if (isCurrentLoaded) {
-    drawThemedButton(160, btnTop, 140, 36, "BTN_UNLOAD", "EJECT", TFT_RED);
+    drawThemedButton(detBtn2X, btnTop, detBtnW, detBtnH, "BTN_UNLOAD", "EJECT", TFT_RED);
   } else {
-    drawThemedButton(160, btnTop, 140, 36, "BTN_LOAD", "INSERT", TFT_GREEN);
+    drawThemedButton(detBtn2X, btnTop, detBtnW, detBtnH, "BTN_LOAD", "INSERT", TFT_GREEN);
   }
 
   // Loaded status indicator at top-right
@@ -2889,15 +2886,15 @@ void handleTap(uint16_t px, uint16_t py) {
   // ══════════════════════════════════════
   else if (current_screen == SCR_DETAILS) {
 
-    // BACK button (x: 20-140)
-    if (px >= 20 && px <= 140 && py >= gH - 42) {
+    // BACK button (uniform 148px: 10..158)
+    if (px >= 10 && px <= 158 && py >= gH - 42) {
       current_screen = SCR_SELECTION;
       drawList();
       return;
     }
 
-    // INSERT/EJECT toggle button (x: 160-300)
-    if (px >= 160 && px <= 300 && py >= gH - 42) {
+    // INSERT/EJECT toggle button (uniform 148px: 322..470)
+    if (px >= 322 && px <= 470 && py >= gH - 42) {
       bool isCurrentLoaded = (loaded_disk_index == selected_index && loaded_disk_index >= 0);
       if (isCurrentLoaded) {
         // EJECT (unload)
@@ -2952,20 +2949,19 @@ void handleTap(uint16_t px, uint16_t py) {
   // INFO SCREEN
   // ══════════════════════════════════════
   else if (current_screen == SCR_INFO) {
-    // BACK button (x: 20..110)
-    if (px >= 20 && px <= 110 && py >= gH - 42) {
+    // Uniform buttons: 148px wide, gap=8, margin=10
+    // BACK: 10..158, THEME: 166..314, ADF/DSK: 322..470
+    if (px >= 10 && px <= 158 && py >= gH - 42) {
       current_screen = SCR_SELECTION;
       drawList();
       return;
     }
-    // THEME button (x: 130..230)
-    if (px >= 130 && px <= 230 && py >= gH - 42) {
+    if (px >= 166 && px <= 314 && py >= gH - 42) {
       cycleTheme();
       drawInfoScreen();
       return;
     }
-    // ADF/DSK mode switch button (bottom-right, w=110)
-    if (px >= gW - 120 && py >= gH - 42) {
+    if (px >= 322 && px <= 470 && py >= gH - 42) {
       showBusyIndicator("SCANNING...");
       g_mode = (g_mode == MODE_ADF) ? MODE_DSK : MODE_ADF;
       file_list = listImages();
