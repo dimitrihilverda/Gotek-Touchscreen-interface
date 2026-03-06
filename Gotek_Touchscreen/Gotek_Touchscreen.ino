@@ -1128,31 +1128,40 @@ vector<String> listImages() {
 
   File root = SD_MMC.open(modeDir.c_str());
   if (root && root.isDirectory()) {
-    // New layout: /<MODE>/<GameFolder>/<file>.adf|dsk
     File gameDir;
     while ((gameDir = root.openNextFile())) {
-      if (!gameDir.isDirectory()) { gameDir.close(); continue; }
-
-      String gameDirPath = gameDir.name();
+      String entryName = gameDir.name();
       // Ensure full path
-      if (!gameDirPath.startsWith("/")) gameDirPath = modeDir + "/" + gameDirPath;
+      if (!entryName.startsWith("/")) entryName = modeDir + "/" + entryName;
 
-      // Scan this game folder for disk images
-      File entry;
-      while ((entry = gameDir.openNextFile())) {
-        String fname = entry.name();
+      if (gameDir.isDirectory()) {
+        // Subfolder layout: /<MODE>/<GameFolder>/<file>.adf|dsk
+        File entry;
+        while ((entry = gameDir.openNextFile())) {
+          String fname = entry.name();
+          int slash = fname.lastIndexOf('/');
+          if (slash >= 0) fname = fname.substring(slash + 1);
+
+          String upper = fname;
+          upper.toUpperCase();
+          if (upper.endsWith(ext1) || upper.endsWith(".IMG")) {
+            String fullPath = entryName + "/" + fname;
+            if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
+            images.push_back(fullPath);
+          }
+          entry.close();
+        }
+      } else {
+        // Flat layout: /<MODE>/<file>.adf|dsk (no subfolder)
+        String fname = entryName;
         int slash = fname.lastIndexOf('/');
         if (slash >= 0) fname = fname.substring(slash + 1);
 
         String upper = fname;
         upper.toUpperCase();
         if (upper.endsWith(ext1) || upper.endsWith(".IMG")) {
-          // Store full path
-          String fullPath = gameDirPath + "/" + fname;
-          if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
-          images.push_back(fullPath);
+          images.push_back(entryName);
         }
-        entry.close();
       }
       gameDir.close();
     }

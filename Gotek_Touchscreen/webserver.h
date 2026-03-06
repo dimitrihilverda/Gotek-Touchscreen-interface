@@ -144,6 +144,7 @@ void stopWiFiAP() {
 struct HttpRequest {
   String method;        // GET, POST, DELETE, OPTIONS
   String path;          // /api/games/list
+  String query;         // query string (after ?) decoded
   String contentType;
   int contentLength;
   String body;          // POST body
@@ -195,10 +196,17 @@ bool parseHttpRequest(WiFiClient &client, HttpRequest &req) {
   if (sp1 < 0 || sp2 < 0) return false;
 
   req.method = requestLine.substring(0, sp1);
-  req.path = requestLine.substring(sp1 + 1, sp2);
+  String fullPath = requestLine.substring(sp1 + 1, sp2);
+
+  // Separate query string from path
+  int qMark = fullPath.indexOf('?');
+  if (qMark >= 0) {
+    req.query = urlDecode(fullPath.substring(qMark + 1));
+    fullPath = fullPath.substring(0, qMark);
+  }
 
   // Full URL decode (%XX hex sequences)
-  req.path = urlDecode(req.path);
+  req.path = urlDecode(fullPath);
 
   // Read headers
   while (client.connected()) {
@@ -598,7 +606,7 @@ void handleHttpRequest(WiFiClient &client) {
           return;
         }
         if (action == "cover" && req.method == "GET") {
-          handleCoverServe(client, mode, name);
+          handleCoverServe(client, mode, name, req.query);
           return;
         }
         if (action == "cover" && req.method == "POST") {
