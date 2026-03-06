@@ -46,6 +46,9 @@ extern void doUnload();
 extern vector<int> disk_set;
 extern int game_selected;
 extern int findGameIndex(int fileIndex);
+extern String detail_filename;
+extern void drawDetailsFromNFO(const String &filename);
+extern void drawList();
 
 // WiFi state (defined in main .ino)
 extern bool wifi_ap_active;

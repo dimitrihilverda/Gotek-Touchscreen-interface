@@ -198,6 +198,11 @@ void handleDiskLoad(WiFiClient &client, const String &mode, const String &name, 
 
   // Check if it actually loaded
   if (loaded_disk_index == targetIdx) {
+    // Switch touchscreen to detail view for this game
+    detail_filename = file_list[targetIdx];
+    current_screen = SCR_DETAILS;
+    drawDetailsFromNFO(detail_filename);
+
     String loadedFile = filenameOnly(file_list[targetIdx]);
     sendJSON(client, 200,
       "{\"status\":\"ok\",\"file\":\"" + jsonEscape(loadedFile) +
@@ -219,6 +224,11 @@ void handleDiskUnload(WiFiClient &client) {
   }
 
   doUnload();
+
+  // Switch touchscreen back to game list
+  current_screen = SCR_SELECTION;
+  drawList();
+
   sendJSON(client, 200, "{\"status\":\"ok\"}");
 }
 
