@@ -99,16 +99,79 @@ void refreshGameList() {
   buildGameList();
 }
 
-// Find a game's actual folder path on SD from game_list (avoids hardcoded path assumptions)
-// Returns "" if not found
-String getGameFolder(const String &name) {
+// Find a game's actual folder path on SD from game_list
+// Tries exact match first, then case-insensitive, then falls back to /ADF|DSK/{name}
+String getGameFolder(const String &name, const String &mode = "") {
+  Serial.println("getGameFolder: looking for '" + name + "' in " + String(game_list.size()) + " games");
+
+  // Pass 1: exact match
   for (int i = 0; i < (int)game_list.size(); i++) {
     if (game_list[i].name == name && game_list[i].first_file_index >= 0 &&
         game_list[i].first_file_index < (int)file_list.size()) {
       String dir = file_list[game_list[i].first_file_index];
       int sl = dir.lastIndexOf('/');
-      if (sl > 0) return dir.substring(0, sl);
+      if (sl > 0) {
+        Serial.println("getGameFolder: exact match -> " + dir.substring(0, sl));
+        return dir.substring(0, sl);
+      }
     }
+  }
+
+  // Pass 2: case-insensitive match
+  String nameLower = name;
+  nameLower.toLowerCase();
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    String gn = game_list[i].name;
+    gn.toLowerCase();
+    if (gn == nameLower && game_list[i].first_file_index >= 0 &&
+        game_list[i].first_file_index < (int)file_list.size()) {
+      String dir = file_list[game_list[i].first_file_index];
+      int sl = dir.lastIndexOf('/');
+      if (sl > 0) {
+        Serial.println("getGameFolder: case-insensitive match -> " + dir.substring(0, sl));
+        return dir.substring(0, sl);
+      }
+    }
+  }
+
+  // Pass 3: fallback to constructed path /ADF/{name} or /DSK/{name}
+  String modeDir = (mode == "adf") ? "/ADF" : (mode == "dsk") ? "/DSK" :
+                   (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
+  String fallback = modeDir + "/" + name;
+  if (SD_MMC.exists(fallback.c_str())) {
+    Serial.println("getGameFolder: fallback exists -> " + fallback);
+    return fallback;
+  }
+
+  // Pass 4: scan the mode directory for case-insensitive folder name match
+  File root = SD_MMC.open(modeDir.c_str());
+  if (root && root.isDirectory()) {
+    File entry;
+    while ((entry = root.openNextFile())) {
+      if (entry.isDirectory()) {
+        String folderName = entry.name();
+        // entry.name() may return full path or just name
+        int sl = folderName.lastIndexOf('/');
+        if (sl >= 0) folderName = folderName.substring(sl + 1);
+        String fnLower = folderName;
+        fnLower.toLowerCase();
+        if (fnLower == nameLower) {
+          String result = modeDir + "/" + folderName;
+          entry.close();
+          root.close();
+          Serial.println("getGameFolder: SD scan match -> " + result);
+          return result;
+        }
+      }
+      entry.close();
+    }
+    root.close();
+  }
+
+  Serial.println("getGameFolder: NOT FOUND for '" + name + "'");
+  // Debug: print first 5 game names for comparison
+  for (int i = 0; i < min(5, (int)game_list.size()); i++) {
+    Serial.println("  game_list[" + String(i) + "]: '" + game_list[i].name + "'");
   }
   return "";
 }
@@ -162,10 +225,7 @@ void handleDiskLoad(WiFiClient &client, const String &mode, const String &name, 
   if (diskNum < 1) diskNum = 1;
 
   // Find the game in game_list
-  int gameIdx = -1;
-  for (int i = 0; i < (int)game_list.size(); i++) {
-    if (game_list[i].name == name) { gameIdx = i; break; }
-  }
+  int gameIdx = findGameByName(name);
 
   if (gameIdx < 0) {
     sendJSON(client, 404, "{\"error\":\"Game not found\"}");
@@ -409,11 +469,24 @@ void handleGamesList(WiFiClient &client) {
 // GET /api/games/{mode}/{name} — game detail
 // ============================================================================
 
-void handleGameDetailParsed(WiFiClient &client, const String &mode, const String &name) {
-  int found = -1;
+int findGameByName(const String &name) {
+  // Exact match first
   for (int i = 0; i < (int)game_list.size(); i++) {
-    if (game_list[i].name == name) { found = i; break; }
+    if (game_list[i].name == name) return i;
   }
+  // Case-insensitive fallback
+  String nl = name;
+  nl.toLowerCase();
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    String gn = game_list[i].name;
+    gn.toLowerCase();
+    if (gn == nl) return i;
+  }
+  return -1;
+}
+
+void handleGameDetailParsed(WiFiClient &client, const String &mode, const String &name) {
+  int found = findGameByName(name);
   if (found < 0) {
     sendJSON(client, 404, "{\"error\":\"Game not found\"}");
     return;
@@ -465,7 +538,7 @@ void handleGameDetailParsed(WiFiClient &client, const String &mode, const String
 // ============================================================================
 
 void handleGameDeleteParsed(WiFiClient &client, const String &mode, const String &name) {
-  String gamePath = getGameFolder(name);
+  String gamePath = getGameFolder(name, mode);
 
   if (gamePath.length() == 0 || !SD_MMC.exists(gamePath.c_str())) {
     sendJSON(client, 404, "{\"error\":\"Game folder not found\"}");
@@ -486,7 +559,7 @@ void handleGameDeleteParsed(WiFiClient &client, const String &mode, const String
 // ============================================================================
 
 void handleNFOUpdateParsed(WiFiClient &client, const String &mode, const String &name, const String &body) {
-  String gameDir = getGameFolder(name);
+  String gameDir = getGameFolder(name, mode);
   if (gameDir.length() == 0) {
     sendJSON(client, 404, "{\"error\":\"Game not found\"}");
     return;
@@ -511,14 +584,37 @@ void handleNFOUpdateParsed(WiFiClient &client, const String &mode, const String 
 // ============================================================================
 
 void handleCoverServe(WiFiClient &client, const String &mode, const String &name) {
-  for (int i = 0; i < (int)game_list.size(); i++) {
-    if (game_list[i].name == name && game_list[i].jpg_path.length() > 0) {
-      String path = game_list[i].jpg_path;
-      String contentType = "image/jpeg";
-      if (path.endsWith(".png")) contentType = "image/png";
+  int idx = findGameByName(name);
+  if (idx >= 0 && game_list[idx].jpg_path.length() > 0) {
+    String path = game_list[idx].jpg_path;
+    String contentType = "image/jpeg";
+    if (path.endsWith(".png")) contentType = "image/png";
+    sendFileResponse(client, path, contentType);
+    return;
+  }
 
-      sendFileResponse(client, path, contentType);
-      return;
+  // Fallback: scan game folder for any jpg/png
+  String gameDir = getGameFolder(name, mode);
+  if (gameDir.length() > 0) {
+    File dir = SD_MMC.open(gameDir.c_str());
+    if (dir && dir.isDirectory()) {
+      File entry;
+      while ((entry = dir.openNextFile())) {
+        String fn = String(entry.name());
+        fn.toLowerCase();
+        if (!entry.isDirectory() && (fn.endsWith(".jpg") || fn.endsWith(".jpeg") || fn.endsWith(".png"))) {
+          String fullPath = entry.name();
+          // Ensure full path
+          if (!fullPath.startsWith("/")) fullPath = gameDir + "/" + fullPath;
+          String ct = fn.endsWith(".png") ? "image/png" : "image/jpeg";
+          entry.close();
+          dir.close();
+          sendFileResponse(client, fullPath, ct);
+          return;
+        }
+        entry.close();
+      }
+      dir.close();
     }
   }
   sendJSON(client, 404, "{\"error\":\"No cover found\"}");
@@ -551,7 +647,7 @@ void handleCoverDownload(WiFiClient &client, const String &mode, const String &n
   }
 
   // Find actual game folder from game_list
-  String gameDir = getGameFolder(name);
+  String gameDir = getGameFolder(name, mode);
   if (gameDir.length() == 0) {
     sendJSON(client, 404, "{\"error\":\"Game folder not found\"}");
     return;
@@ -563,7 +659,11 @@ void handleCoverDownload(WiFiClient &client, const String &mode, const String &n
   urlLower.toLowerCase();
   if (urlLower.indexOf(".png") >= 0) ext = ".png";
 
-  String savePath = gameDir + "/" + name + ext;
+  // Use the actual folder name for the cover filename (may differ from URL name)
+  String folderName = gameDir;
+  int lastSl = folderName.lastIndexOf('/');
+  if (lastSl >= 0) folderName = folderName.substring(lastSl + 1);
+  String savePath = gameDir + "/" + folderName + ext;
 
   // Parse host and path from URL
   String host = "";
