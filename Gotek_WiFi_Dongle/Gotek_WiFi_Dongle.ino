@@ -1,64 +1,42 @@
 /*
-  Gotek WiFi Dongle — Headless USB Stick Edition
+  Gotek WiFi Dongle — Headless PSRAM-only Edition
 
-  A tiny ESP32-S3 based WiFi USB dongle that plugs into a Gotek's USB port.
-  No display, no touchscreen — all control via phone/laptop web browser.
+  A minimal ESP32-S3 WiFi dongle that plugs into a Gotek's USB port.
+  No SD card, no display — disk images are sent via WiFi and stored in PSRAM.
 
-  Target board: Seeed XIAO ESP32-S3 (Sense variant recommended for microSD)
-    - 21 x 17.5 mm — small enough for USB stick form factor
-    - ESP32-S3 dual-core 240MHz, 8MB Flash, 8MB PSRAM, 512KB SRAM
-    - WiFi 802.11 b/g/n + Bluetooth 5.0 LE
-    - USB-C (USB OTG capable)
-    - 11 GPIO pins: IO2-IO10, IO20, IO21
+  How it works:
+    1. Dongle creates WiFi AP ("Gotek-Dongle")
+    2. Open http://192.168.4.1 on your phone/laptop
+    3. Upload or drag & drop an ADF/DSK file
+    4. Dongle loads it into PSRAM → presents as USB floppy to Gotek
+    5. Play!
 
-  Features:
-    - USB Mass Storage emulation (FAT12 RAM disk in PSRAM)
-    - WiFi AP + optional STA for internet access
-    - Web UI served from PROGMEM — browse & load games from phone/laptop
-    - SD card for game image storage (ADF/DSK/IMG)
-    - Cover art, NFO files, multi-disk game support
+  Target board: Seeed XIAO ESP32-S3 (21 x 17.5 mm)
+    - ESP32-S3 dual-core 240MHz
+    - 8MB PSRAM (plenty for a 1.44MB floppy image)
+    - 8MB Flash
+    - WiFi 802.11 b/g/n
+    - USB-C with OTG support
+    - No SD card needed!
 
   Board settings (Arduino IDE):
     Board: XIAO_ESP32S3
     USB CDC On Boot → Enabled
     PSRAM → OPI PSRAM
     Flash Size → 8MB
-    Partition → Huge APP (3MB No OTA/1MB SPIFFS)
+    Partition → Default 4MB with spiffs
 
-  XIAO ESP32-S3 Pinout:
-    IO2  (A0)   — GPIO, ADC
-    IO3  (A1)   — GPIO, ADC          ⚠ avoid (flash related)
-    IO4  (A2)   — GPIO, ADC
-    IO5  (A3)   — GPIO, ADC
-    IO6  (SDA)  — GPIO, I2C Data
-    IO7  (SCL)  — GPIO, I2C Clock
-    IO8  (SCK)  — GPIO, SPI Clock
-    IO9  (MISO) — GPIO, SPI Data     ⚠ avoid (bootstrap)
-    IO10 (MOSI) — GPIO, SPI Data     ⚠ avoid (bootstrap)
-    IO20 (RX)   — UART Receive       ⚠ avoid (USB)
-    IO21 (TX)   — UART Transmit / LED
-
-  SD Card wiring (SDMMC 1-bit mode):
-    SD_CLK → IO7 (SCL)
-    SD_CMD → IO8 (SCK)
-    SD_D0  → IO9 (MISO)    — or use SPI mode on safe pins
-
-  For XIAO ESP32-S3 Sense variant:
-    Built-in microSD slot uses dedicated pins (no GPIO needed)
-
-  Safe GPIO for general use: IO2, IO4, IO5, IO6, IO21
+  Wiring:
+    USB-A plug → Gotek USB port
+    That's it. No other connections needed.
 */
 
 #include <Arduino.h>
-#include <SD_MMC.h>
-#include <FS.h>
 #include <vector>
-#include <algorithm>
-#include <ctype.h>
-
 #include <USB.h>
 #include <USBMSC.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
 
 extern "C" {
   extern bool tud_mounted(void);
@@ -67,71 +45,14 @@ extern "C" {
   extern void* ps_malloc(size_t size);
 }
 
-#define FW_VERSION "v0.8.0-WiFiDongle"
+#define FW_VERSION "v1.0.0-WiFiDongle"
 
 // ==========================================================================
-// HEADLESS MODE FLAG — used by shared headers to skip display calls
+// STATUS LED (XIAO ESP32-S3 built-in LED on IO21)
 // ==========================================================================
-#define HEADLESS_MODE 1
-
-using std::vector;
-using std::sort;
-using std::swap;
-
-// ==========================================================================
-// BOARD SELECTOR
-// ==========================================================================
-
-#define BOARD_XIAO_S3        1
-#define BOARD_XIAO_S3_SENSE  2
-#define BOARD_GENERIC_S3     3
-
-// SELECT YOUR BOARD HERE:
-#define ACTIVE_BOARD BOARD_XIAO_S3_SENSE
-
-// ==========================================================================
-// SD Card Pin Configuration (per board)
-// ==========================================================================
-
-#if ACTIVE_BOARD == BOARD_XIAO_S3_SENSE
-  // XIAO ESP32-S3 Sense — built-in microSD slot
-  // Uses dedicated internal pins, no external wiring needed
-  #define SD_CLK  7
-  #define SD_CMD  9
-  #define SD_D0   8
-
-#elif ACTIVE_BOARD == BOARD_XIAO_S3
-  // XIAO ESP32-S3 (no Sense) — external microSD breakout
-  // SDMMC 1-bit mode on safe GPIO pins
-  #define SD_CLK  7   // IO7 (SCL)
-  #define SD_CMD  5   // IO5 (A3)
-  #define SD_D0   4   // IO4 (A2)
-
-#elif ACTIVE_BOARD == BOARD_GENERIC_S3
-  // Generic ESP32-S3 dev board
-  #define SD_CLK  12
-  #define SD_CMD  11
-  #define SD_D0   13
-#endif
-
-// ==========================================================================
-// STATUS LED
-// ==========================================================================
-#if ACTIVE_BOARD == BOARD_XIAO_S3 || ACTIVE_BOARD == BOARD_XIAO_S3_SENSE
-  #define LED_PIN 21  // XIAO ESP32-S3 built-in LED on IO21
-#else
-  #define LED_PIN 2   // Generic boards typically use GPIO2
-#endif
-bool has_led = false;
-
-void ledInit() {
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
-  has_led = true;
-}
+#define LED_PIN 21
 
 void ledBlink(int times = 1, int ms = 100) {
-  if (!has_led) return;
   for (int i = 0; i < times; i++) {
     digitalWrite(LED_PIN, HIGH);
     delay(ms);
@@ -141,593 +62,39 @@ void ledBlink(int times = 1, int ms = 100) {
 }
 
 // ==========================================================================
-// CONFIG VARIABLES
+// WiFi CONFIG
 // ==========================================================================
-
-String cfg_display = "";
-String cfg_lastfile = "";
-String cfg_lastmode = "";
-String cfg_theme = "DEFAULT";
-
-// WiFi config — AP (always-on hotspot)
-bool   cfg_wifi_enabled = true;
-String cfg_wifi_ssid    = "Gotek-Dongle";
-String cfg_wifi_pass    = "retrogaming";
+String cfg_wifi_ssid = "Gotek-Dongle";
+String cfg_wifi_pass = "retrogaming";
 uint8_t cfg_wifi_channel = 6;
-
-// WiFi config — Client (connect to home network for internet)
-bool   cfg_wifi_client_enabled = false;
-String cfg_wifi_client_ssid    = "";
-String cfg_wifi_client_pass    = "";
 
 // WiFi state
 bool wifi_ap_active = false;
 String wifi_ap_ip = "";
-bool wifi_sta_connected = false;
-String wifi_sta_ip = "";
-bool isWiFiActive() { return wifi_ap_active; }
 
-// Theme (kept for API compatibility, not used visually)
-String theme_path = "/THEMES/DEFAULT";
-vector<String> theme_list;
+// ==========================================================================
+// RAM DISK — FAT12 floppy in PSRAM
+// ==========================================================================
+#define RAM_DISK_SIZE (2880 * 512)   // 1.44 MB
+#define FAT1_OFFSET   512
+#define FAT2_OFFSET   5120
+#define ROOTDIR_OFFSET 9728
+#define DATA_OFFSET   16896
 
-// RAM disk
-#define RAM_DISK_SIZE (2880 * 512)
 uint8_t *ram_disk = NULL;
+uint32_t msc_block_count;
 
-// Disk mode
-enum DiskMode { MODE_ADF = 0, MODE_DSK = 1 };
-DiskMode g_mode = MODE_ADF;
+// Current state
+String loaded_filename = "";
+size_t loaded_size = 0;
+bool disk_present = false;
 
 // USB MSC
 USBMSC msc;
-uint32_t msc_block_count;
-
-// UI state (headless — no screens, but kept for API compatibility)
-enum Screen { SCR_SELECTION = 0, SCR_DETAILS = 1, SCR_INFO = 2 };
-Screen current_screen = SCR_SELECTION;
-
-// File list
-vector<String> file_list;
-vector<String> display_names;
-int selected_index = 0;
-
-// Game list
-struct GameEntry {
-  String name;
-  String jpg_path;
-  int first_file_index;
-  int disk_count;
-};
-vector<GameEntry> game_list;
-int game_selected = 0;
-int scroll_offset = 0;
-
-// Details (headless — no screen, but API uses these)
-String detail_filename = "";
-String detail_nfo_text = "";
-String detail_jpg_path = "";
-
-// Multi-disk
-vector<int> disk_set;
-int loaded_disk_index = -1;
-
-// UI busy flag (used by web handlers)
-bool ui_busy = false;
 
 // ==========================================================================
-// CONFIG SYSTEM
+// FAT12 FILESYSTEM
 // ==========================================================================
-
-void loadConfig() {
-  cfg_display = "";
-  cfg_lastfile = "";
-  cfg_lastmode = "";
-
-  File f = SD_MMC.open("/CONFIG.TXT", "r");
-  if (!f) return;
-
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0 || line.startsWith("#")) continue;
-
-    int eqIdx = line.indexOf('=');
-    if (eqIdx < 0) continue;
-
-    String key = line.substring(0, eqIdx);
-    String val = line.substring(eqIdx + 1);
-    key.trim();
-    val.trim();
-
-    if (key == "DISPLAY") cfg_display = val;
-    else if (key == "LASTFILE") cfg_lastfile = val;
-    else if (key == "LASTMODE") cfg_lastmode = val;
-    else if (key == "THEME") cfg_theme = val;
-    else if (key == "WIFI_ENABLED") cfg_wifi_enabled = (val == "1" || val == "true");
-    else if (key == "WIFI_SSID") cfg_wifi_ssid = val;
-    else if (key == "WIFI_PASS") cfg_wifi_pass = val;
-    else if (key == "WIFI_CHANNEL") {
-      cfg_wifi_channel = (uint8_t)val.toInt();
-      if (cfg_wifi_channel < 1 || cfg_wifi_channel > 13) cfg_wifi_channel = 6;
-    }
-    else if (key == "WIFI_CLIENT_ENABLED") cfg_wifi_client_enabled = (val == "1" || val == "true");
-    else if (key == "WIFI_CLIENT_SSID") cfg_wifi_client_ssid = val;
-    else if (key == "WIFI_CLIENT_PASS") cfg_wifi_client_pass = val;
-  }
-  f.close();
-
-  if (cfg_theme.length() == 0) cfg_theme = "DEFAULT";
-  theme_path = "/THEMES/" + cfg_theme;
-}
-
-void saveConfig() {
-  File f = SD_MMC.open("/CONFIG.TXT", "w");
-  if (!f) return;
-
-  if (cfg_display.length() > 0) f.println("DISPLAY=" + cfg_display);
-  if (cfg_lastfile.length() > 0) f.println("LASTFILE=" + cfg_lastfile);
-  if (cfg_lastmode.length() > 0) f.println("LASTMODE=" + cfg_lastmode);
-  f.println("THEME=" + cfg_theme);
-  f.println("WIFI_ENABLED=" + String(cfg_wifi_enabled ? "1" : "0"));
-  f.println("WIFI_SSID=" + cfg_wifi_ssid);
-  f.println("WIFI_PASS=" + cfg_wifi_pass);
-  f.println("WIFI_CHANNEL=" + String(cfg_wifi_channel));
-  f.println("WIFI_CLIENT_ENABLED=" + String(cfg_wifi_client_enabled ? "1" : "0"));
-  if (cfg_wifi_client_ssid.length() > 0) {
-    f.println("WIFI_CLIENT_SSID=" + cfg_wifi_client_ssid);
-    f.println("WIFI_CLIENT_PASS=" + cfg_wifi_client_pass);
-  }
-  f.close();
-}
-
-void scanThemes() {
-  theme_list.clear();
-  File root = SD_MMC.open("/THEMES");
-  if (!root || !root.isDirectory()) {
-    theme_list.push_back("DEFAULT");
-    return;
-  }
-  File entry;
-  while ((entry = root.openNextFile())) {
-    if (entry.isDirectory()) {
-      String name = entry.name();
-      int lastSlash = name.lastIndexOf('/');
-      if (lastSlash >= 0) name = name.substring(lastSlash + 1);
-      if (name.length() > 0 && !name.startsWith(".")) {
-        theme_list.push_back(name);
-      }
-    }
-    entry.close();
-  }
-  root.close();
-  sort(theme_list.begin(), theme_list.end());
-  if (theme_list.empty()) theme_list.push_back("DEFAULT");
-}
-
-void cycleTheme() {
-  if (theme_list.empty()) scanThemes();
-  int idx = 0;
-  for (int i = 0; i < (int)theme_list.size(); i++) {
-    if (theme_list[i] == cfg_theme) { idx = i; break; }
-  }
-  idx = (idx + 1) % theme_list.size();
-  cfg_theme = theme_list[idx];
-  theme_path = "/THEMES/" + cfg_theme;
-  saveConfig();
-}
-
-// ==========================================================================
-// SD CARD INTERFACE
-// ==========================================================================
-
-void init_sd_card() {
-  SD_MMC.setPins(SD_CLK, SD_CMD, SD_D0);
-  if (!SD_MMC.begin("/sdcard", true)) {
-    Serial.println("SD card mount failed!");
-  }
-}
-
-// Find a file by name (case-insensitive) inside a given directory
-String findFileInDir(const String &dirPath, const String &targetName) {
-  File dir = SD_MMC.open(dirPath.c_str());
-  if (!dir || !dir.isDirectory()) return "";
-
-  String targetUpper = targetName;
-  targetUpper.toUpperCase();
-
-  File entry;
-  while ((entry = dir.openNextFile())) {
-    String fname = entry.name();
-    int slash = fname.lastIndexOf('/');
-    if (slash >= 0) fname = fname.substring(slash + 1);
-
-    String upper = fname;
-    upper.toUpperCase();
-    if (upper == targetUpper) {
-      entry.close();
-      dir.close();
-      return dirPath + "/" + fname;
-    }
-    entry.close();
-  }
-  dir.close();
-  return "";
-}
-
-// List disk images
-vector<String> listImages() {
-  vector<String> images;
-  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
-  String ext1 = (g_mode == MODE_ADF) ? ".ADF" : ".DSK";
-
-  File root = SD_MMC.open(modeDir.c_str());
-  if (root && root.isDirectory()) {
-    File gameDir;
-    while ((gameDir = root.openNextFile())) {
-      String entryName = gameDir.name();
-      if (!entryName.startsWith("/")) entryName = modeDir + "/" + entryName;
-
-      if (gameDir.isDirectory()) {
-        File entry;
-        while ((entry = gameDir.openNextFile())) {
-          String fname = entry.name();
-          int slash = fname.lastIndexOf('/');
-          if (slash >= 0) fname = fname.substring(slash + 1);
-          String upper = fname;
-          upper.toUpperCase();
-          if (upper.endsWith(ext1) || upper.endsWith(".IMG")) {
-            String fullPath = entryName + "/" + fname;
-            if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
-            images.push_back(fullPath);
-          }
-          entry.close();
-        }
-      } else {
-        String fname = entryName;
-        int slash = fname.lastIndexOf('/');
-        if (slash >= 0) fname = fname.substring(slash + 1);
-        String upper = fname;
-        upper.toUpperCase();
-        if (upper.endsWith(ext1) || upper.endsWith(".IMG")) {
-          images.push_back(entryName);
-        }
-      }
-      gameDir.close();
-    }
-    root.close();
-  }
-
-  // Also scan root for legacy flat layout
-  File rootDir = SD_MMC.open("/");
-  if (rootDir) {
-    File entry;
-    while ((entry = rootDir.openNextFile())) {
-      if (entry.isDirectory()) { entry.close(); continue; }
-      String fname = entry.name();
-      int slash = fname.lastIndexOf('/');
-      if (slash >= 0) fname = fname.substring(slash + 1);
-      String upper = fname;
-      upper.toUpperCase();
-      if (upper.endsWith(ext1) || upper.endsWith(".IMG")) {
-        String fullPath = "/" + fname;
-        bool dup = false;
-        for (const auto &existing : images) {
-          if (existing == fullPath) { dup = true; break; }
-        }
-        if (!dup) images.push_back(fullPath);
-      }
-      entry.close();
-    }
-    rootDir.close();
-  }
-
-  sort(images.begin(), images.end());
-  return images;
-}
-
-// Forward declarations
-String getGameBaseName(const String &fullPath);
-
-// Path helpers
-String parentDir(const String &path) {
-  int slash = path.lastIndexOf('/');
-  if (slash <= 0) return "/";
-  return path.substring(0, slash);
-}
-
-String filenameOnly(const String &path) {
-  int slash = path.lastIndexOf('/');
-  if (slash < 0) return path;
-  return path.substring(slash + 1);
-}
-
-// Find NFO for a disk image
-String findNFOFor(const String &imagePath) {
-  String dir = parentDir(imagePath);
-  String base = filenameOnly(imagePath);
-  base = base.substring(0, base.lastIndexOf('.'));
-
-  String result = findFileInDir(dir, base + ".nfo");
-  if (result.length() > 0) return result;
-
-  String gameName = getGameBaseName(imagePath);
-  if (gameName != base) {
-    result = findFileInDir(dir, gameName + ".nfo");
-    if (result.length() > 0) return result;
-  }
-
-  result = findFileInDir(dir, "info.nfo");
-  if (result.length() > 0) return result;
-  return "";
-}
-
-// Find cover image for a disk image
-String findJPGFor(const String &imagePath) {
-  String dir = parentDir(imagePath);
-  String base = filenameOnly(imagePath);
-  base = base.substring(0, base.lastIndexOf('.'));
-
-  for (const char *ext : {".jpg", ".jpeg", ".png"}) {
-    String result = findFileInDir(dir, base + ext);
-    if (result.length() > 0) return result;
-  }
-
-  String gameName = getGameBaseName(imagePath);
-  if (gameName != base) {
-    for (const char *ext : {".jpg", ".jpeg", ".png"}) {
-      String result = findFileInDir(dir, gameName + ext);
-      if (result.length() > 0) return result;
-    }
-  }
-
-  for (const char *name : {"cover.jpg", "cover.png", "art.jpg"}) {
-    String result = findFileInDir(dir, name);
-    if (result.length() > 0) return result;
-  }
-  return "";
-}
-
-String readSmallTextFile(const char *path, int maxSize = 2048) {
-  File f = SD_MMC.open(path, "r");
-  if (!f) return "";
-  String result = "";
-  while (f.available() && result.length() < maxSize) {
-    result += (char)f.read();
-  }
-  f.close();
-  return result;
-}
-
-// ==========================================================================
-// NFO PARSING
-// ==========================================================================
-
-void parseNFO(const String &nfoText, String &title, String &blurb) {
-  title = "";
-  blurb = "";
-  int lines = 0;
-  int pos = 0;
-  while (pos < (int)nfoText.length() && lines < 2) {
-    int eol = nfoText.indexOf('\n', pos);
-    if (eol < 0) eol = nfoText.length();
-    String line = nfoText.substring(pos, eol);
-    line.trim();
-    if (line.length() > 0) {
-      if (lines == 0) title = line;
-      else blurb = line;
-      lines++;
-    }
-    pos = eol + 1;
-  }
-}
-
-String basenameNoExt(const String &path) {
-  int lastSlash = path.lastIndexOf('/');
-  int lastDot = path.lastIndexOf('.');
-  if (lastSlash < 0) lastSlash = -1;
-  if (lastDot < 0) lastDot = path.length();
-  return path.substring(lastSlash + 1, lastDot);
-}
-
-// Multi-disk helpers
-String getGameBaseName(const String &fullPath) {
-  String base = basenameNoExt(filenameOnly(fullPath));
-  int dash = base.lastIndexOf('-');
-  if (dash > 0 && dash < (int)base.length() - 1) {
-    String suffix = base.substring(dash + 1);
-    bool isNum = true;
-    for (int i = 0; i < (int)suffix.length(); i++) {
-      if (!isDigit(suffix[i])) { isNum = false; break; }
-    }
-    if (isNum) return base.substring(0, dash);
-  }
-  return base;
-}
-
-int getDiskNumber(const String &fullPath) {
-  String base = basenameNoExt(filenameOnly(fullPath));
-  int dash = base.lastIndexOf('-');
-  if (dash > 0 && dash < (int)base.length() - 1) {
-    String suffix = base.substring(dash + 1);
-    int num = suffix.toInt();
-    if (num > 0) return num;
-  }
-  return 0;
-}
-
-void findRelatedDisks(int currentIndex) {
-  disk_set.clear();
-  if (currentIndex < 0 || currentIndex >= (int)file_list.size()) return;
-  String baseName = getGameBaseName(file_list[currentIndex]);
-  String dir = parentDir(file_list[currentIndex]);
-  for (int i = 0; i < (int)file_list.size(); i++) {
-    if (parentDir(file_list[i]) == dir &&
-        getGameBaseName(file_list[i]) == baseName &&
-        getDiskNumber(file_list[i]) > 0) {
-      disk_set.push_back(i);
-    }
-  }
-  for (int i = 0; i < (int)disk_set.size(); i++) {
-    for (int j = i + 1; j < (int)disk_set.size(); j++) {
-      if (getDiskNumber(file_list[disk_set[j]]) < getDiskNumber(file_list[disk_set[i]])) {
-        swap(disk_set[i], disk_set[j]);
-      }
-    }
-  }
-}
-
-String getOutputFilename() {
-  if (selected_index >= 0 && selected_index < (int)file_list.size()) {
-    return filenameOnly(file_list[selected_index]);
-  }
-  return (g_mode == MODE_ADF) ? "DEFAULT.ADF" : "DEFAULT.DSK";
-}
-
-// ==========================================================================
-// DISPLAY NAMES (for sorting — no actual display)
-// ==========================================================================
-
-void buildDisplayNames(const vector<String> &files) {
-  display_names.clear();
-  display_names.resize(files.size());
-  for (int i = 0; i < (int)files.size(); i++) {
-    display_names[i] = basenameNoExt(filenameOnly(files[i]));
-  }
-}
-
-void sortByDisplay() {
-  // Insertion sort by display name
-  for (int i = 1; i < (int)file_list.size(); i++) {
-    String key = display_names[i];
-    String keyLower = key;
-    keyLower.toLowerCase();
-    String keyFile = file_list[i];
-    int j = i - 1;
-    while (j >= 0) {
-      String cmpLower = display_names[j];
-      cmpLower.toLowerCase();
-      if (cmpLower.compareTo(keyLower) <= 0) break;
-      display_names[j + 1] = display_names[j];
-      file_list[j + 1] = file_list[j];
-      j--;
-    }
-    display_names[j + 1] = key;
-    file_list[j + 1] = keyFile;
-  }
-}
-
-// ==========================================================================
-// GAME LIST
-// ==========================================================================
-
-int findGameIndex(int fileIndex) {
-  for (int i = 0; i < (int)game_list.size(); i++) {
-    if (game_list[i].first_file_index == fileIndex) return i;
-    if (game_list[i].disk_count > 1) {
-      String fileBase = getGameBaseName(file_list[fileIndex]);
-      if (game_list[i].name == fileBase) return i;
-    }
-  }
-  return 0;
-}
-
-void buildGameList() {
-  game_list.clear();
-  game_selected = 0;
-  scroll_offset = 0;
-
-  vector<bool> used(file_list.size(), false);
-
-  for (int i = 0; i < (int)file_list.size(); i++) {
-    if (used[i]) continue;
-
-    String baseName = getGameBaseName(file_list[i]);
-    int diskNum = getDiskNumber(file_list[i]);
-    String dir = parentDir(file_list[i]);
-
-    GameEntry entry;
-    entry.first_file_index = i;
-    entry.disk_count = 1;
-
-    if (diskNum > 0) {
-      entry.name = baseName;
-      int count = 1;
-      for (int j = i + 1; j < (int)file_list.size(); j++) {
-        if (used[j]) continue;
-        if (parentDir(file_list[j]) == dir &&
-            getGameBaseName(file_list[j]) == baseName &&
-            getDiskNumber(file_list[j]) > 0) {
-          used[j] = true;
-          count++;
-          if (getDiskNumber(file_list[j]) < getDiskNumber(file_list[entry.first_file_index])) {
-            entry.first_file_index = j;
-          }
-        }
-      }
-      entry.disk_count = count;
-    } else {
-      entry.name = basenameNoExt(filenameOnly(file_list[i]));
-    }
-
-    used[i] = true;
-    entry.jpg_path = findJPGFor(file_list[entry.first_file_index]);
-
-    if (entry.jpg_path.length() == 0 && diskNum > 0) {
-      String tryBase = dir + "/" + baseName;
-      for (const char *ext : {".jpg", ".jpeg", ".png"}) {
-        String tryPath = tryBase + ext;
-        if (SD_MMC.exists(tryPath.c_str())) {
-          entry.jpg_path = tryPath;
-          break;
-        }
-      }
-    }
-
-    game_list.push_back(entry);
-  }
-
-  // Sort alphabetically
-  for (int i = 0; i < (int)game_list.size(); i++) {
-    for (int j = i + 1; j < (int)game_list.size(); j++) {
-      if (game_list[i].name.compareTo(game_list[j].name) > 0) {
-        swap(game_list[i], game_list[j]);
-      }
-    }
-  }
-}
-
-// ==========================================================================
-// FAT12 FILESYSTEM EMULATION
-// ==========================================================================
-
-void build_boot_sector(uint8_t *buf) {
-  memset(buf, 0, 512);
-  buf[0x00] = 0xEB; buf[0x01] = 0x3C; buf[0x02] = 0x90;
-  memcpy(&buf[0x03], "MSDOS5.0", 8);
-  *(uint16_t *)&buf[0x0B] = 512;
-  buf[0x0D] = 1;
-  *(uint16_t *)&buf[0x0E] = 1;
-  buf[0x10] = 2;
-  *(uint16_t *)&buf[0x11] = 224;
-  *(uint16_t *)&buf[0x13] = 2880;
-  buf[0x15] = 0xF0;
-  *(uint16_t *)&buf[0x16] = 9;
-  *(uint16_t *)&buf[0x18] = 18;
-  *(uint16_t *)&buf[0x1A] = 2;
-  *(uint32_t *)&buf[0x20] = 0;
-  buf[0x24] = 0x00;
-  buf[0x25] = 0x00;
-  buf[0x26] = 0x29;
-  buf[0x27] = 0x47;
-  buf[0x28] = 0x4F;
-  buf[0x29] = 0x54;
-  buf[0x2A] = 0x4B;
-  memcpy(&buf[0x2B], "GOTEK      ", 11);
-  memcpy(&buf[0x36], "FAT12   ", 8);
-  buf[510] = 0x55;
-  buf[511] = 0xAA;
-}
 
 void fat12_set(uint8_t *fat, int idx, uint16_t val) {
   if (idx % 2 == 0) {
@@ -739,49 +106,77 @@ void fat12_set(uint8_t *fat, int idx, uint16_t val) {
   }
 }
 
-void build_fat(uint8_t *fat) {
-  memset(fat, 0, 4608);
-  fat12_set(fat, 0, 0xFF0);
-  fat12_set(fat, 1, 0xFFF);
+void build_boot_sector(uint8_t *buf) {
+  memset(buf, 0, 512);
+  buf[0x00] = 0xEB; buf[0x01] = 0x3C; buf[0x02] = 0x90;
+  memcpy(&buf[0x03], "MSDOS5.0", 8);
+  *(uint16_t *)&buf[0x0B] = 512;    // bytes per sector
+  buf[0x0D] = 1;                     // sectors per cluster
+  *(uint16_t *)&buf[0x0E] = 1;      // reserved sectors
+  buf[0x10] = 2;                     // number of FATs
+  *(uint16_t *)&buf[0x11] = 224;    // root dir entries
+  *(uint16_t *)&buf[0x13] = 2880;   // total sectors (1.44MB)
+  buf[0x15] = 0xF0;                  // media descriptor (1.44MB floppy)
+  *(uint16_t *)&buf[0x16] = 9;      // sectors per FAT
+  *(uint16_t *)&buf[0x18] = 18;     // sectors per track
+  *(uint16_t *)&buf[0x1A] = 2;      // heads
+  buf[0x24] = 0x00;                  // drive number (floppy)
+  buf[0x26] = 0x29;                  // extended boot sig
+  buf[0x27] = 0x47; buf[0x28] = 0x4F; buf[0x29] = 0x54; buf[0x2A] = 0x4B;
+  memcpy(&buf[0x2B], "GOTEK      ", 11);
+  memcpy(&buf[0x36], "FAT12   ", 8);
+  buf[510] = 0x55; buf[511] = 0xAA;
 }
 
 void make_83_name(const char *src, uint8_t *dst) {
   memset(dst, ' ', 11);
   const char *dot = strrchr(src, '.');
   int nameLen = dot ? (int)(dot - src) : (int)strlen(src);
-  for (int i = 0, j = 0; i < nameLen && j < 8; i++) {
-    dst[j++] = toupper(src[i]);
-  }
-  if (dot) {
-    dot++;
-    for (int j = 8; *dot && j < 11; dot++) {
-      dst[j++] = toupper(*dot);
-    }
-  }
+  for (int i = 0, j = 0; i < nameLen && j < 8; i++) dst[j++] = toupper(src[i]);
+  if (dot) { dot++; for (int j = 8; *dot && j < 11; dot++) dst[j++] = toupper(*dot); }
 }
 
-void build_root(uint8_t *root) {
-  memset(root, 0, 7168);
-  uint8_t fname[11];
-  make_83_name(getOutputFilename().c_str(), fname);
-  memcpy(&root[0], fname, 11);
-  root[11] = 0x20;
-  *(uint16_t *)&root[26] = 0;
-  *(uint32_t *)&root[28] = 0;
-}
-
-#define FAT1_OFFSET   512
-#define FAT2_OFFSET   5120
-#define ROOTDIR_OFFSET 9728
-#define DATA_OFFSET   16896
-
-void build_volume_with_file() {
+void build_empty_volume() {
   memset(ram_disk, 0, RAM_DISK_SIZE);
   build_boot_sector(&ram_disk[0]);
-  build_fat(&ram_disk[FAT1_OFFSET]);
-  build_fat(&ram_disk[FAT2_OFFSET]);
-  build_root(&ram_disk[ROOTDIR_OFFSET]);
+
+  // FAT1 + FAT2: media descriptor + end-of-chain
+  uint8_t *fat1 = &ram_disk[FAT1_OFFSET];
+  uint8_t *fat2 = &ram_disk[FAT2_OFFSET];
+  memset(fat1, 0, 4608);
+  memset(fat2, 0, 4608);
+  fat12_set(fat1, 0, 0xFF0);
+  fat12_set(fat1, 1, 0xFFF);
+  fat12_set(fat2, 0, 0xFF0);
+  fat12_set(fat2, 1, 0xFFF);
+
+  // Empty root directory
+  memset(&ram_disk[ROOTDIR_OFFSET], 0, 7168);
+
   msc_block_count = RAM_DISK_SIZE / 512;
+}
+
+// Load file data (already in ram_disk data area) into FAT structure
+void build_fat_for_file(const char *filename, size_t fileSize) {
+  // Root directory entry
+  uint8_t *root = &ram_disk[ROOTDIR_OFFSET];
+  memset(root, 0, 32);
+  uint8_t fname83[11];
+  make_83_name(filename, fname83);
+  memcpy(root, fname83, 11);
+  root[11] = 0x20;  // archive attribute
+  *(uint16_t *)&root[26] = 2;  // start cluster
+  *(uint32_t *)&root[28] = fileSize;
+
+  // FAT chain
+  uint16_t clusters = (fileSize + 511) / 512;
+  uint8_t *fat1 = &ram_disk[FAT1_OFFSET];
+  uint8_t *fat2 = &ram_disk[FAT2_OFFSET];
+  for (int c = 2; c < 2 + clusters; c++) {
+    uint16_t val = (c < 2 + clusters - 1) ? (c + 1) : 0xFFF;
+    fat12_set(fat1, c, val);
+    fat12_set(fat2, c, val);
+  }
 }
 
 // ==========================================================================
@@ -807,115 +202,477 @@ static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t 
 }
 
 // ==========================================================================
-// FILE LOADING (Headless — no display, just Serial logging)
+// DISK LOAD / EJECT
 // ==========================================================================
 
-size_t loadFileToRam(int index) {
-  if (index < 0 || index >= (int)file_list.size()) return 0;
-
-  String filepath = file_list[index];
-  Serial.println("Loading: " + filepath);
-
-  // LED feedback
-  ledBlink(1, 50);
-
-  build_volume_with_file();
-
-  File f = SD_MMC.open(filepath.c_str(), "r");
-  if (!f) {
-    Serial.println("Error opening file!");
-    return 0;
-  }
-
-  size_t fileSize = f.size();
-  size_t maxData = RAM_DISK_SIZE - DATA_OFFSET;
-  size_t toRead = (fileSize < maxData) ? fileSize : maxData;
-  size_t totalRead = 0;
-
-  while (totalRead < toRead) {
-    size_t chunk = toRead - totalRead;
-    if (chunk > 32768) chunk = 32768;
-    size_t got = f.read(&ram_disk[DATA_OFFSET + totalRead], chunk);
-    if (got == 0) break;
-    totalRead += got;
-    yield();
-  }
-  f.close();
-
-  // Build FAT chain
-  uint16_t clusters_needed = (totalRead + 511) / 512;
-  for (int c = 2; c < 2 + clusters_needed; c++) {
-    if (c < 2 + clusters_needed - 1) {
-      fat12_set(&ram_disk[FAT1_OFFSET], c, c + 1);
-      fat12_set(&ram_disk[FAT2_OFFSET], c, c + 1);
-    } else {
-      fat12_set(&ram_disk[FAT1_OFFSET], c, 0xFFF);
-      fat12_set(&ram_disk[FAT2_OFFSET], c, 0xFFF);
-    }
-  }
-  *(uint16_t *)&ram_disk[ROOTDIR_OFFSET + 26] = 2;
-  *(uint32_t *)&ram_disk[ROOTDIR_OFFSET + 28] = totalRead;
-
-  Serial.println("Loaded: " + String(totalRead) + " bytes");
-  ledBlink(2, 50);
-
-  return totalRead;
-}
-
-void doUnload() {
+// Load disk image data that's already been written to ram_disk[DATA_OFFSET]
+void loadDisk(const String &filename, size_t size) {
   tud_disconnect();
   delay(50);
 
-  build_volume_with_file();
-  msc.mediaPresent(false);
+  // Rebuild FAT structure around the data
+  build_boot_sector(&ram_disk[0]);
+  uint8_t *fat1 = &ram_disk[FAT1_OFFSET];
+  uint8_t *fat2 = &ram_disk[FAT2_OFFSET];
+  memset(fat1, 0, 4608);
+  memset(fat2, 0, 4608);
+  fat12_set(fat1, 0, 0xFF0);
+  fat12_set(fat1, 1, 0xFFF);
+  fat12_set(fat2, 0, 0xFF0);
+  fat12_set(fat2, 1, 0xFFF);
+  memset(&ram_disk[ROOTDIR_OFFSET], 0, 7168);
 
+  build_fat_for_file(filename.c_str(), size);
+
+  loaded_filename = filename;
+  loaded_size = size;
+  disk_present = true;
+
+  msc.mediaPresent(true);
   tud_connect();
 
-  cfg_lastfile = "";
-  loaded_disk_index = -1;
-  saveConfig();
+  Serial.println("Loaded: " + filename + " (" + String(size) + " bytes)");
+  ledBlink(2, 50);
+}
 
-  Serial.println("Drive unloaded");
+void ejectDisk() {
+  tud_disconnect();
+  delay(50);
+
+  build_empty_volume();
+  loaded_filename = "";
+  loaded_size = 0;
+  disk_present = false;
+
+  msc.mediaPresent(false);
+  tud_connect();
+
+  Serial.println("Disk ejected");
   ledBlink(3, 50);
 }
 
-void doLoadSelected() {
-  if (selected_index < 0 || selected_index >= (int)file_list.size()) return;
+// ==========================================================================
+// HTTP HELPERS
+// ==========================================================================
 
-  tud_disconnect();
-  delay(50);
+String jsonEscape(const String &s) {
+  String out;
+  out.reserve(s.length() + 10);
+  for (unsigned int i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '"') out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else out += c;
+  }
+  return out;
+}
 
-  size_t loaded = loadFileToRam(selected_index);
+void sendResponse(WiFiClient &client, int code, const String &contentType, const String &body) {
+  client.println("HTTP/1.1 " + String(code) + " OK");
+  client.println("Content-Type: " + contentType);
+  client.println("Content-Length: " + String(body.length()));
+  client.println("Access-Control-Allow-Origin: *");
+  client.println("Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS");
+  client.println("Access-Control-Allow-Headers: Content-Type");
+  client.println("Connection: close");
+  client.println();
+  client.print(body);
+}
 
-  msc.mediaPresent(loaded > 0);
-  tud_connect();
+void sendJSON(WiFiClient &client, int code, const String &json) {
+  sendResponse(client, code, "application/json", json);
+}
 
-  if (loaded > 0) {
-    loaded_disk_index = selected_index;
-    cfg_lastfile = file_list[selected_index];
-    cfg_lastmode = (g_mode == MODE_ADF) ? "ADF" : "DSK";
-    saveConfig();
+// ==========================================================================
+// WEB UI — embedded HTML (self-contained SPA)
+// ==========================================================================
+
+const char WEBUI_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gotek WiFi Dongle</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#1a1a2e;--panel:#16213e;--accent:#0f3460;--blue:#00a8cc;--green:#00cc66;--red:#e94560;--orange:#ff8c00;--text:#eee;--dim:#888}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;align-items:center}
+.header{background:linear-gradient(135deg,#0f3460,#00a8cc);width:100%;padding:20px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.5)}
+.header h1{font-size:22px;font-weight:700;letter-spacing:2px}
+.header .sub{font-size:13px;opacity:.7;margin-top:4px;font-family:monospace}
+.container{width:100%;max-width:500px;padding:16px}
+.card{background:var(--panel);border:1px solid #2a2a4a;border-radius:12px;padding:20px;margin-bottom:16px}
+.card h2{font-size:15px;color:var(--blue);margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
+.status{display:flex;align-items:center;gap:10px;padding:12px;background:#0d1b2a;border-radius:8px;margin-bottom:12px}
+.status .dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+.status .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+.status .dot.off{background:var(--red)}
+.status .info{flex:1}
+.status .name{font-weight:600;font-size:15px}
+.status .detail{font-size:12px;color:var(--dim);margin-top:2px}
+.drop-zone{border:2px dashed #3a3a6a;border-radius:12px;padding:40px 20px;text-align:center;cursor:pointer;transition:all .2s}
+.drop-zone:hover,.drop-zone.over{border-color:var(--blue);background:rgba(0,168,204,.08)}
+.drop-zone .icon{font-size:48px;margin-bottom:8px}
+.drop-zone p{font-size:14px;color:var(--dim)}
+.drop-zone input{display:none}
+.progress{display:none;margin-top:12px}
+.progress-bar{height:6px;background:#2a2a4a;border-radius:3px;overflow:hidden}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--blue),var(--green));width:0;transition:width .3s;border-radius:3px}
+.progress-text{font-size:12px;color:var(--dim);margin-top:4px;text-align:center}
+.btn{display:block;width:100%;padding:14px;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;transition:all .15s;text-align:center}
+.btn:active{transform:scale(.98)}
+.btn-eject{background:var(--red);color:#fff;margin-top:8px}
+.btn-eject:hover{background:#ff2255}
+.btn-eject:disabled{background:#444;color:#888;cursor:not-allowed}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.info-item{background:#0d1b2a;border-radius:6px;padding:10px}
+.info-item .label{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+.info-item .value{font-size:16px;font-weight:700;margin-top:2px}
+.msg{padding:10px;border-radius:6px;font-size:13px;margin-top:8px;display:none}
+.msg.ok{display:block;background:rgba(0,204,102,.15);color:var(--green);border:1px solid rgba(0,204,102,.3)}
+.msg.err{display:block;background:rgba(233,69,96,.15);color:var(--red);border:1px solid rgba(233,69,96,.3)}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>GOTEK WiFi DONGLE</h1>
+  <div class="sub" id="ipAddr">connecting...</div>
+</div>
+
+<div class="container">
+
+  <!-- Status Card -->
+  <div class="card">
+    <h2>Current Disk</h2>
+    <div class="status">
+      <div class="dot" id="statusDot"></div>
+      <div class="info">
+        <div class="name" id="statusName">No disk loaded</div>
+        <div class="detail" id="statusDetail">Upload a disk image to begin</div>
+      </div>
+    </div>
+    <button class="btn btn-eject" id="btnEject" disabled onclick="ejectDisk()">EJECT</button>
+  </div>
+
+  <!-- Upload Card -->
+  <div class="card">
+    <h2>Load Disk Image</h2>
+    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+      <div class="icon">💾</div>
+      <p>Tap to select or drag & drop<br>ADF / DSK / IMG (max 1.44 MB)</p>
+      <input type="file" id="fileInput" accept=".adf,.dsk,.img">
+    </div>
+    <div class="progress" id="progress">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-text" id="progressText">Uploading...</div>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <!-- System Info -->
+  <div class="card">
+    <h2>System</h2>
+    <div class="info-grid">
+      <div class="info-item"><div class="label">Firmware</div><div class="value" id="infoFw">-</div></div>
+      <div class="info-item"><div class="label">Free RAM</div><div class="value" id="infoRam">-</div></div>
+      <div class="info-item"><div class="label">WiFi IP</div><div class="value" id="infoIp">-</div></div>
+      <div class="info-item"><div class="label">Clients</div><div class="value" id="infoClients">-</div></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// Status polling
+async function updateStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    $('statusDot').className = 'dot ' + (d.loaded ? 'on' : 'off');
+    $('statusName').textContent = d.loaded ? d.filename : 'No disk loaded';
+    $('statusDetail').textContent = d.loaded ? (d.size/1024).toFixed(0)+' KB — USB active' : 'Upload a disk image to begin';
+    $('btnEject').disabled = !d.loaded;
+    $('infoFw').textContent = d.firmware;
+    $('infoRam').textContent = (d.free_psram/1024).toFixed(0)+' KB';
+    $('infoIp').textContent = d.wifi_ip;
+    $('infoClients').textContent = d.wifi_clients;
+    $('ipAddr').textContent = d.wifi_ip;
+  } catch(e) {}
+}
+
+// File upload
+async function uploadFile(file) {
+  const maxSize = 1474560; // 1.44 MB
+  if (file.size > maxSize) {
+    showMsg('File too large! Max 1.44 MB ('+file.size+' bytes)', true);
+    return;
+  }
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['adf','dsk','img'].includes(ext)) {
+    showMsg('Unsupported format. Use .adf, .dsk, or .img', true);
+    return;
+  }
+
+  $('progress').style.display = 'block';
+  $('progressFill').style.width = '0%';
+  $('progressText').textContent = 'Uploading ' + file.name + '...';
+  $('msg').style.display = 'none';
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/load');
+
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) {
+      const pct = (e.loaded / e.total * 100).toFixed(0);
+      $('progressFill').style.width = pct + '%';
+      $('progressText').textContent = 'Uploading... ' + pct + '%';
+    }
+  };
+
+  xhr.onload = () => {
+    $('progress').style.display = 'none';
+    try {
+      const d = JSON.parse(xhr.responseText);
+      if (d.status === 'ok') {
+        showMsg('Loaded: ' + d.filename + ' (' + (d.size/1024).toFixed(0) + ' KB)', false);
+      } else {
+        showMsg(d.error || 'Upload failed', true);
+      }
+    } catch(e) {
+      showMsg('Upload failed: ' + xhr.statusText, true);
+    }
+    updateStatus();
+  };
+
+  xhr.onerror = () => {
+    $('progress').style.display = 'none';
+    showMsg('Connection error', true);
+  };
+
+  // Send raw binary with filename in header
+  xhr.setRequestHeader('X-Filename', file.name);
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.send(file);
+}
+
+function showMsg(text, isErr) {
+  $('msg').textContent = text;
+  $('msg').className = 'msg ' + (isErr ? 'err' : 'ok');
+}
+
+async function ejectDisk() {
+  try {
+    await fetch('/api/eject', {method:'POST'});
+    showMsg('Disk ejected', false);
+    updateStatus();
+  } catch(e) {
+    showMsg('Eject failed', true);
   }
 }
 
+// Drag & drop
+const dz = $('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.classList.remove('over');
+  if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+});
+$('fileInput').addEventListener('change', e => {
+  if (e.target.files.length) uploadFile(e.target.files[0]);
+  e.target.value = '';
+});
+
+// Init
+updateStatus();
+setInterval(updateStatus, 3000);
+</script>
+</body>
+</html>
+)rawliteral";
+
 // ==========================================================================
-// HEADLESS STUBS — these are called by api_handlers.h / webserver.h
-// In headless mode they do nothing (no display to update)
+// HTTP REQUEST PARSER
 // ==========================================================================
 
-void drawDetailsFromNFO(const String &filename) {
-  // No display — just update internal state for API consistency
-  detail_filename = filename;
+struct HttpRequest {
+  String method, path;
+  int contentLength;
+  String filename;     // from X-Filename header
+  String contentType;
+  String boundary;
+};
+
+bool parseRequest(WiFiClient &client, HttpRequest &req) {
+  req.method = "";
+  req.path = "";
+  req.contentLength = 0;
+  req.filename = "";
+  req.contentType = "";
+  req.boundary = "";
+
+  String line = client.readStringUntil('\n');
+  line.trim();
+  if (line.length() == 0) return false;
+
+  int sp1 = line.indexOf(' ');
+  int sp2 = line.indexOf(' ', sp1 + 1);
+  if (sp1 < 0 || sp2 < 0) return false;
+
+  req.method = line.substring(0, sp1);
+  req.path = line.substring(sp1 + 1, sp2);
+
+  // Read headers
+  while (client.connected()) {
+    String hdr = client.readStringUntil('\n');
+    hdr.trim();
+    if (hdr.length() == 0) break;
+
+    String lower = hdr;
+    lower.toLowerCase();
+
+    if (lower.startsWith("content-length:")) {
+      req.contentLength = hdr.substring(15).toInt();
+    } else if (lower.startsWith("x-filename:")) {
+      req.filename = hdr.substring(11);
+      req.filename.trim();
+    } else if (lower.startsWith("content-type:")) {
+      req.contentType = hdr.substring(13);
+      req.contentType.trim();
+      int bIdx = req.contentType.indexOf("boundary=");
+      if (bIdx >= 0) {
+        req.boundary = req.contentType.substring(bIdx + 9);
+        req.boundary.trim();
+      }
+    }
+  }
+  return true;
 }
 
-void drawList() {
-  // No display
-}
+// ==========================================================================
+// REQUEST HANDLER
+// ==========================================================================
 
-// ==========================================================================
-// WiFi Web Server (include after all game/theme functions are defined)
-// ==========================================================================
-#include "webserver.h"
+WiFiServer httpServer(80);
+
+void handleRequest(WiFiClient &client) {
+  client.setTimeout(5);
+
+  HttpRequest req;
+  if (!parseRequest(client, req)) { client.stop(); return; }
+
+  Serial.println(req.method + " " + req.path);
+
+  // CORS preflight
+  if (req.method == "OPTIONS") {
+    sendResponse(client, 200, "text/plain", "");
+    return;
+  }
+
+  // Serve Web UI
+  if (req.path == "/" || req.path == "/index.html") {
+    String html = String(WEBUI_HTML);
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html");
+    client.println("Content-Length: " + String(html.length()));
+    client.println("Connection: close");
+    client.println();
+
+    // Send in chunks
+    const char *p = html.c_str();
+    size_t len = html.length();
+    size_t sent = 0;
+    while (sent < len) {
+      size_t chunk = min((size_t)1024, len - sent);
+      client.write((const uint8_t *)(p + sent), chunk);
+      sent += chunk;
+      yield();
+    }
+    return;
+  }
+
+  // GET /api/status
+  if (req.path == "/api/status" && req.method == "GET") {
+    String json = "{";
+    json += "\"loaded\":" + String(disk_present ? "true" : "false") + ",";
+    json += "\"filename\":\"" + jsonEscape(loaded_filename) + "\",";
+    json += "\"size\":" + String(loaded_size) + ",";
+    json += "\"firmware\":\"" + String(FW_VERSION) + "\",";
+    json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
+    json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
+    json += "\"wifi_ip\":\"" + wifi_ap_ip + "\",";
+    json += "\"wifi_clients\":" + String(WiFi.softAPgetStationNum());
+    json += "}";
+    sendJSON(client, 200, json);
+    return;
+  }
+
+  // POST /api/load — receive raw binary disk image
+  if (req.path == "/api/load" && req.method == "POST") {
+    if (req.contentLength <= 0) {
+      sendJSON(client, 400, "{\"error\":\"No data\"}");
+      return;
+    }
+    if (req.contentLength > (int)(RAM_DISK_SIZE - DATA_OFFSET)) {
+      // Drain body
+      unsigned long t = millis();
+      while (client.available() && millis() - t < 3000) { client.read(); yield(); }
+      sendJSON(client, 413, "{\"error\":\"File too large. Max 1.44 MB.\"}");
+      return;
+    }
+
+    String filename = req.filename;
+    if (filename.length() == 0) filename = "DISK.ADF";
+
+    Serial.println("Receiving: " + filename + " (" + String(req.contentLength) + " bytes)");
+    ledBlink(1, 50);
+
+    // Read directly into PSRAM data area
+    int toRead = req.contentLength;
+    int pos = 0;
+    unsigned long timeout = millis();
+
+    while (pos < toRead && millis() - timeout < 30000) {
+      if (client.available()) {
+        int n = client.read(&ram_disk[DATA_OFFSET + pos], toRead - pos);
+        if (n > 0) { pos += n; timeout = millis(); }
+      } else {
+        yield();
+        delay(1);
+      }
+    }
+
+    if (pos < toRead) {
+      sendJSON(client, 500, "{\"error\":\"Incomplete upload: " + String(pos) + "/" + String(toRead) + "\"}");
+      return;
+    }
+
+    // Build FAT structure and activate USB
+    loadDisk(filename, pos);
+
+    sendJSON(client, 200,
+      "{\"status\":\"ok\",\"filename\":\"" + jsonEscape(filename) +
+      "\",\"size\":" + String(pos) + "}");
+    return;
+  }
+
+  // POST /api/eject
+  if (req.path == "/api/eject" && req.method == "POST") {
+    ejectDisk();
+    sendJSON(client, 200, "{\"status\":\"ok\"}");
+    return;
+  }
+
+  // 404
+  sendJSON(client, 404, "{\"error\":\"Not found\"}");
+}
 
 // ==========================================================================
 // SETUP
@@ -924,90 +681,68 @@ void drawList() {
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("Gotek WiFi Dongle starting...");
+  Serial.println("=== Gotek WiFi Dongle ===");
   Serial.println("Firmware: " + String(FW_VERSION));
 
-  // Status LED
-  ledInit();
+  // LED
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
   ledBlink(1, 200);
 
-  // SD card
-  init_sd_card();
-  Serial.println("SD card initialized");
-
-  // Config
-  loadConfig();
-  scanThemes();
-
-  if (cfg_lastmode == "DSK") {
-    g_mode = MODE_DSK;
-  } else {
-    g_mode = MODE_ADF;
-  }
-
-  // Scan games
-  file_list = listImages();
-  buildDisplayNames(file_list);
-  sortByDisplay();
-  buildGameList();
-  Serial.println("Found " + String(file_list.size()) + " images (" + String(game_list.size()) + " games)");
-
-  // RAM disk
+  // Allocate RAM disk in PSRAM
   ram_disk = (uint8_t *)ps_malloc(RAM_DISK_SIZE);
   if (!ram_disk) {
-    Serial.println("FATAL: RAM disk allocation failed!");
+    Serial.println("FATAL: PSRAM allocation failed!");
     while (1) { ledBlink(5, 200); delay(1000); }
   }
+  build_empty_volume();
+  Serial.println("RAM disk: " + String(RAM_DISK_SIZE / 1024) + " KB allocated in PSRAM");
 
-  build_volume_with_file();
-  Serial.println("RAM disk initialized");
+  // WiFi Access Point
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
+  delay(200);
+  wifi_ap_ip = WiFi.softAPIP().toString();
+  wifi_ap_active = true;
+  Serial.println("WiFi AP: " + cfg_wifi_ssid + " @ " + wifi_ap_ip);
 
-  // Auto-load last file
-  bool autoloaded = false;
-  if (cfg_lastfile.length() > 0) {
-    for (int i = 0; i < (int)file_list.size(); i++) {
-      if (file_list[i] == cfg_lastfile) {
-        selected_index = i;
-        break;
-      }
-    }
-    size_t loaded = loadFileToRam(selected_index);
-    autoloaded = (loaded > 0);
-    if (autoloaded) {
-      loaded_disk_index = selected_index;
-      game_selected = findGameIndex(selected_index);
-    }
-    Serial.println("Auto-loaded: " + file_list[selected_index] + " (" + String(loaded) + " bytes)");
-  }
+  // HTTP server
+  httpServer.begin();
+  Serial.println("Web server on port 80");
 
-  // WiFi
-  if (cfg_wifi_enabled) {
-    if (initWiFiAP()) {
-      startWebServer();
-      Serial.println("Web server ready at http://" + wifi_ap_ip);
-    }
-  }
-
-  // USB MSC
+  // USB Mass Storage
   msc.vendorID("Gotek");
   msc.productID("Disk");
   msc.productRevision("1.0");
   msc.onRead(onRead);
   msc.onWrite(onWrite);
-  msc.mediaPresent(autoloaded);
+  msc.mediaPresent(false);  // no disk until uploaded
   msc.begin(msc_block_count, 512);
   USB.begin();
-  Serial.println("USB MSC initialized");
+  Serial.println("USB MSC ready (no disk)");
 
   ledBlink(3, 100);
-  Serial.println("Setup complete! Connect to WiFi '" + cfg_wifi_ssid + "' to manage games.");
+  Serial.println("\nReady! Connect to '" + cfg_wifi_ssid + "' → http://" + wifi_ap_ip);
 }
 
 // ==========================================================================
-// LOOP — headless, just handle web requests
+// LOOP
 // ==========================================================================
 
 void loop() {
-  handleWebServer();
-  delay(10);
+  WiFiClient client = httpServer.available();
+  if (client) {
+    unsigned long start = millis();
+    while (client.connected() && !client.available()) {
+      if (millis() - start > 2000) { client.stop(); return; }
+      yield();
+      delay(1);
+    }
+    if (client.available()) {
+      handleRequest(client);
+    }
+    delay(1);
+    client.stop();
+  }
+  delay(5);
 }
