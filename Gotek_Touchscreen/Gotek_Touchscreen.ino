@@ -884,6 +884,8 @@ bool touchRead(uint16_t *x, uint16_t *y) {
   if (buf[1] == 0) return false;
   uint16_t raw_x = ((buf[2] & 0x0F) << 8) | buf[3];
   uint16_t raw_y = ((buf[4] & 0x0F) << 8) | buf[5];
+  // Validate: physical screen is 320x480, reject garbage data
+  if (raw_x >= LCD_WIDTH || raw_y >= LCD_HEIGHT) return false;
   // Rotate touch: physical portrait → virtual landscape
   *x = (LCD_HEIGHT - 1) - raw_y;
   *y = raw_x;
@@ -2721,8 +2723,6 @@ void setup() {
 
   drawBootProgress("Starting USB...", 90);
 
-  // TEMPORARILY DISABLED for touch debug — USB MSC takes over serial
-  #if 0
   msc.vendorID("Gotek");
   msc.productID("Disk");
   msc.productRevision("1.0");
@@ -2731,8 +2731,7 @@ void setup() {
   msc.mediaPresent(autoloaded);
   msc.begin(msc_block_count, 512);
   USB.begin();
-  #endif
-  Serial.println("USB MSC SKIPPED (debug mode)");
+  Serial.println("USB MSC initialized");
 
   drawBootProgress("Ready!", 100);
   delay(300);
@@ -2809,15 +2808,6 @@ void loop() {
   uint16_t px = 0, py = 0;
   bool haveTouch = touchRead(&px, &py);
 
-  // DEBUG: print touch data every 500ms
-  static unsigned long lastDebug = 0;
-  if (millis() - lastDebug > 500) {
-    lastDebug = millis();
-    if (haveTouch) {
-      Serial.printf("TOUCH: x=%d y=%d active=%d busy=%d\n", px, py, touch_active, ui_busy);
-    }
-  }
-
   if (ui_busy) {
     delay(10);
     return;
@@ -2838,10 +2828,6 @@ void loop() {
     // Touch UP — determine if it was a tap or swipe
     touch_active = false;
     unsigned long now = millis();
-
-    Serial.printf("RELEASE: start=(%d,%d) last=(%d,%d) dt=%lu\n",
-      touch_start_x, touch_start_y, touch_last_x, touch_last_y,
-      now - last_touch_time);
 
     // Debounce: ignore very quick phantom touches
     if (now - last_touch_time < 200) {
@@ -2896,7 +2882,6 @@ void handleSwipe(int16_t dx, int16_t dy, uint16_t startX, uint16_t startY) {
 // Handle tap gestures
 // ============================================================================
 void handleTap(uint16_t px, uint16_t py) {
-  Serial.printf("TAP: x=%d y=%d screen=%d\n", px, py, current_screen);
 
   // ══════════════════════════════════════
   // SELECTION SCREEN
