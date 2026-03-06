@@ -370,6 +370,11 @@ String cfg_wifi_ssid    = "Gotek-Setup";
 String cfg_wifi_pass    = "retrogaming";
 uint8_t cfg_wifi_channel = 6;
 
+// WiFi AP state (defined here so drawInfoScreen can use them before webserver.h)
+bool wifi_ap_active = false;
+String wifi_ap_ip = "";
+bool isWiFiActive() { return wifi_ap_active; }
+
 // Theme system
 String theme_path = "/THEMES/DEFAULT";  // resolved path to active theme
 vector<String> theme_list;              // available theme names
@@ -2804,6 +2809,9 @@ void waitForRelease(unsigned long timeout_ms = 2000) {
 #define SWIPE_THRESHOLD 30
 
 void loop() {
+  // Process incoming HTTP requests (non-blocking)
+  handleWebServer();
+
   uint16_t px = 0, py = 0;
   bool haveTouch = touchRead(&px, &py);
 

@@ -3,21 +3,19 @@
 
 /*
   Gotek Touchscreen — REST API Handlers
-
-  All endpoints return JSON responses.
-  File uploads use multipart/form-data streaming.
+  Uses built-in ESP32 WebServer (no external dependencies).
+  All endpoints return JSON. File uploads use multipart/form-data.
 */
 
 // Upload tracking
 static File uploadFile;
 static size_t upload_bytes_received = 0;
-static size_t upload_total_bytes = 0;
 static String upload_target_path = "";
 static String upload_game_name = "";
 static bool upload_in_progress = false;
 
 // ============================================================================
-// Helper: JSON string escape
+// Helpers
 // ============================================================================
 
 String jsonEscape(const String &s) {
@@ -70,7 +68,6 @@ size_t getFileSize(const String &path) {
   return sz;
 }
 
-// Helper: rescan games after changes
 void refreshGameList() {
   file_list = listImages();
   buildDisplayNames(file_list);
@@ -82,7 +79,7 @@ void refreshGameList() {
 // GET /api/system/info
 // ============================================================================
 
-void handleSystemInfo(AsyncWebServerRequest *request) {
+void handleSystemInfo() {
   uint32_t freeHeap = ESP.getFreeHeap();
   uint32_t freePsram = ESP.getFreePsram();
   uint64_t sdTotal = SD_MMC.totalBytes();
@@ -109,14 +106,14 @@ void handleSystemInfo(AsyncWebServerRequest *request) {
   json += "\"wifi_clients\":" + String(WiFi.softAPgetStationNum());
   json += "}";
 
-  request->send(200, "application/json", json);
+  sendJSON(200, json);
 }
 
 // ============================================================================
 // GET /api/config
 // ============================================================================
 
-void handleConfigGet(AsyncWebServerRequest *request) {
+void handleConfigGet() {
   String json = "{";
   json += "\"DISPLAY\":\"" + jsonEscape(cfg_display) + "\",";
   json += "\"LASTFILE\":\"" + jsonEscape(cfg_lastfile) + "\",";
@@ -128,40 +125,40 @@ void handleConfigGet(AsyncWebServerRequest *request) {
   json += "\"WIFI_CHANNEL\":\"" + String(cfg_wifi_channel) + "\"";
   json += "}";
 
-  request->send(200, "application/json", json);
+  sendJSON(200, json);
 }
 
 // ============================================================================
-// POST /api/config (form-encoded)
+// POST /api/config
 // ============================================================================
 
-void handleConfigPost(AsyncWebServerRequest *request) {
-  if (request->hasParam("DISPLAY", true)) cfg_display = request->getParam("DISPLAY", true)->value();
-  if (request->hasParam("THEME", true)) {
-    cfg_theme = request->getParam("THEME", true)->value();
+void handleConfigPost() {
+  if (httpServer.hasArg("DISPLAY")) cfg_display = httpServer.arg("DISPLAY");
+  if (httpServer.hasArg("THEME")) {
+    cfg_theme = httpServer.arg("THEME");
     theme_path = "/THEMES/" + cfg_theme;
   }
-  if (request->hasParam("LASTMODE", true)) cfg_lastmode = request->getParam("LASTMODE", true)->value();
-  if (request->hasParam("WIFI_ENABLED", true)) {
-    String v = request->getParam("WIFI_ENABLED", true)->value();
+  if (httpServer.hasArg("LASTMODE")) cfg_lastmode = httpServer.arg("LASTMODE");
+  if (httpServer.hasArg("WIFI_ENABLED")) {
+    String v = httpServer.arg("WIFI_ENABLED");
     cfg_wifi_enabled = (v == "1" || v == "true");
   }
-  if (request->hasParam("WIFI_SSID", true)) cfg_wifi_ssid = request->getParam("WIFI_SSID", true)->value();
-  if (request->hasParam("WIFI_PASS", true)) cfg_wifi_pass = request->getParam("WIFI_PASS", true)->value();
-  if (request->hasParam("WIFI_CHANNEL", true)) {
-    cfg_wifi_channel = (uint8_t)request->getParam("WIFI_CHANNEL", true)->value().toInt();
+  if (httpServer.hasArg("WIFI_SSID")) cfg_wifi_ssid = httpServer.arg("WIFI_SSID");
+  if (httpServer.hasArg("WIFI_PASS")) cfg_wifi_pass = httpServer.arg("WIFI_PASS");
+  if (httpServer.hasArg("WIFI_CHANNEL")) {
+    cfg_wifi_channel = (uint8_t)httpServer.arg("WIFI_CHANNEL").toInt();
     if (cfg_wifi_channel < 1 || cfg_wifi_channel > 13) cfg_wifi_channel = 6;
   }
 
   saveConfig();
-  request->send(200, "application/json", "{\"status\":\"ok\"}");
+  sendJSON(200, "{\"status\":\"ok\"}");
 }
 
 // ============================================================================
 // GET /api/games/list
 // ============================================================================
 
-void handleGamesList(AsyncWebServerRequest *request) {
+void handleGamesList() {
   String json = "{\"mode\":\"" + String(g_mode == MODE_ADF ? "ADF" : "DSK") + "\",\"games\":[";
 
   for (int i = 0; i < (int)game_list.size(); i++) {
@@ -186,20 +183,20 @@ void handleGamesList(AsyncWebServerRequest *request) {
   }
 
   json += "]}";
-  request->send(200, "application/json", json);
+  sendJSON(200, json);
 }
 
 // ============================================================================
-// GET /api/games/{mode}/{name} — game detail
+// GET /api/games/{mode}/{name} — game detail (called from onNotFound router)
 // ============================================================================
 
-void handleGameDetailParsed(AsyncWebServerRequest *request, const String &mode, const String &name) {
+void handleGameDetailParsed(const String &mode, const String &name) {
   int found = -1;
   for (int i = 0; i < (int)game_list.size(); i++) {
     if (game_list[i].name == name) { found = i; break; }
   }
   if (found < 0) {
-    request->send(404, "application/json", "{\"error\":\"Game not found\"}");
+    sendJSON(404, "{\"error\":\"Game not found\"}");
     return;
   }
 
@@ -208,7 +205,6 @@ void handleGameDetailParsed(AsyncWebServerRequest *request, const String &mode, 
   int sl = dir.lastIndexOf('/');
   if (sl > 0) dir = dir.substring(0, sl);
 
-  // NFO
   String nfoContent = "";
   String nfoPath = dir + "/" + g.name + ".nfo";
   if (SD_MMC.exists(nfoPath.c_str())) nfoContent = readFileString(nfoPath);
@@ -242,29 +238,28 @@ void handleGameDetailParsed(AsyncWebServerRequest *request, const String &mode, 
   json += "\"nfo\":\"" + jsonEscape(nfoContent) + "\"";
   json += "}";
 
-  request->send(200, "application/json", json);
+  sendJSON(200, json);
 }
 
 // ============================================================================
 // DELETE /api/games/{mode}/{name}
 // ============================================================================
 
-void handleGameDeleteParsed(AsyncWebServerRequest *request, const String &mode, const String &name) {
+void handleGameDeleteParsed(const String &mode, const String &name) {
   String modeDir = (mode == "adf") ? "/ADF" : "/DSK";
   String gamePath = modeDir + "/" + name;
 
   if (!SD_MMC.exists(gamePath.c_str())) {
-    request->send(404, "application/json", "{\"error\":\"Game folder not found\"}");
+    sendJSON(404, "{\"error\":\"Game folder not found\"}");
     return;
   }
 
   bool ok = deleteDir(SD_MMC, gamePath);
   if (ok) {
     refreshGameList();
-    request->send(200, "application/json",
-      "{\"status\":\"deleted\",\"games\":" + String(game_list.size()) + "}");
+    sendJSON(200, "{\"status\":\"deleted\",\"games\":" + String(game_list.size()) + "}");
   } else {
-    request->send(500, "application/json", "{\"error\":\"Failed to delete\"}");
+    sendJSON(500, "{\"error\":\"Failed to delete\"}");
   }
 }
 
@@ -272,55 +267,67 @@ void handleGameDeleteParsed(AsyncWebServerRequest *request, const String &mode, 
 // POST /api/games/{mode}/{name}/nfo
 // ============================================================================
 
-void handleNFOUpdateParsed(AsyncWebServerRequest *request, const String &mode, const String &name) {
+void handleNFOUpdateParsed(const String &mode, const String &name) {
   String modeDir = (mode == "adf") ? "/ADF" : "/DSK";
   String nfoPath = modeDir + "/" + name + "/" + name + ".nfo";
 
   String content = "";
-  if (request->hasParam("content", true)) {
-    content = request->getParam("content", true)->value();
+  if (httpServer.hasArg("content")) {
+    content = httpServer.arg("content");
   }
 
   File f = SD_MMC.open(nfoPath.c_str(), "w");
   if (!f) {
-    request->send(500, "application/json", "{\"error\":\"Cannot write NFO\"}");
+    sendJSON(500, "{\"error\":\"Cannot write NFO\"}");
     return;
   }
   f.print(content);
   f.close();
 
-  request->send(200, "application/json", "{\"status\":\"ok\"}");
+  sendJSON(200, "{\"status\":\"ok\"}");
 }
 
 // ============================================================================
 // GET /api/games/{mode}/{name}/cover — serve cover image
 // ============================================================================
 
-void handleCoverServe(AsyncWebServerRequest *request, const String &mode, const String &name) {
+void handleCoverServe(const String &mode, const String &name) {
   for (int i = 0; i < (int)game_list.size(); i++) {
     if (game_list[i].name == name && game_list[i].jpg_path.length() > 0) {
       String path = game_list[i].jpg_path;
+      File coverFile = SD_MMC.open(path.c_str(), "r");
+      if (!coverFile) {
+        sendJSON(404, "{\"error\":\"Cover file not readable\"}");
+        return;
+      }
+
       String contentType = "image/jpeg";
       if (path.endsWith(".png")) contentType = "image/png";
-      request->send(SD_MMC, path.c_str(), contentType.c_str());
+
+      size_t fileSize = coverFile.size();
+      sendCORS();
+      httpServer.sendHeader("Cache-Control", "max-age=3600");
+      httpServer.streamFile(coverFile, contentType);
+      coverFile.close();
       return;
     }
   }
-  request->send(404, "application/json", "{\"error\":\"No cover found\"}");
+  sendJSON(404, "{\"error\":\"No cover found\"}");
 }
 
 // ============================================================================
 // POST /api/games/upload — multipart file upload
 // ============================================================================
 
-void handleFileUpload(AsyncWebServerRequest *request, const String &filename,
-                      size_t index, uint8_t *data, size_t len, bool final) {
-  if (index == 0) {
+void handleFileUpload() {
+  HTTPUpload &upload = httpServer.upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
     upload_in_progress = true;
     upload_bytes_received = 0;
 
     // Derive game folder name from filename
-    upload_game_name = filename;
+    upload_game_name = upload.filename;
     int dotPos = upload_game_name.lastIndexOf('.');
     if (dotPos > 0) upload_game_name = upload_game_name.substring(0, dotPos);
 
@@ -336,9 +343,9 @@ void handleFileUpload(AsyncWebServerRequest *request, const String &filename,
       if (allDigits && suffix.length() > 0) folderName = folderName.substring(0, dashPos);
     }
 
-    // Explicit game_name from form
-    if (request->hasParam("game_name", true)) {
-      folderName = request->getParam("game_name", true)->value();
+    // Check form param for explicit game name
+    if (httpServer.hasArg("game_name")) {
+      folderName = httpServer.arg("game_name");
     }
 
     String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
@@ -346,7 +353,7 @@ void handleFileUpload(AsyncWebServerRequest *request, const String &filename,
 
     if (!SD_MMC.exists(gameDir.c_str())) SD_MMC.mkdir(gameDir.c_str());
 
-    upload_target_path = gameDir + "/" + filename;
+    upload_target_path = gameDir + "/" + upload.filename;
     upload_game_name = folderName;
 
     Serial.println("Upload start: " + upload_target_path);
@@ -354,68 +361,67 @@ void handleFileUpload(AsyncWebServerRequest *request, const String &filename,
     if (!uploadFile) {
       Serial.println("ERROR: Cannot create upload file");
       upload_in_progress = false;
-      return;
     }
   }
-
-  if (uploadFile && len > 0) {
-    uploadFile.write(data, len);
-    upload_bytes_received += len;
+  else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (uploadFile) {
+      uploadFile.write(upload.buf, upload.currentSize);
+      upload_bytes_received += upload.currentSize;
+    }
   }
-
-  if (final) {
+  else if (upload.status == UPLOAD_FILE_END) {
     if (uploadFile) uploadFile.close();
     Serial.println("Upload complete: " + upload_target_path + " (" + String(upload_bytes_received) + " bytes)");
     upload_in_progress = false;
   }
 }
 
-void handleUploadComplete(AsyncWebServerRequest *request) {
+void handleUploadComplete() {
   refreshGameList();
   String json = "{\"status\":\"ok\",\"game\":\"" + jsonEscape(upload_game_name) + "\",";
   json += "\"bytes\":" + String(upload_bytes_received) + ",";
   json += "\"games\":" + String(game_list.size()) + "}";
-  request->send(200, "application/json", json);
+  sendJSON(200, json);
 }
 
 // ============================================================================
 // GET /api/upload/progress
 // ============================================================================
 
-void handleUploadProgress(AsyncWebServerRequest *request) {
+void handleUploadProgress() {
   String json = "{";
   json += "\"in_progress\":" + String(upload_in_progress ? "true" : "false") + ",";
   json += "\"bytes_received\":" + String(upload_bytes_received) + ",";
   json += "\"game\":\"" + jsonEscape(upload_game_name) + "\"";
   json += "}";
-  request->send(200, "application/json", json);
+  sendJSON(200, json);
 }
 
 // ============================================================================
 // GET /api/themes/list
 // ============================================================================
 
-void handleThemesList(AsyncWebServerRequest *request) {
+void handleThemesList() {
   String json = "{\"active\":\"" + jsonEscape(cfg_theme) + "\",\"themes\":[";
   for (int i = 0; i < (int)theme_list.size(); i++) {
     if (i > 0) json += ",";
     json += "\"" + jsonEscape(theme_list[i]) + "\"";
   }
   json += "]}";
-  request->send(200, "application/json", json);
+  sendJSON(200, json);
 }
 
 // ============================================================================
 // POST /api/themes/{name}/activate
 // ============================================================================
 
-void handleThemeActivateParsed(AsyncWebServerRequest *request, const String &name) {
+void handleThemeActivateParsed(const String &name) {
   bool found = false;
   for (const auto &t : theme_list) {
     if (t == name) { found = true; break; }
   }
   if (!found) {
-    request->send(404, "application/json", "{\"error\":\"Theme not found\"}");
+    sendJSON(404, "{\"error\":\"Theme not found\"}");
     return;
   }
 
@@ -423,7 +429,7 @@ void handleThemeActivateParsed(AsyncWebServerRequest *request, const String &nam
   theme_path = "/THEMES/" + cfg_theme;
   saveConfig();
 
-  request->send(200, "application/json", "{\"status\":\"ok\",\"theme\":\"" + jsonEscape(name) + "\"}");
+  sendJSON(200, "{\"status\":\"ok\",\"theme\":\"" + jsonEscape(name) + "\"}");
 }
 
 #endif // API_HANDLERS_H

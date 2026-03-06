@@ -96,7 +96,7 @@ The `sdcard_example/` folder in this repository contains a ready-to-use SD card 
 
 - [Arduino IDE](https://www.arduino.cc/en/software) 2.x or later
 - ESP32 board support package (via Board Manager)
-- Required libraries: `JPEGDEC`, `PNGdec`, `ESPAsyncWebServer`, `AsyncTCP` (via Library Manager)
+- Required libraries: `JPEGDEC`, `PNGdec` (via Library Manager). WiFi and WebServer are built-in.
 
 ### Arduino IDE Settings
 

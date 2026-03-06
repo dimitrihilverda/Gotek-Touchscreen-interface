@@ -5,14 +5,14 @@
   Gotek Touchscreen — WiFi Access Point Web Server
 
   Creates a WiFi AP for browser-based configuration and game management.
-  Uses ESPAsyncWebServer for non-blocking request handling.
+  Uses the built-in ESP32 WebServer (no external libraries needed).
 
   Default AP: SSID "Gotek-Setup", password "retrogaming", channel 6
   Web UI served from PROGMEM at http://192.168.4.1/
 */
 
 #include <WiFi.h>
-#include <ESPAsyncWebServer.h>
+#include <WebServer.h>
 #include <SD_MMC.h>
 #include <FS.h>
 
@@ -42,20 +42,26 @@ extern String filenameOnly(const String &path);
 extern String basenameNoExt(const String &path);
 
 // ============================================================================
-// WiFi AP State (declared before includes so api_handlers.h can access them)
+// WiFi AP State (wifi_ap_active and wifi_ap_ip defined in main .ino)
 // ============================================================================
 
-AsyncWebServer webServer(80);
-bool wifi_ap_active = false;
-String wifi_ap_ip = "";
+WebServer httpServer(80);
+extern bool wifi_ap_active;
+extern String wifi_ap_ip;
 
-// Include the API handlers and embedded web UI
+// Include the embedded web UI and API handlers
 #include "webui.h"
 #include "api_handlers.h"
 
 // ============================================================================
 // WiFi AP Management
 // ============================================================================
+
+// isWiFiActive() is defined in main .ino (needed before this header is included)
+
+String getAPIP() {
+  return wifi_ap_ip;
+}
 
 bool initWiFiAP() {
   if (!cfg_wifi_enabled) return false;
@@ -81,97 +87,58 @@ void stopWiFiAP() {
   Serial.println("WiFi AP stopped");
 }
 
-bool isWiFiActive() {
-  return wifi_ap_active;
+// ============================================================================
+// CORS helper
+// ============================================================================
+
+void sendCORS() {
+  httpServer.sendHeader("Access-Control-Allow-Origin", "*");
+  httpServer.sendHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+  httpServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-String getAPIP() {
-  return wifi_ap_ip;
+void sendJSON(int code, const String &json) {
+  sendCORS();
+  httpServer.send(code, "application/json", json);
 }
 
 // ============================================================================
-// URL Router — parse dynamic segments from URL path
+// URL path parser — extract segments from request URI
 // ============================================================================
-// Handles: /api/games/{mode}/{name}, /api/games/{mode}/{name}/nfo, etc.
-// Called from onNotFound for routes that need dynamic path segments.
 
-void routeRequest(AsyncWebServerRequest *request) {
-  String url = request->url();
-  WebRequestMethodComposite method = request->method();
+// Parse: /api/games/{mode}/{name}[/{action}]
+// Returns true if matched, fills mode/name/action
+bool parseGamePath(const String &uri, String &mode, String &name, String &action) {
+  if (!uri.startsWith("/api/games/")) return false;
+  String rest = uri.substring(11);  // after "/api/games/"
 
-  // ── /api/games/{mode}/{name}/cover ──
-  if (url.startsWith("/api/games/") && url.endsWith("/cover")) {
-    String rest = url.substring(11);  // after "/api/games/"
-    rest = rest.substring(0, rest.length() - 6);  // remove "/cover"
-    int slash = rest.indexOf('/');
-    if (slash > 0) {
-      String mode = rest.substring(0, slash);
-      String name = rest.substring(slash + 1);
-      // URL decode the name
-      name.replace("%20", " ");
+  int s1 = rest.indexOf('/');
+  if (s1 < 0) return false;
 
-      if (method == HTTP_GET) {
-        handleCoverServe(request, mode, name);
-        return;
-      }
-    }
+  mode = rest.substring(0, s1);
+  if (mode != "adf" && mode != "dsk") return false;
+
+  String remainder = rest.substring(s1 + 1);
+  int s2 = remainder.indexOf('/');
+  if (s2 >= 0) {
+    name = remainder.substring(0, s2);
+    action = remainder.substring(s2 + 1);
+  } else {
+    name = remainder;
+    action = "";
   }
 
-  // ── /api/games/{mode}/{name}/nfo ──
-  if (url.startsWith("/api/games/") && url.endsWith("/nfo")) {
-    String rest = url.substring(11);
-    rest = rest.substring(0, rest.length() - 4);  // remove "/nfo"
-    int slash = rest.indexOf('/');
-    if (slash > 0 && method == HTTP_POST) {
-      String mode = rest.substring(0, slash);
-      String name = rest.substring(slash + 1);
-      name.replace("%20", " ");
-      handleNFOUpdateParsed(request, mode, name);
-      return;
-    }
-  }
+  // URL decode spaces
+  name.replace("%20", " ");
+  return name.length() > 0;
+}
 
-  // ── /api/games/{mode}/{name} (detail or delete) ──
-  if (url.startsWith("/api/games/") && !url.endsWith("/list") && !url.endsWith("/upload")) {
-    String rest = url.substring(11);  // after "/api/games/"
-    int slash = rest.indexOf('/');
-    if (slash > 0) {
-      String mode = rest.substring(0, slash);
-      String name = rest.substring(slash + 1);
-      name.replace("%20", " ");
-
-      if ((mode == "adf" || mode == "dsk") && name.length() > 0) {
-        // Don't match sub-paths like /nfo, /cover (already handled above)
-        if (name.indexOf('/') < 0) {
-          if (method == HTTP_GET) { handleGameDetailParsed(request, mode, name); return; }
-          if (method == HTTP_DELETE) { handleGameDeleteParsed(request, mode, name); return; }
-        }
-      }
-    }
-  }
-
-  // ── /api/themes/{name}/activate ──
-  if (url.startsWith("/api/themes/") && url.endsWith("/activate")) {
-    String name = url.substring(12);  // after "/api/themes/"
-    name = name.substring(0, name.length() - 9);  // remove "/activate"
-    name.replace("%20", " ");
-    if (method == HTTP_POST && name.length() > 0) {
-      handleThemeActivateParsed(request, name);
-      return;
-    }
-  }
-
-  // ── CORS preflight for dynamic routes ──
-  if (method == HTTP_OPTIONS) {
-    AsyncWebServerResponse *response = request->beginResponse(200);
-    response->addHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-    response->addHeader("Access-Control-Allow-Headers", "Content-Type");
-    request->send(response);
-    return;
-  }
-
-  // ── Not found ──
-  request->send(404, "application/json", "{\"error\":\"Not found\"}");
+// Parse: /api/themes/{name}/activate
+bool parseThemeActivate(const String &uri, String &name) {
+  if (!uri.startsWith("/api/themes/") || !uri.endsWith("/activate")) return false;
+  name = uri.substring(12, uri.length() - 9);
+  name.replace("%20", " ");
+  return name.length() > 0;
 }
 
 // ============================================================================
@@ -179,61 +146,78 @@ void routeRequest(AsyncWebServerRequest *request) {
 // ============================================================================
 
 void registerWebRoutes() {
-  // CORS headers on all responses
-  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
 
-  // Serve the SPA (gzipped HTML from PROGMEM)
-  webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    AsyncWebServerResponse *response = request->beginResponse_P(
-      200, "text/html", webui_html_gz, webui_html_gz_len
-    );
-    response->addHeader("Content-Encoding", "gzip");
-    response->addHeader("Cache-Control", "max-age=86400");
-    request->send(response);
+  // ── Serve the SPA (gzipped HTML from PROGMEM) ──
+  httpServer.on("/", HTTP_GET, []() {
+    httpServer.sendHeader("Content-Encoding", "gzip");
+    httpServer.sendHeader("Cache-Control", "max-age=86400");
+    httpServer.send_P(200, "text/html", (const char *)webui_html_gz, webui_html_gz_len);
   });
 
   // ── System Info ──
-  webServer.on("/api/system/info", HTTP_GET, handleSystemInfo);
+  httpServer.on("/api/system/info", HTTP_GET, handleSystemInfo);
 
   // ── Config ──
-  webServer.on("/api/config", HTTP_GET, handleConfigGet);
-  webServer.on("/api/config", HTTP_POST, handleConfigPost);
+  httpServer.on("/api/config", HTTP_GET, handleConfigGet);
+  httpServer.on("/api/config", HTTP_POST, handleConfigPost);
 
-  // ── Games ──
-  webServer.on("/api/games/list", HTTP_GET, handleGamesList);
+  // ── Games List ──
+  httpServer.on("/api/games/list", HTTP_GET, handleGamesList);
 
-  // File upload (multipart) — special handler with onUpload callback
-  webServer.on("/api/games/upload", HTTP_POST,
-    [](AsyncWebServerRequest *request) { handleUploadComplete(request); },
-    handleFileUpload
-  );
+  // ── File Upload (multipart) ──
+  httpServer.on("/api/games/upload", HTTP_POST, handleUploadComplete, handleFileUpload);
 
-  // Upload progress
-  webServer.on("/api/upload/progress", HTTP_GET, handleUploadProgress);
+  // ── Upload Progress ──
+  httpServer.on("/api/upload/progress", HTTP_GET, handleUploadProgress);
 
-  // ── Themes ──
-  webServer.on("/api/themes/list", HTTP_GET, handleThemesList);
+  // ── Themes List ──
+  httpServer.on("/api/themes/list", HTTP_GET, handleThemesList);
 
   // ── Rescan SD ──
-  webServer.on("/api/rescan", HTTP_POST, [](AsyncWebServerRequest *request) {
+  httpServer.on("/api/rescan", HTTP_POST, []() {
     file_list = listImages();
     buildDisplayNames(file_list);
     sortByDisplay();
     buildGameList();
-    request->send(200, "application/json",
-      "{\"status\":\"ok\",\"games\":" + String(game_list.size()) + "}");
+    sendJSON(200, "{\"status\":\"ok\",\"games\":" + String(game_list.size()) + "}");
   });
 
-  // CORS preflight
-  webServer.on("/api/*", HTTP_OPTIONS, [](AsyncWebServerRequest *request) {
-    AsyncWebServerResponse *response = request->beginResponse(200);
-    response->addHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-    response->addHeader("Access-Control-Allow-Headers", "Content-Type");
-    request->send(response);
-  });
+  // ── Dynamic routes (game detail/delete/nfo/cover, theme activate) ──
+  httpServer.onNotFound([]() {
+    // Handle CORS preflight for all routes
+    if (httpServer.method() == HTTP_OPTIONS) {
+      sendCORS();
+      httpServer.send(200);
+      return;
+    }
 
-  // Dynamic routes (game detail, delete, nfo, cover, theme activate)
-  webServer.onNotFound(routeRequest);
+    String uri = httpServer.uri();
+    String mode, name, action;
+
+    // ── /api/themes/{name}/activate ──
+    if (parseThemeActivate(uri, name)) {
+      if (httpServer.method() == HTTP_POST) {
+        handleThemeActivateParsed(name);
+        return;
+      }
+    }
+
+    // ── /api/games/{mode}/{name}[/{action}] ──
+    if (parseGamePath(uri, mode, name, action)) {
+      if (action == "cover") {
+        if (httpServer.method() == HTTP_GET) { handleCoverServe(mode, name); return; }
+      }
+      else if (action == "nfo") {
+        if (httpServer.method() == HTTP_POST) { handleNFOUpdateParsed(mode, name); return; }
+      }
+      else if (action == "") {
+        if (httpServer.method() == HTTP_GET) { handleGameDetailParsed(mode, name); return; }
+        if (httpServer.method() == HTTP_DELETE) { handleGameDeleteParsed(mode, name); return; }
+      }
+    }
+
+    sendJSON(404, "{\"error\":\"Not found\"}");
+  });
 }
 
 // ============================================================================
@@ -242,13 +226,20 @@ void registerWebRoutes() {
 
 void startWebServer() {
   registerWebRoutes();
-  webServer.begin();
+  httpServer.begin();
   Serial.println("Web server started on port 80");
 }
 
 void stopWebServer() {
-  webServer.end();
+  httpServer.stop();
   Serial.println("Web server stopped");
+}
+
+// Call this from loop() to process incoming HTTP requests
+void handleWebServer() {
+  if (wifi_ap_active) {
+    httpServer.handleClient();
+  }
 }
 
 #endif // WEBSERVER_H
