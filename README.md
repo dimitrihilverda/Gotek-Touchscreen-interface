@@ -2,6 +2,19 @@
 
 A touchscreen-driven disk image browser for retro computing. Load Amiga ADF and ZX Spectrum/Amstrad CPC DSK files from an SD card onto a USB-presentable RAM drive — with cover art, game info, multi-disk support, and themeable UI.
 
+## Project Variants
+
+This repository contains two firmware variants built from a shared codebase:
+
+| Variant | Description | Branch | Folder |
+|---------|-------------|--------|--------|
+| **Touchscreen** | Standalone touchscreen display with WiFi web UI | `main` | `Gotek_Touchscreen/` |
+| **WiFi Dongle** | Headless USB stick — phone/laptop only control via WiFi | `wifi-dongle` | `Gotek_WiFi_Dongle/` |
+
+The **Touchscreen** version is a standalone unit with a 2.8"–3.5" display that connects to your Gotek via USB. It can also serve as a **wireless remote** for the WiFi Dongle.
+
+The **WiFi Dongle** is a tiny ESP32-S3 board (Seeed XIAO, 21×17.5mm) that plugs directly into a Gotek's USB port. No display needed — browse and load games from your phone. See the [WiFi Dongle README](Gotek_WiFi_Dongle/README.md) for details.
+
 ## Screenshots
 
 | Game List | Detail (Insert) | Detail (Loaded) |
