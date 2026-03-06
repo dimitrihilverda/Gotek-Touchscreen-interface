@@ -99,6 +99,21 @@ void refreshGameList() {
   buildGameList();
 }
 
+// Find game index in game_list by name (exact then case-insensitive)
+int findGameByName(const String &name) {
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    if (game_list[i].name == name) return i;
+  }
+  String nl = name;
+  nl.toLowerCase();
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    String gn = game_list[i].name;
+    gn.toLowerCase();
+    if (gn == nl) return i;
+  }
+  return -1;
+}
+
 // Get game folder — reuses findGameByName for lookup
 // For root-level files (no subfolder), auto-creates /ADF|DSK/{name}/ and moves the file
 String getGameFolder(const String &name, const String &mode = "") {
@@ -185,21 +200,6 @@ String getGameFolder(const String &name, const String &mode = "") {
     root.close();
   }
   return "";
-}
-
-// Find game index in game_list by name (exact then case-insensitive)
-int findGameByName(const String &name) {
-  for (int i = 0; i < (int)game_list.size(); i++) {
-    if (game_list[i].name == name) return i;
-  }
-  String nl = name;
-  nl.toLowerCase();
-  for (int i = 0; i < (int)game_list.size(); i++) {
-    String gn = game_list[i].name;
-    gn.toLowerCase();
-    if (gn == nl) return i;
-  }
-  return -1;
 }
 
 // ============================================================================
