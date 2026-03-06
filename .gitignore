@@ -1,0 +1,27 @@
+# ADF/DSK disk images (copyrighted content)
+# Note: sdcard_example/ contains empty placeholder .adf files for reference
+/adfs/
+/dsks/
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Build artifacts
+build/
+*.o
+*.elf
+*.bin
+
+# Old/dev folders not part of the project
+DisplayTest_ESPIDF/
+Gotek_JC3248W535C/
+THEME/
+theme_preview.html
+
+# User data (root-level only, not sdcard_example/)
+/adfs/
+/dsks/
