@@ -176,6 +176,21 @@ String getGameFolder(const String &name, const String &mode = "") {
   return "";
 }
 
+// Find game index in game_list by name (exact then case-insensitive)
+int findGameByName(const String &name) {
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    if (game_list[i].name == name) return i;
+  }
+  String nl = name;
+  nl.toLowerCase();
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    String gn = game_list[i].name;
+    gn.toLowerCase();
+    if (gn == nl) return i;
+  }
+  return -1;
+}
+
 // ============================================================================
 // GET /api/disk/status — what's currently loaded
 // ============================================================================
@@ -468,22 +483,6 @@ void handleGamesList(WiFiClient &client) {
 // ============================================================================
 // GET /api/games/{mode}/{name} — game detail
 // ============================================================================
-
-int findGameByName(const String &name) {
-  // Exact match first
-  for (int i = 0; i < (int)game_list.size(); i++) {
-    if (game_list[i].name == name) return i;
-  }
-  // Case-insensitive fallback
-  String nl = name;
-  nl.toLowerCase();
-  for (int i = 0; i < (int)game_list.size(); i++) {
-    String gn = game_list[i].name;
-    gn.toLowerCase();
-    if (gn == nl) return i;
-  }
-  return -1;
-}
 
 void handleGameDetailParsed(WiFiClient &client, const String &mode, const String &name) {
   int found = findGameByName(name);
