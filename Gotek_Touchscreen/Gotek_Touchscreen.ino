@@ -2784,17 +2784,23 @@ bool hitBtn(uint16_t px, uint16_t py, int bx, int by, int bw, int bh) {
 // ============================================================================
 // Main loop — ONE TAP PER TOUCH
 // ============================================================================
-// Proven working approach:
-//   - touchRead() DOES work and DOES return false on release
-//   - Process tap on first frame of new touch (touch_active == false)
-//   - Set touch_active = true → blocks repeat until finger lifts
-//   - When touchRead() returns false → touch_active = false → ready for next
-//   - Debounce 300ms as extra safety
+// How it works:
+//   - touch_active tracks if finger is currently on screen
+//   - On new touch (touch_active was false): process tap immediately
+//   - While held: track drag for scroll/swipe
+//   - On release (touchRead false): reset touch_active
+//   - Debounce: separate timers for taps vs scroll to avoid interference
 //
-// Scroll: detect finger drag while touch_active, scroll list live
+// IMPORTANT: last_touch_time is ONLY set by taps (processTap), NOT by
+// scroll drag. This prevents scroll from blocking the next tap.
 
-#define TOUCH_DEBOUNCE 300
-#define SCROLL_THRESHOLD 15
+// Minimum time between taps (processTap calls)
+#define TAP_DEBOUNCE 150
+
+// Scroll drag settings
+#define SCROLL_THRESHOLD 20
+#define SCROLL_INTERVAL  200   // ms between scroll steps (prevents too-fast scroll)
+unsigned long last_scroll_time = 0;
 
 void loop() {
   uint16_t px = 0, py = 0;
@@ -2813,9 +2819,9 @@ void loop() {
   }
 
   if (!touch_active) {
-    // ══════════════════════════════════════════
-    // FIRST FRAME OF NEW TOUCH → process tap
-    // ══════════════════════════════════════════
+    // ══════════════════════════════════════════════
+    // NEW TOUCH — first frame finger detected
+    // ══════════════════════════════════════════════
     touch_active = true;
     touch_start_x = px;
     touch_start_y = py;
@@ -2823,9 +2829,8 @@ void loop() {
     touch_last_y = py;
 
     unsigned long now = millis();
-    if (now - last_touch_time < TOUCH_DEBOUNCE) {
-      // Too soon after last action, ignore this tap
-      // but still set touch_active so we don't re-fire
+    if (now - last_touch_time < TAP_DEBOUNCE) {
+      // Too soon — ignore but keep touch_active to prevent re-fire
       delay(10);
       return;
     }
@@ -2834,9 +2839,9 @@ void loop() {
     processTap(px, py);
 
   } else {
-    // ══════════════════════════════════════════
-    // FINGER STILL DOWN → check for drag/scroll
-    // ══════════════════════════════════════════
+    // ══════════════════════════════════════════════
+    // HELD — finger still on screen, check drag
+    // ══════════════════════════════════════════════
     int16_t dy = (int16_t)py - (int16_t)touch_last_y;
     int16_t dx = (int16_t)px - (int16_t)touch_last_x;
     touch_last_x = px;
@@ -2844,11 +2849,12 @@ void loop() {
 
     unsigned long now = millis();
 
-    // Vertical drag on list → scroll
+    // Vertical drag on list → scroll (throttled)
     if (current_screen == SCR_SELECTION &&
         touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM &&
-        abs(dy) > SCROLL_THRESHOLD && (now - last_touch_time > 120)) {
-      last_touch_time = now;
+        abs(dy) > SCROLL_THRESHOLD &&
+        (now - last_scroll_time > SCROLL_INTERVAL)) {
+      last_scroll_time = now;
       scroll_offset += (dy < 0) ? 1 : -1;
       int maxOff = (int)game_list.size() - items_per_page();
       if (maxOff < 0) maxOff = 0;
@@ -2860,8 +2866,8 @@ void loop() {
     // Horizontal drag on detail → prev/next game
     if (current_screen == SCR_DETAILS &&
         abs(dx) > 40 && abs(dx) > abs(dy) &&
-        (now - last_touch_time > 400)) {
-      last_touch_time = now;
+        (now - last_scroll_time > 500)) {
+      last_scroll_time = now;
       if (dx > 0) detailGoToPrev();
       else detailGoToNext();
     }
