@@ -2782,49 +2782,90 @@ bool hitBtn(uint16_t px, uint16_t py, int bx, int by, int bw, int bh) {
 #define BTN_ROW_H   44
 
 // ============================================================================
-// Main loop — PURE DEBOUNCE touch (no state, no release detection)
+// Main loop — ONE TAP PER TOUCH
 // ============================================================================
-// The absolute simplest model possible:
-//   1. Read touch
-//   2. If touch AND 300ms passed since last action → process tap
-//   3. Done.
+// Proven working approach:
+//   - touchRead() DOES work and DOES return false on release
+//   - Process tap on first frame of new touch (touch_active == false)
+//   - Set touch_active = true → blocks repeat until finger lifts
+//   - When touchRead() returns false → touch_active = false → ready for next
+//   - Debounce 300ms as extra safety
 //
-// No touch_active, no release tracking. If the user holds their finger
-// on the screen, the same tap fires every 300ms. This is FINE because
-// most actions change the screen, so the second tap hits a different
-// screen/position and does nothing harmful.
-//
-// This model cannot fail unless touchRead() itself is broken.
+// Scroll: detect finger drag while touch_active, scroll list live
 
 #define TOUCH_DEBOUNCE 300
-
-// Set to true to show a red dot where you touch (for debugging)
-#define TOUCH_DEBUG false
+#define SCROLL_THRESHOLD 15
 
 void loop() {
   uint16_t px = 0, py = 0;
   bool haveTouch = touchRead(&px, &py);
 
-  if (!haveTouch || ui_busy) {
+  if (!haveTouch) {
+    touch_active = false;
     delay(10);
     return;
   }
 
-  // Visual debug: draw red dot at touch position
-  #if TOUCH_DEBUG
-    gfx_fillRect(px - 3, py - 3, 6, 6, TFT_RED);
-    gfx_flush();
-  #endif
-
-  unsigned long now = millis();
-  if (now - last_touch_time < TOUCH_DEBOUNCE) {
+  // Block during busy
+  if (ui_busy) {
     delay(10);
     return;
   }
 
-  // ── We have a valid, debounced touch at (px, py) ──
-  last_touch_time = now;
-  processTap(px, py);
+  if (!touch_active) {
+    // ══════════════════════════════════════════
+    // FIRST FRAME OF NEW TOUCH → process tap
+    // ══════════════════════════════════════════
+    touch_active = true;
+    touch_start_x = px;
+    touch_start_y = py;
+    touch_last_x = px;
+    touch_last_y = py;
+
+    unsigned long now = millis();
+    if (now - last_touch_time < TOUCH_DEBOUNCE) {
+      // Too soon after last action, ignore this tap
+      // but still set touch_active so we don't re-fire
+      delay(10);
+      return;
+    }
+
+    last_touch_time = now;
+    processTap(px, py);
+
+  } else {
+    // ══════════════════════════════════════════
+    // FINGER STILL DOWN → check for drag/scroll
+    // ══════════════════════════════════════════
+    int16_t dy = (int16_t)py - (int16_t)touch_last_y;
+    int16_t dx = (int16_t)px - (int16_t)touch_last_x;
+    touch_last_x = px;
+    touch_last_y = py;
+
+    unsigned long now = millis();
+
+    // Vertical drag on list → scroll
+    if (current_screen == SCR_SELECTION &&
+        touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM &&
+        abs(dy) > SCROLL_THRESHOLD && (now - last_touch_time > 120)) {
+      last_touch_time = now;
+      scroll_offset += (dy < 0) ? 1 : -1;
+      int maxOff = (int)game_list.size() - items_per_page();
+      if (maxOff < 0) maxOff = 0;
+      if (scroll_offset > maxOff) scroll_offset = maxOff;
+      if (scroll_offset < 0) scroll_offset = 0;
+      drawList();
+    }
+
+    // Horizontal drag on detail → prev/next game
+    if (current_screen == SCR_DETAILS &&
+        abs(dx) > 40 && abs(dx) > abs(dy) &&
+        (now - last_touch_time > 400)) {
+      last_touch_time = now;
+      if (dx > 0) detailGoToPrev();
+      else detailGoToNext();
+    }
+  }
 
   delay(10);
 }
