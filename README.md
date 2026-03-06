@@ -2,6 +2,34 @@
 
 A touchscreen-driven disk image browser for retro computing. Load Amiga ADF and ZX Spectrum/Amstrad CPC DSK files from an SD card onto a USB-presentable RAM drive — with cover art, game info, multi-disk support, and themeable UI.
 
+## Project Variants
+
+This repository contains two firmware variants built from a shared codebase:
+
+| Variant | Description | Branch | Folder |
+|---------|-------------|--------|--------|
+| **Touchscreen** | Standalone touchscreen display with WiFi web UI | `main` | `Gotek_Touchscreen/` |
+| **WiFi Dongle** | Headless USB stick — phone/laptop only control via WiFi | `wifi-dongle` | `Gotek_WiFi_Dongle/` |
+
+The **Touchscreen** version is a standalone unit with a 2.8"–3.5" display that connects to your Gotek via USB. It can also serve as a **wireless remote** for the WiFi Dongle — browse your SD card game library on the touchscreen and send disk images wirelessly to the dongle.
+
+The **WiFi Dongle** is a tiny ESP32-S3 board (Seeed XIAO, 21×17.5mm) that plugs directly into a Gotek's USB port. No display needed — browse and load games from your phone. See the [WiFi Dongle README](Gotek_WiFi_Dongle/README.md) for details.
+
+### Remote Mode (Touchscreen → Dongle)
+
+The Touchscreen can act as a wireless remote control for the WiFi Dongle. In this mode, when you tap INSERT on the touchscreen, the disk image is sent from the SD card over WiFi to the dongle (which presents it to the Gotek via USB). This gives you the best of both worlds: a rich touchscreen UI with cover art and game info, plus wireless disk loading.
+
+To enable remote mode, add these lines to `CONFIG.TXT` on the Touchscreen's SD card:
+
+```ini
+REMOTE_ENABLED=1
+REMOTE_SSID=Gotek-Dongle
+REMOTE_PASS=retrogaming
+REMOTE_HOST=192.168.4.1
+```
+
+The touchscreen connects to the dongle's WiFi AP as a client. The WiFi web server AP can still run simultaneously (AP+STA dual mode), so you can also manage the touchscreen from your phone at the same time.
+
 ## Screenshots
 
 | Game List | Detail (Insert) | Detail (Loaded) |
@@ -161,6 +189,17 @@ WIFI_CHANNEL=6
 ```
 
 Set `WIFI_ENABLED=0` to disable the WiFi AP and save power/memory.
+
+**Remote Dongle Settings in CONFIG.TXT:**
+```ini
+REMOTE_ENABLED=1
+REMOTE_SSID=Gotek-Dongle
+REMOTE_PASS=retrogaming
+REMOTE_HOST=192.168.4.1
+REMOTE_PORT=80
+```
+
+When `REMOTE_ENABLED=1`, the touchscreen connects to the dongle's WiFi AP and sends disk images wirelessly when you tap INSERT. The touchscreen's own WiFi AP and web server can still run simultaneously (AP+STA dual mode). A `[REMOTE]` indicator appears on the detail screen, and the info screen shows dongle connection status.
 
 ## Architecture
 
