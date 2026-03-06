@@ -1143,6 +1143,7 @@ vector<String> listImages() {
 
 // Forward declaration (used by findNFOFor/findJPGFor before definition)
 String getGameBaseName(const String &fullPath);
+void processTap(uint16_t px, uint16_t py);
 
 // Get the parent directory of a file path
 String parentDir(const String &path) {
@@ -2781,218 +2782,181 @@ bool hitBtn(uint16_t px, uint16_t py, int bx, int by, int bw, int bh) {
 #define BTN_ROW_H   44
 
 // ============================================================================
-// Main loop — simple touch handling
+// Main loop — PURE DEBOUNCE touch (no state, no release detection)
 // ============================================================================
-// Strategy:
-//   - Track touch_active to detect press & release
-//   - On PRESS: record start position
-//   - On RELEASE: determine if it was a tap or swipe, then act
-//   - Debounce: 300ms minimum between processed actions
-//   - All actions fire on RELEASE for reliable detection
+// The absolute simplest model possible:
+//   1. Read touch
+//   2. If touch AND 300ms passed since last action → process tap
+//   3. Done.
 //
-// This approach is simpler and more reliable than instant-press detection,
-// which suffered from state tracking bugs on the capacitive controller.
+// No touch_active, no release tracking. If the user holds their finger
+// on the screen, the same tap fires every 300ms. This is FINE because
+// most actions change the screen, so the second tap hits a different
+// screen/position and does nothing harmful.
+//
+// This model cannot fail unless touchRead() itself is broken.
 
-#define SWIPE_THRESHOLD 40
+#define TOUCH_DEBOUNCE 300
+
+// Set to true to show a red dot where you touch (for debugging)
+#define TOUCH_DEBUG false
 
 void loop() {
   uint16_t px = 0, py = 0;
   bool haveTouch = touchRead(&px, &py);
 
-  // Block all input while busy
-  if (ui_busy) {
-    if (!haveTouch) touch_active = false;
+  if (!haveTouch || ui_busy) {
     delay(10);
     return;
   }
 
-  if (haveTouch) {
-    if (!touch_active) {
-      // ── FINGER DOWN ── record start position
-      touch_active = true;
-      touch_start_x = px;
-      touch_start_y = py;
-      touch_start_time = millis();
+  // Visual debug: draw red dot at touch position
+  #if TOUCH_DEBUG
+    gfx_fillRect(px - 3, py - 3, 6, 6, TFT_RED);
+    gfx_flush();
+  #endif
+
+  unsigned long now = millis();
+  if (now - last_touch_time < TOUCH_DEBOUNCE) {
+    delay(10);
+    return;
+  }
+
+  // ── We have a valid, debounced touch at (px, py) ──
+  last_touch_time = now;
+  processTap(px, py);
+
+  delay(10);
+}
+
+// ============================================================================
+// Process a tap at coordinates (px, py)
+// ============================================================================
+void processTap(uint16_t px, uint16_t py) {
+
+  // ── SELECTION SCREEN ──
+  if (current_screen == SCR_SELECTION) {
+    // Bottom button row
+    if (py >= BTN_ROW_Y) {
+      if (hitBtn(px, py, 20, BTN_ROW_Y, 90, BTN_ROW_H)) {
+        // SELECT button
+        if (game_selected < (int)game_list.size()) {
+          showBusyIndicator("LOADING...");
+          selected_index = game_list[game_selected].first_file_index;
+          detail_filename = file_list[selected_index];
+          current_screen = SCR_DETAILS;
+          hideBusyIndicator();
+          drawDetailsFromNFO(detail_filename);
+        }
+      } else if (hitBtn(px, py, 130, BTN_ROW_Y, 90, BTN_ROW_H)) {
+        // OPEN button
+        if (game_selected < (int)game_list.size()) {
+          selected_index = game_list[game_selected].first_file_index;
+          detail_filename = file_list[selected_index];
+          showBusyIndicator("LOADING DISK...");
+          doLoadSelected();
+          current_screen = SCR_DETAILS;
+          hideBusyIndicator();
+          drawDetailsFromNFO(detail_filename);
+        }
+      } else if (hitBtn(px, py, 240, BTN_ROW_Y, 90, BTN_ROW_H)) {
+        // INFO button
+        current_screen = SCR_INFO;
+        drawInfoScreen();
+      } else if (px >= gW - 120) {
+        // Mode switch (ADF/DSK)
+        showBusyIndicator("SCANNING...");
+        g_mode = (g_mode == MODE_ADF) ? MODE_DSK : MODE_ADF;
+        file_list = listImages();
+        buildDisplayNames(file_list);
+        sortByDisplay();
+        buildGameList();
+        selected_index = 0;
+        game_selected = 0;
+        scroll_offset = 0;
+        hideBusyIndicator();
+        drawList();
+      }
     }
-    // Always track current position for swipe detection
-    touch_last_x = px;
-    touch_last_y = py;
-
-  } else if (touch_active) {
-    // ── FINGER RELEASED ── process the gesture
-    touch_active = false;
-
-    // Debounce: skip if too soon after last processed action
-    unsigned long now = millis();
-    if (now - last_touch_time < 250) {
-      delay(10);
-      return;
-    }
-
-    uint16_t sx = touch_start_x, sy = touch_start_y;
-    int16_t dx = (int16_t)touch_last_x - (int16_t)sx;
-    int16_t dy = (int16_t)touch_last_y - (int16_t)sy;
-    bool isSwipe = (abs(dx) > SWIPE_THRESHOLD || abs(dy) > SWIPE_THRESHOLD);
-
-    // ════════════════════════════════════════════════════════════════
-    // SWIPE GESTURES
-    // ════════════════════════════════════════════════════════════════
-    if (isSwipe) {
-      last_touch_time = now;
-
-      if (current_screen == SCR_SELECTION) {
-        // Vertical swipe in list → scroll
-        if (abs(dy) > abs(dx) && sy >= LIST_START_Y && sy < LIST_BOTTOM) {
-          int items = abs(dy) / LIST_ITEM_H;
-          if (items < 1) items = 1;
-          scroll_offset += (dy < 0) ? items : -items;
-          int maxOff = (int)game_list.size() - items_per_page();
-          if (maxOff < 0) maxOff = 0;
-          if (scroll_offset > maxOff) scroll_offset = maxOff;
-          if (scroll_offset < 0) scroll_offset = 0;
-          drawList();
-        }
-      } else if (current_screen == SCR_DETAILS) {
-        // Horizontal swipe → prev/next game
-        if (abs(dx) > abs(dy)) {
-          if (dx > 0) detailGoToPrev();
-          else detailGoToNext();
-        }
-      }
-
-    // ════════════════════════════════════════════════════════════════
-    // TAP GESTURES (not a swipe)
-    // ════════════════════════════════════════════════════════════════
-    } else {
-      last_touch_time = now;
-
-      // ── SELECTION SCREEN ──
-      if (current_screen == SCR_SELECTION) {
-        // Bottom button row
-        if (sy >= BTN_ROW_Y) {
-          if (hitBtn(sx, sy, 20, BTN_ROW_Y, 90, BTN_ROW_H)) {
-            // SELECT button
-            if (game_selected < (int)game_list.size()) {
-              showBusyIndicator("LOADING...");
-              selected_index = game_list[game_selected].first_file_index;
-              detail_filename = file_list[selected_index];
-              current_screen = SCR_DETAILS;
-              hideBusyIndicator();
-              drawDetailsFromNFO(detail_filename);
-            }
-          } else if (hitBtn(sx, sy, 130, BTN_ROW_Y, 90, BTN_ROW_H)) {
-            // OPEN button
-            if (game_selected < (int)game_list.size()) {
-              selected_index = game_list[game_selected].first_file_index;
-              detail_filename = file_list[selected_index];
-              showBusyIndicator("LOADING DISK...");
-              doLoadSelected();
-              current_screen = SCR_DETAILS;
-              hideBusyIndicator();
-              drawDetailsFromNFO(detail_filename);
-            }
-          } else if (hitBtn(sx, sy, 240, BTN_ROW_Y, 90, BTN_ROW_H)) {
-            // INFO button
-            current_screen = SCR_INFO;
-            drawInfoScreen();
-          } else if (sx >= gW - 120) {
-            // Mode switch (ADF/DSK)
-            showBusyIndicator("SCANNING...");
-            g_mode = (g_mode == MODE_ADF) ? MODE_DSK : MODE_ADF;
-            file_list = listImages();
-            buildDisplayNames(file_list);
-            sortByDisplay();
-            buildGameList();
-            selected_index = 0;
-            game_selected = 0;
-            scroll_offset = 0;
-            hideBusyIndicator();
-            drawList();
-          }
-        }
-        // Tap on list item
-        else if (sy >= LIST_START_Y && sy < LIST_BOTTOM) {
-          int idx = (sy - LIST_START_Y) / LIST_ITEM_H + scroll_offset;
-          if (idx >= 0 && idx < (int)game_list.size()) {
-            game_selected = idx;
-            drawList();
-          }
-        }
-      }
-
-      // ── DETAIL SCREEN ──
-      else if (current_screen == SCR_DETAILS) {
-        // Bottom button row
-        if (sy >= BTN_ROW_Y) {
-          if (hitBtn(sx, sy, 20, BTN_ROW_Y, 90, BTN_ROW_H)) {
-            // BACK button
-            current_screen = SCR_SELECTION;
-            drawList();
-          } else if (hitBtn(sx, sy, 130, BTN_ROW_Y, 90, BTN_ROW_H)) {
-            // LOAD button
-            showBusyIndicator("LOADING DISK...");
-            doLoadSelected();
-            hideBusyIndicator();
-            drawDetailsFromNFO(detail_filename);
-          } else if (hitBtn(sx, sy, 240, BTN_ROW_Y, 90, BTN_ROW_H)) {
-            // UNLOAD button
-            showBusyIndicator("UNLOADING...");
-            doUnload();
-            hideBusyIndicator();
-            current_screen = SCR_SELECTION;
-            drawList();
-          }
-        }
-        // Disk selector buttons (multi-disk games)
-        else if (disk_set.size() > 1) {
-          int diskRowH = 34;
-          int diskTop = gH - 42 - diskRowH;
-          if (sy >= diskTop && sy <= diskTop + 28) {
-            int btnW = 44, gap = 4;
-            int numDisks = disk_set.size();
-            int totalW = numDisks * btnW + (numDisks - 1) * gap;
-            int startX = (gW - totalW) / 2;
-            int hitIdx = (sx - startX) / (btnW + gap);
-            int btnLeft = startX + hitIdx * (btnW + gap);
-            if (hitIdx >= 0 && hitIdx < numDisks &&
-                sx >= btnLeft && sx <= btnLeft + btnW) {
-              selected_index = disk_set[hitIdx];
-              detail_filename = file_list[selected_index];
-              showBusyIndicator("SWITCHING DISK...");
-              doLoadSelected();
-              hideBusyIndicator();
-              drawDetailsFromNFO(detail_filename);
-            }
-          }
-          // Edge taps for prev/next (outside disk selector)
-          else if (sy < BTN_ROW_Y) {
-            if (sx <= 45) detailGoToPrev();
-            else if (sx >= gW - 45) detailGoToNext();
-          }
-        }
-        // Edge taps for prev/next (single-disk game)
-        else if (sy < BTN_ROW_Y) {
-          if (sx <= 45) detailGoToPrev();
-          else if (sx >= gW - 45) detailGoToNext();
-        }
-      }
-
-      // ── INFO SCREEN ──
-      else if (current_screen == SCR_INFO) {
-        if (sy >= BTN_ROW_Y) {
-          if (hitBtn(sx, sy, 20, BTN_ROW_Y, 90, BTN_ROW_H)) {
-            // BACK button
-            current_screen = SCR_SELECTION;
-            drawList();
-          } else if (hitBtn(sx, sy, 130, BTN_ROW_Y, 110, BTN_ROW_H)) {
-            // THEME button
-            cycleTheme();
-            drawInfoScreen();
-          }
-        }
+    // Tap on list item
+    else if (py >= LIST_START_Y && py < LIST_BOTTOM) {
+      int idx = (py - LIST_START_Y) / LIST_ITEM_H + scroll_offset;
+      if (idx >= 0 && idx < (int)game_list.size()) {
+        game_selected = idx;
+        drawList();
       }
     }
   }
 
-  delay(10);
+  // ── DETAIL SCREEN ──
+  else if (current_screen == SCR_DETAILS) {
+    // Bottom button row
+    if (py >= BTN_ROW_Y) {
+      if (hitBtn(px, py, 20, BTN_ROW_Y, 90, BTN_ROW_H)) {
+        // BACK button
+        current_screen = SCR_SELECTION;
+        drawList();
+      } else if (hitBtn(px, py, 130, BTN_ROW_Y, 90, BTN_ROW_H)) {
+        // LOAD button
+        showBusyIndicator("LOADING DISK...");
+        doLoadSelected();
+        hideBusyIndicator();
+        drawDetailsFromNFO(detail_filename);
+      } else if (hitBtn(px, py, 240, BTN_ROW_Y, 90, BTN_ROW_H)) {
+        // UNLOAD button
+        showBusyIndicator("UNLOADING...");
+        doUnload();
+        hideBusyIndicator();
+        current_screen = SCR_SELECTION;
+        drawList();
+      }
+    }
+    // Disk selector buttons (multi-disk games)
+    else if (disk_set.size() > 1) {
+      int diskRowH = 34;
+      int diskTop = gH - 42 - diskRowH;
+      if (py >= diskTop && py <= diskTop + 28) {
+        int btnW = 44, gap = 4;
+        int numDisks = disk_set.size();
+        int totalW = numDisks * btnW + (numDisks - 1) * gap;
+        int startX = (gW - totalW) / 2;
+        int hitIdx = (px - startX) / (btnW + gap);
+        int btnLeft = startX + hitIdx * (btnW + gap);
+        if (hitIdx >= 0 && hitIdx < numDisks &&
+            px >= btnLeft && px <= btnLeft + btnW) {
+          selected_index = disk_set[hitIdx];
+          detail_filename = file_list[selected_index];
+          showBusyIndicator("SWITCHING DISK...");
+          doLoadSelected();
+          hideBusyIndicator();
+          drawDetailsFromNFO(detail_filename);
+        }
+      }
+      // Edge taps for prev/next (outside disk selector)
+      else if (py < BTN_ROW_Y) {
+        if (px <= 45) detailGoToPrev();
+        else if (px >= gW - 45) detailGoToNext();
+      }
+    }
+    // Edge taps for prev/next (single-disk game)
+    else if (py < BTN_ROW_Y) {
+      if (px <= 45) detailGoToPrev();
+      else if (px >= gW - 45) detailGoToNext();
+    }
+  }
+
+  // ── INFO SCREEN ──
+  else if (current_screen == SCR_INFO) {
+    if (py >= BTN_ROW_Y) {
+      if (hitBtn(px, py, 20, BTN_ROW_Y, 90, BTN_ROW_H)) {
+        // BACK button
+        current_screen = SCR_SELECTION;
+        drawList();
+      } else if (hitBtn(px, py, 130, BTN_ROW_Y, 110, BTN_ROW_H)) {
+        // THEME button
+        cycleTheme();
+        drawInfoScreen();
+      }
+    }
+  }
 }
