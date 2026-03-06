@@ -2383,8 +2383,14 @@ void drawDetailsFromNFO(const String &filename) {
   if (imgH < 60) imgH = 60;
 
   if (detail_jpg_path.length() > 0) {
-    gfx_drawJpgFile(SD_MMC, detail_jpg_path.c_str(),
-                   (gW - imgW) / 2, imgTop, imgW, imgH);
+    String lp = detail_jpg_path;
+    lp.toLowerCase();
+    if (lp.endsWith(".png")) {
+      drawPngFile(detail_jpg_path.c_str(), (gW - imgW) / 2, imgTop);
+    } else {
+      gfx_drawJpgFile(SD_MMC, detail_jpg_path.c_str(),
+                     (gW - imgW) / 2, imgTop, imgW, imgH);
+    }
   }
 
   int textY = imgTop + imgH + 3;

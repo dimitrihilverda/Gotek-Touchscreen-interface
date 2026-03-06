@@ -705,21 +705,8 @@ bool handleCoverUpload(WiFiClient &client, const HttpRequest &req, const String 
     }
 
     if (dataStart >= 0) {
-      // Parse headers for filename
-      String headers((char *)(buf + hdrStart), dataStart - hdrStart);
-      String ext = ".jpg";  // default
-      int fnIdx = headers.indexOf("filename=\"");
-      if (fnIdx >= 0) {
-        fnIdx += 10;
-        int fnEnd = headers.indexOf("\"", fnIdx);
-        String origName = headers.substring(fnIdx, fnEnd);
-        String origLower = origName;
-        origLower.toLowerCase();
-        if (origLower.endsWith(".png")) ext = ".png";
-      }
-
       // Find end boundary
-      int dataEnd = pos;  // default to end
+      int dataEnd = pos;
       for (int i = dataStart; i <= pos - (int)delim.length(); i++) {
         if (memcmp(buf + i, delim.c_str(), delim.length()) == 0) {
           dataEnd = i;
@@ -727,16 +714,15 @@ bool handleCoverUpload(WiFiClient &client, const HttpRequest &req, const String 
         }
       }
 
-      // Build save path
+      // Always save as .jpg (browser already converts to JPEG)
       String folderName = gameDir;
       int sl = folderName.lastIndexOf('/');
       if (sl >= 0) folderName = folderName.substring(sl + 1);
-      savePath = gameDir + "/" + folderName + ext;
+      savePath = gameDir + "/" + folderName + ".jpg";
 
-      // Remove old cover with different extension
-      String altExt = (ext == ".jpg") ? ".png" : ".jpg";
-      String altPath = gameDir + "/" + folderName + altExt;
-      if (SD_MMC.exists(altPath.c_str())) SD_MMC.remove(altPath.c_str());
+      // Remove old .png cover if present
+      String pngPath = gameDir + "/" + folderName + ".png";
+      if (SD_MMC.exists(pngPath.c_str())) SD_MMC.remove(pngPath.c_str());
 
       // Write to SD
       File outFile = SD_MMC.open(savePath.c_str(), "w");
@@ -795,17 +781,15 @@ void handleCoverDownload(WiFiClient &client, const String &mode, const String &n
     return;
   }
 
-  // Determine extension from URL
-  String ext = ".jpg";
-  String urlLower = url;
-  urlLower.toLowerCase();
-  if (urlLower.indexOf(".png") >= 0) ext = ".png";
-
-  // Use the actual folder name for the cover filename (may differ from URL name)
+  // Always save as .jpg — standardized format for cover art
   String folderName = gameDir;
   int lastSl = folderName.lastIndexOf('/');
   if (lastSl >= 0) folderName = folderName.substring(lastSl + 1);
-  String savePath = gameDir + "/" + folderName + ext;
+  String savePath = gameDir + "/" + folderName + ".jpg";
+
+  // Remove old .png cover if present
+  String pngPath = gameDir + "/" + folderName + ".png";
+  if (SD_MMC.exists(pngPath.c_str())) SD_MMC.remove(pngPath.c_str());
 
   // Parse host and path from URL
   String host = "";
