@@ -2721,7 +2721,8 @@ void setup() {
 
   drawBootProgress("Starting USB...", 90);
 
-  // NOW start USB — RAM disk already has the file loaded
+  // TEMPORARILY DISABLED for touch debug — USB MSC takes over serial
+  #if 0
   msc.vendorID("Gotek");
   msc.productID("Disk");
   msc.productRevision("1.0");
@@ -2730,7 +2731,8 @@ void setup() {
   msc.mediaPresent(autoloaded);
   msc.begin(msc_block_count, 512);
   USB.begin();
-  Serial.println("USB MSC initialized");
+  #endif
+  Serial.println("USB MSC SKIPPED (debug mode)");
 
   drawBootProgress("Ready!", 100);
   delay(300);
