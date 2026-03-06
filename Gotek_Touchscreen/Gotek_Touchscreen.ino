@@ -26,6 +26,7 @@
 
 #include <USB.h>
 #include <USBMSC.h>
+#include <WiFi.h>
 
 // ============================================================================
 // DISPLAY SELECTOR
@@ -59,7 +60,7 @@ extern "C" {
   extern void* ps_malloc(size_t size);
 }
 
-#define FW_VERSION "v0.7.0-Touchscreen"
+#define FW_VERSION "v0.8.0-WebServer"
 
 using std::vector;
 using std::sort;
@@ -362,6 +363,12 @@ String cfg_display = "";
 String cfg_lastfile = "";
 String cfg_lastmode = "";
 String cfg_theme = "DEFAULT";   // active theme folder name
+
+// WiFi config
+bool   cfg_wifi_enabled = true;
+String cfg_wifi_ssid    = "Gotek-Setup";
+String cfg_wifi_pass    = "retrogaming";
+uint8_t cfg_wifi_channel = 6;
 
 // Theme system
 String theme_path = "/THEMES/DEFAULT";  // resolved path to active theme
@@ -945,6 +952,15 @@ void loadConfig() {
       cfg_lastmode = val;
     } else if (key == "THEME") {
       cfg_theme = val;
+    } else if (key == "WIFI_ENABLED") {
+      cfg_wifi_enabled = (val == "1" || val == "true");
+    } else if (key == "WIFI_SSID") {
+      cfg_wifi_ssid = val;
+    } else if (key == "WIFI_PASS") {
+      cfg_wifi_pass = val;
+    } else if (key == "WIFI_CHANNEL") {
+      cfg_wifi_channel = (uint8_t)val.toInt();
+      if (cfg_wifi_channel < 1 || cfg_wifi_channel > 13) cfg_wifi_channel = 6;
     }
   }
   f.close();
@@ -968,6 +984,12 @@ void saveConfig() {
     f.println("LASTMODE=" + cfg_lastmode);
   }
   f.println("THEME=" + cfg_theme);
+
+  // WiFi settings
+  f.println("WIFI_ENABLED=" + String(cfg_wifi_enabled ? "1" : "0"));
+  f.println("WIFI_SSID=" + cfg_wifi_ssid);
+  f.println("WIFI_PASS=" + cfg_wifi_pass);
+  f.println("WIFI_CHANNEL=" + String(cfg_wifi_channel));
 
   f.close();
 }
@@ -2076,6 +2098,21 @@ void drawInfoScreen() {
   gfx_print("Theme: ");
   gfx_setTextColor(WB_ORANGE, TFT_BLACK);
   gfx_print(cfg_theme);
+  y += lineH;
+
+  // --- WiFi status ---
+  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+  gfx_setCursor(20, y);
+  gfx_print("WiFi: ");
+  if (isWiFiActive()) {
+    gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+    gfx_print(wifi_ap_ip);
+    gfx_setTextColor(0x7BEF, TFT_BLACK);  // dim gray
+    gfx_print(" (" + String(WiFi.softAPgetStationNum()) + " clients)");
+  } else {
+    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_print("Off");
+  }
 
   // Bottom buttons: BACK + THEME + ADF/DSK — evenly spaced, uniform 148x36
   int btnW = 148, btnH = 36, btnY = gH - 42, gap = 8, marginX = 10;
@@ -2595,6 +2632,11 @@ void doLoadSelected() {
   }
 }
 
+// ============================================================================
+// WiFi Web Server (include after all game/theme functions are defined)
+// ============================================================================
+#include "webserver.h"
+
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -2667,6 +2709,15 @@ void setup() {
       game_selected = findGameIndex(selected_index);
     }
     Serial.println("Auto-loaded: " + file_list[selected_index] + " (" + String(loaded) + " bytes)");
+  }
+
+  // ── WiFi Access Point + Web Server ──
+  if (cfg_wifi_enabled) {
+    drawBootProgress("Starting WiFi AP...", 85);
+    if (initWiFiAP()) {
+      startWebServer();
+      Serial.println("Web server ready at http://" + wifi_ap_ip);
+    }
   }
 
   drawBootProgress("Starting USB...", 90);

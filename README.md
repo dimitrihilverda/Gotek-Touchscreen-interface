@@ -24,6 +24,7 @@ Both boards use an **ESP32-S3** with PSRAM and an SD card slot.
 - **Multi-disk support** — Games with multiple disks are grouped automatically; switch disks from the detail view
 - **USB Mass Storage** — The ESP32 presents a FAT12 RAM disk over USB, so retro machines see a standard floppy drive
 - **Themeable UI** — Three built-in themes (Amiga WB2, Cyberpunk, Steampunk) with PNG button assets; create your own
+- **WiFi Web Server** — Built-in WiFi Access Point with browser-based management UI (game upload, config editing, theme switching)
 - **Auto-resume** — The last loaded disk and theme are saved to `CONFIG.TXT` and restored on boot
 - **ADF/DSK modes** — Switch between Amiga (ADF) and ZX/CPC (DSK) disk formats from the info screen
 
@@ -95,7 +96,7 @@ The `sdcard_example/` folder in this repository contains a ready-to-use SD card 
 
 - [Arduino IDE](https://www.arduino.cc/en/software) 2.x or later
 - ESP32 board support package (via Board Manager)
-- Required libraries: `JPEGDEC`, `PNGdec` (via Library Manager)
+- Required libraries: `JPEGDEC`, `PNGdec`, `ESPAsyncWebServer`, `AsyncTCP` (via Library Manager)
 
 ### Arduino IDE Settings
 
@@ -135,6 +136,31 @@ LASTFILE=Cannon Fodder-1.adf
 ```
 
 See the included `CONFIG.TXT` for all available options and documentation.
+
+## WiFi Web Server
+
+The firmware includes a built-in WiFi Access Point that serves a browser-based management interface. When enabled (default), the ESP32 creates a WiFi network you can connect to from your phone or laptop.
+
+**Quick Start:**
+1. Connect to WiFi network `Gotek-Setup` (password: `retrogaming`)
+2. Open `http://192.168.4.1` in your browser
+3. You'll see a dashboard with four tabs: Dashboard, Config, Games, and Themes
+
+**Features:**
+- **Dashboard** — System stats (memory, SD card usage, loaded game, WiFi clients)
+- **Config Editor** — Edit all settings via web form (display type, theme, WiFi credentials)
+- **Game Manager** — Upload new games (drag & drop ADF/DSK files + cover art + NFO), delete games, edit game info
+- **Theme Switcher** — View installed themes and activate a different one
+
+**WiFi Settings in CONFIG.TXT:**
+```ini
+WIFI_ENABLED=1
+WIFI_SSID=Gotek-Setup
+WIFI_PASS=retrogaming
+WIFI_CHANNEL=6
+```
+
+Set `WIFI_ENABLED=0` to disable the WiFi AP and save power/memory.
 
 ## Architecture
 

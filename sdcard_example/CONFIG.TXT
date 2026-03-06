@@ -45,8 +45,30 @@
 #   PNG format: 32-bit RGBA (with transparency) or 24-bit RGB.
 #   Missing files fall back to drawn buttons.
 #
+# WIFI_ENABLED
+#   Enable/disable the WiFi Access Point (1 or 0).
+#   When enabled, a web server runs at http://192.168.4.1
+#   for game management, config editing, and theme switching.
+#
+# WIFI_SSID
+#   The WiFi network name (default: Gotek-Setup)
+#
+# WIFI_PASS
+#   The WiFi password (default: retrogaming, min 8 chars)
+#
+# WIFI_CHANNEL
+#   WiFi channel 1-13 (default: 6)
+#
 # ============================================================
 
 DISPLAY=JC3248
 LASTMODE=ADF
 THEME=AMIGA_WB2
+
+# WiFi Access Point settings
+# When enabled, creates a WiFi hotspot for browser-based management.
+# Connect to the SSID from your phone/laptop, then open http://192.168.4.1
+WIFI_ENABLED=1
+WIFI_SSID=Gotek-Setup
+WIFI_PASS=retrogaming
+WIFI_CHANNEL=6
