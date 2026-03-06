@@ -639,6 +639,13 @@ bool handleCoverUpload(WiFiClient &client, const HttpRequest &req, const String 
     sendJSON(client, 400, "{\"error\":\"Expected multipart upload\"}");
     return true;
   }
+  if (req.contentLength > 256 * 1024) {
+    // Drain and reject — browser should have resized
+    unsigned long t = millis();
+    while (client.available() && millis() - t < 3000) { client.read(); yield(); }
+    sendJSON(client, 413, "{\"error\":\"Image too large. Max 256 KB.\"}");
+    return true;
+  }
 
   // Try folder from query string first, then lookup
   String gameDir = getFormValue(req.query, "folder");
@@ -886,6 +893,13 @@ void handleCoverDownload(WiFiClient &client, const String &mode, const String &n
     if (hdrLow.startsWith("content-length:")) {
       contentLen = hdr.substring(15).toInt();
     }
+  }
+
+  // Reject files > 512KB to avoid memory issues
+  if (contentLen > 512 * 1024) {
+    httpClient->stop();
+    sendJSON(client, 413, "{\"error\":\"Image too large (" + String(contentLen / 1024) + " KB). Max 512 KB.\"}");
+    return;
   }
 
   // Stream to SD card
