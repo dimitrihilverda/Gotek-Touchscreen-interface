@@ -640,7 +640,6 @@ bool handleCoverUpload(WiFiClient &client, const HttpRequest &req, const String 
     return true;
   }
   if (req.contentLength > 256 * 1024) {
-    // Drain and reject — browser should have resized
     unsigned long t = millis();
     while (client.available() && millis() - t < 3000) { client.read(); yield(); }
     sendJSON(client, 413, "{\"error\":\"Image too large. Max 256 KB.\"}");
@@ -657,85 +656,99 @@ bool handleCoverUpload(WiFiClient &client, const HttpRequest &req, const String 
     return true;
   }
 
-  String delim = "--" + req.boundary;
-  String delimEnd = delim + "--";
-  String savePath = "";
-  File outFile;
-  bool inFileData = false;
-  bool done = false;
-  size_t totalWritten = 0;
+  // Read all multipart data into buffer (max ~100KB after browser resize)
+  int toRead = req.contentLength;
+  uint8_t *buf = (uint8_t *)malloc(toRead);
+  if (!buf) {
+    unsigned long t = millis();
+    while (client.available() && millis() - t < 3000) { client.read(); yield(); }
+    sendJSON(client, 500, "{\"error\":\"Out of memory\"}");
+    return true;
+  }
 
-  while (client.connected() && !done) {
-    if (!inFileData) {
-      String line = client.readStringUntil('\n');
-      line.trim();
-      if (line.startsWith(delimEnd)) { done = true; break; }
-      if (line.startsWith(delim)) {
-        String disp = client.readStringUntil('\n');
-        disp.trim();
-        int fnIdx = disp.indexOf("filename=\"");
-        if (fnIdx >= 0) {
-          fnIdx += 10;
-          int fnEnd = disp.indexOf("\"", fnIdx);
-          String origName = disp.substring(fnIdx, fnEnd);
-
-          // Determine extension from original filename
-          String ext = ".jpg";
-          String origLower = origName;
-          origLower.toLowerCase();
-          if (origLower.endsWith(".png")) ext = ".png";
-          else if (origLower.endsWith(".jpeg")) ext = ".jpg";
-
-          // Use folder name as cover filename
-          String folderName = gameDir;
-          int sl = folderName.lastIndexOf('/');
-          if (sl >= 0) folderName = folderName.substring(sl + 1);
-          savePath = gameDir + "/" + folderName + ext;
-
-          // Remove old cover if different extension
-          String altExt = (ext == ".jpg") ? ".png" : ".jpg";
-          String altPath = gameDir + "/" + folderName + altExt;
-          if (SD_MMC.exists(altPath.c_str())) SD_MMC.remove(altPath.c_str());
-
-          outFile = SD_MMC.open(savePath.c_str(), "w");
-          // Skip remaining headers
-          while (client.connected()) {
-            String hdr = client.readStringUntil('\n');
-            hdr.trim();
-            if (hdr.length() == 0) break;
-          }
-          inFileData = true;
-          totalWritten = 0;
-        }
-      }
+  int pos = 0;
+  unsigned long timeout = millis();
+  while (pos < toRead && millis() - timeout < 10000) {
+    if (client.available()) {
+      int n = client.read(buf + pos, toRead - pos);
+      if (n > 0) { pos += n; timeout = millis(); }
     } else {
-      uint8_t buf[1024];
-      while (client.connected() && client.available()) {
-        int avail = min((int)sizeof(buf), client.available());
-        int n = client.readBytes(buf, avail);
-        if (n <= 0) break;
-        // Check for boundary in chunk
-        String chunk((char *)buf, n);
-        int bndIdx = chunk.indexOf(delim);
-        if (bndIdx >= 0) {
-          int writeLen = bndIdx;
-          if (writeLen >= 2) writeLen -= 2;
-          if (writeLen > 0 && outFile) { outFile.write(buf, writeLen); totalWritten += writeLen; }
-          if (outFile) outFile.close();
-          inFileData = false;
-          if (chunk.indexOf(delimEnd) >= 0) done = true;
-          break;
-        } else {
-          if (outFile) { outFile.write(buf, n); totalWritten += n; }
-        }
-        if (!client.connected()) break;
-      }
-      if (!client.available() && !client.connected()) break;
-      if (client.available() == 0) delay(1);
+      yield();
+      delay(1);
     }
   }
 
-  if (outFile) outFile.close();
+  // Find file data boundaries in the buffer
+  String delim = "\r\n--" + req.boundary;
+  String headerEnd = "\r\n\r\n";
+  size_t totalWritten = 0;
+  String savePath = "";
+
+  // Find first boundary (starts without leading \r\n)
+  String firstDelim = "--" + req.boundary;
+  int hdrStart = -1;
+  for (int i = 0; i <= pos - (int)firstDelim.length(); i++) {
+    if (memcmp(buf + i, firstDelim.c_str(), firstDelim.length()) == 0) {
+      hdrStart = i + firstDelim.length();
+      break;
+    }
+  }
+
+  if (hdrStart >= 0) {
+    // Find end of headers (\r\n\r\n)
+    int dataStart = -1;
+    for (int i = hdrStart; i <= pos - 4; i++) {
+      if (buf[i] == '\r' && buf[i+1] == '\n' && buf[i+2] == '\r' && buf[i+3] == '\n') {
+        dataStart = i + 4;
+        break;
+      }
+    }
+
+    if (dataStart >= 0) {
+      // Parse headers for filename
+      String headers((char *)(buf + hdrStart), dataStart - hdrStart);
+      String ext = ".jpg";  // default
+      int fnIdx = headers.indexOf("filename=\"");
+      if (fnIdx >= 0) {
+        fnIdx += 10;
+        int fnEnd = headers.indexOf("\"", fnIdx);
+        String origName = headers.substring(fnIdx, fnEnd);
+        String origLower = origName;
+        origLower.toLowerCase();
+        if (origLower.endsWith(".png")) ext = ".png";
+      }
+
+      // Find end boundary
+      int dataEnd = pos;  // default to end
+      for (int i = dataStart; i <= pos - (int)delim.length(); i++) {
+        if (memcmp(buf + i, delim.c_str(), delim.length()) == 0) {
+          dataEnd = i;
+          break;
+        }
+      }
+
+      // Build save path
+      String folderName = gameDir;
+      int sl = folderName.lastIndexOf('/');
+      if (sl >= 0) folderName = folderName.substring(sl + 1);
+      savePath = gameDir + "/" + folderName + ext;
+
+      // Remove old cover with different extension
+      String altExt = (ext == ".jpg") ? ".png" : ".jpg";
+      String altPath = gameDir + "/" + folderName + altExt;
+      if (SD_MMC.exists(altPath.c_str())) SD_MMC.remove(altPath.c_str());
+
+      // Write to SD
+      File outFile = SD_MMC.open(savePath.c_str(), "w");
+      if (outFile) {
+        totalWritten = dataEnd - dataStart;
+        outFile.write(buf + dataStart, totalWritten);
+        outFile.close();
+      }
+    }
+  }
+
+  free(buf);
 
   // Refresh to pick up new cover
   refreshGameList();
