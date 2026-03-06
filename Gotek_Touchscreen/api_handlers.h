@@ -100,6 +100,129 @@ void refreshGameList() {
 }
 
 // ============================================================================
+// GET /api/disk/status — what's currently loaded
+// ============================================================================
+
+void handleDiskStatus(WiFiClient &client) {
+  String json = "{";
+  json += "\"loaded\":" + String(loaded_disk_index >= 0 ? "true" : "false") + ",";
+
+  if (loaded_disk_index >= 0 && loaded_disk_index < (int)file_list.size()) {
+    String path = file_list[loaded_disk_index];
+    json += "\"file\":\"" + jsonEscape(filenameOnly(path)) + "\",";
+    json += "\"path\":\"" + jsonEscape(path) + "\",";
+
+    // Find which game this disk belongs to
+    int gi = findGameIndex(loaded_disk_index);
+    if (gi >= 0 && gi < (int)game_list.size()) {
+      json += "\"game\":\"" + jsonEscape(game_list[gi].name) + "\",";
+      json += "\"disk_num\":" + String(loaded_disk_index - game_list[gi].first_file_index + 1) + ",";
+      json += "\"disk_total\":" + String(game_list[gi].disk_count) + ",";
+    } else {
+      json += "\"game\":\"" + jsonEscape(basenameNoExt(filenameOnly(path))) + "\",";
+      json += "\"disk_num\":1,";
+      json += "\"disk_total\":1,";
+    }
+  } else {
+    json += "\"file\":\"\",";
+    json += "\"path\":\"\",";
+    json += "\"game\":\"\",";
+    json += "\"disk_num\":0,";
+    json += "\"disk_total\":0,";
+  }
+
+  json += "\"mode\":\"" + String(g_mode == MODE_ADF ? "ADF" : "DSK") + "\"";
+  json += "}";
+
+  sendJSON(client, 200, json);
+}
+
+// ============================================================================
+// POST /api/games/{mode}/{name}/load — load a specific disk
+// ============================================================================
+
+void handleDiskLoad(WiFiClient &client, const String &mode, const String &name, const String &body) {
+  // Optional: "disk" parameter to specify which disk (1-based index, default 1)
+  String diskParam = getFormValue(body, "disk");
+  int diskNum = (diskParam.length() > 0) ? diskParam.toInt() : 1;
+  if (diskNum < 1) diskNum = 1;
+
+  // Find the game in game_list
+  int gameIdx = -1;
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    if (game_list[i].name == name) { gameIdx = i; break; }
+  }
+
+  if (gameIdx < 0) {
+    sendJSON(client, 404, "{\"error\":\"Game not found\"}");
+    return;
+  }
+
+  GameEntry &g = game_list[gameIdx];
+
+  // Resolve which file_list index to load
+  // disk_num is 1-based, game disks are consecutive from first_file_index
+  int targetIdx = g.first_file_index;
+
+  if (g.disk_count > 1 && diskNum > 1) {
+    // Find the Nth disk file for this game
+    int count = 0;
+    for (int i = 0; i < (int)file_list.size(); i++) {
+      String fdir = file_list[i];
+      int sl = fdir.lastIndexOf('/');
+      if (sl > 0) fdir = fdir.substring(0, sl);
+      String gdir = file_list[g.first_file_index];
+      int gsl = gdir.lastIndexOf('/');
+      if (gsl > 0) gdir = gdir.substring(0, gsl);
+
+      if (fdir == gdir) {
+        count++;
+        if (count == diskNum) {
+          targetIdx = i;
+          break;
+        }
+      }
+    }
+  }
+
+  if (targetIdx < 0 || targetIdx >= (int)file_list.size()) {
+    sendJSON(client, 404, "{\"error\":\"Disk file not found\"}");
+    return;
+  }
+
+  Serial.println("Web load: " + file_list[targetIdx]);
+
+  // Set selected_index and call doLoadSelected()
+  selected_index = targetIdx;
+  doLoadSelected();
+
+  // Check if it actually loaded
+  if (loaded_disk_index == targetIdx) {
+    String loadedFile = filenameOnly(file_list[targetIdx]);
+    sendJSON(client, 200,
+      "{\"status\":\"ok\",\"file\":\"" + jsonEscape(loadedFile) +
+      "\",\"game\":\"" + jsonEscape(name) +
+      "\",\"disk\":" + String(diskNum) + "}");
+  } else {
+    sendJSON(client, 500, "{\"error\":\"Failed to load disk\"}");
+  }
+}
+
+// ============================================================================
+// POST /api/disk/unload — eject current disk
+// ============================================================================
+
+void handleDiskUnload(WiFiClient &client) {
+  if (loaded_disk_index < 0) {
+    sendJSON(client, 200, "{\"status\":\"ok\",\"message\":\"No disk loaded\"}");
+    return;
+  }
+
+  doUnload();
+  sendJSON(client, 200, "{\"status\":\"ok\"}");
+}
+
+// ============================================================================
 // GET /api/system/info
 // ============================================================================
 
@@ -216,7 +339,21 @@ void handleConfigPost(WiFiClient &client, const String &body) {
 // ============================================================================
 
 void handleGamesList(WiFiClient &client) {
-  String json = "{\"mode\":\"" + String(g_mode == MODE_ADF ? "ADF" : "DSK") + "\",\"games\":[";
+  // Find which game is currently loaded
+  String loadedGame = "";
+  String loadedFile = "";
+  if (loaded_disk_index >= 0 && loaded_disk_index < (int)file_list.size()) {
+    loadedFile = filenameOnly(file_list[loaded_disk_index]);
+    int gi = findGameIndex(loaded_disk_index);
+    if (gi >= 0 && gi < (int)game_list.size()) {
+      loadedGame = game_list[gi].name;
+    }
+  }
+
+  String json = "{\"mode\":\"" + String(g_mode == MODE_ADF ? "ADF" : "DSK") + "\",";
+  json += "\"loaded_game\":\"" + jsonEscape(loadedGame) + "\",";
+  json += "\"loaded_file\":\"" + jsonEscape(loadedFile) + "\",";
+  json += "\"games\":[";
 
   for (int i = 0; i < (int)game_list.size(); i++) {
     if (i > 0) json += ",";
@@ -224,6 +361,7 @@ void handleGamesList(WiFiClient &client) {
     json += "\"name\":\"" + jsonEscape(game_list[i].name) + "\",";
     json += "\"disks\":" + String(game_list[i].disk_count) + ",";
     json += "\"has_cover\":" + String(game_list[i].jpg_path.length() > 0 ? "true" : "false") + ",";
+    json += "\"loaded\":" + String(game_list[i].name == loadedGame ? "true" : "false") + ",";
 
     // Check for NFO
     String nfoPath = "";

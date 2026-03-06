@@ -40,6 +40,12 @@ extern void sortByDisplay();
 extern void buildGameList();
 extern String filenameOnly(const String &path);
 extern String basenameNoExt(const String &path);
+extern size_t loadFileToRam(int index);
+extern void doLoadSelected();
+extern void doUnload();
+extern vector<int> disk_set;
+extern int game_selected;
+extern int findGameIndex(int fileIndex);
 
 // WiFi state (defined in main .ino)
 extern bool wifi_ap_active;
@@ -545,6 +551,16 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
+  if (req.path == "/api/disk/unload" && req.method == "POST") {
+    handleDiskUnload(client);
+    return;
+  }
+
+  if (req.path == "/api/disk/status" && req.method == "GET") {
+    handleDiskStatus(client);
+    return;
+  }
+
   if (req.path == "/api/wifi/status" && req.method == "GET") {
     handleWiFiStatus(client);
     return;
@@ -574,6 +590,10 @@ void handleHttpRequest(WiFiClient &client) {
           action = "";
         }
 
+        if (action == "load" && req.method == "POST") {
+          handleDiskLoad(client, mode, name, req.body);
+          return;
+        }
         if (action == "cover" && req.method == "GET") {
           handleCoverServe(client, mode, name);
           return;
