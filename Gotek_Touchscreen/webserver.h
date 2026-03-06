@@ -72,57 +72,85 @@ WiFiServer wifiHttpServer(80);
 // ============================================================================
 
 bool initWiFiAP() {
-  if (!cfg_wifi_enabled) return false;
+  if (!cfg_wifi_enabled && !cfg_remote_enabled) return false;
 
-  // Use AP+STA if client is configured, otherwise AP only
-  if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
+  // Determine WiFi mode: need STA if client or remote is configured
+  bool needSTA = (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) ||
+                 (cfg_remote_enabled && cfg_remote_ssid.length() > 0);
+
+  if (cfg_wifi_enabled && needSTA) {
     WiFi.mode(WIFI_AP_STA);
     Serial.println("WiFi mode: AP + Station (dual)");
-  } else {
+  } else if (cfg_wifi_enabled) {
     WiFi.mode(WIFI_AP);
     Serial.println("WiFi mode: AP only");
+  } else if (needSTA) {
+    WiFi.mode(WIFI_STA);
+    Serial.println("WiFi mode: Station only (remote)");
   }
 
-  // Start Access Point
-  WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
-  delay(200);
+  // Start Access Point (if enabled)
+  if (cfg_wifi_enabled) {
+    WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
+    delay(200);
+    wifi_ap_ip = WiFi.softAPIP().toString();
+    wifi_ap_active = true;
+    Serial.println("AP started: " + cfg_wifi_ssid + " @ " + wifi_ap_ip);
+  }
 
-  wifi_ap_ip = WiFi.softAPIP().toString();
-  wifi_ap_active = true;
-  Serial.println("AP started: " + cfg_wifi_ssid + " @ " + wifi_ap_ip);
-
+  // Connect to remote dongle AP (priority over home network)
+  if (cfg_remote_enabled && cfg_remote_ssid.length() > 0) {
+    Serial.println("Connecting to dongle: " + cfg_remote_ssid);
+    WiFi.begin(cfg_remote_ssid.c_str(), cfg_remote_pass.c_str());
+    // Don't block — checkWiFiClient() in loop will track connection
+  }
   // Connect to home network (non-blocking)
-  if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
+  else if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
     Serial.println("Connecting to: " + cfg_wifi_client_ssid);
     WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
-    // Don't block — checkWiFiClient() in loop will track connection
   }
 
   return true;
 }
 
-// Call from loop() periodically to track client connection state
+// Call from loop() periodically to track client/remote connection state
 unsigned long _lastWifiCheck = 0;
 void checkWiFiClient() {
-  if (!cfg_wifi_client_enabled || cfg_wifi_client_ssid.length() == 0) return;
+  bool needCheck = (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) ||
+                   (cfg_remote_enabled && cfg_remote_ssid.length() > 0);
+  if (!needCheck) return;
   if (millis() - _lastWifiCheck < 3000) return;  // check every 3s
   _lastWifiCheck = millis();
 
   if (WiFi.status() == WL_CONNECTED) {
-    if (!wifi_sta_connected) {
+    if (cfg_remote_enabled) {
+      if (!remote_connected) {
+        remote_connected = true;
+        wifi_sta_ip = WiFi.localIP().toString();
+        Serial.println("Connected to dongle: " + cfg_remote_ssid + " @ " + wifi_sta_ip);
+      }
+    } else if (!wifi_sta_connected) {
       wifi_sta_connected = true;
       wifi_sta_ip = WiFi.localIP().toString();
       Serial.println("Connected to " + cfg_wifi_client_ssid + " @ " + wifi_sta_ip);
     }
   } else {
-    if (wifi_sta_connected) {
+    if (cfg_remote_enabled && remote_connected) {
+      remote_connected = false;
+      wifi_sta_ip = "";
+      Serial.println("Disconnected from dongle: " + cfg_remote_ssid);
+    } else if (!cfg_remote_enabled && wifi_sta_connected) {
       wifi_sta_connected = false;
       wifi_sta_ip = "";
       Serial.println("Disconnected from " + cfg_wifi_client_ssid);
     }
     // Auto-reconnect
     if (WiFi.status() != WL_IDLE_STATUS && WiFi.status() != WL_CONNECTED) {
-      WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
+      if (cfg_remote_enabled) {
+        WiFi.begin(cfg_remote_ssid.c_str(), cfg_remote_pass.c_str());
+      } else {
+        WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
+      }
     }
   }
 }

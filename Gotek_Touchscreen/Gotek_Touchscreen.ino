@@ -27,6 +27,7 @@
 #include <USB.h>
 #include <USBMSC.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
 
 // ============================================================================
 // DISPLAY SELECTOR
@@ -375,12 +376,24 @@ bool   cfg_wifi_client_enabled = false;
 String cfg_wifi_client_ssid    = "";
 String cfg_wifi_client_pass    = "";
 
+// Remote dongle config — send disk images to a WiFi Dongle instead of local USB
+bool   cfg_remote_enabled  = false;
+String cfg_remote_ssid     = "Gotek-Dongle";   // dongle's WiFi AP name
+String cfg_remote_pass     = "retrogaming";     // dongle's WiFi password
+String cfg_remote_host     = "192.168.4.1";     // dongle's IP (default AP gateway)
+int    cfg_remote_port     = 80;
+
 // WiFi state (defined here so drawInfoScreen can use them before webserver.h)
 bool wifi_ap_active = false;
 String wifi_ap_ip = "";
 bool wifi_sta_connected = false;
 String wifi_sta_ip = "";
 bool isWiFiActive() { return wifi_ap_active; }
+
+// Remote dongle state
+bool remote_connected = false;
+String remote_dongle_status = "";  // last status from dongle
+String remote_dongle_file = "";    // currently loaded file on dongle
 
 // Theme system
 String theme_path = "/THEMES/DEFAULT";  // resolved path to active theme
@@ -979,6 +992,17 @@ void loadConfig() {
       cfg_wifi_client_ssid = val;
     } else if (key == "WIFI_CLIENT_PASS") {
       cfg_wifi_client_pass = val;
+    } else if (key == "REMOTE_ENABLED") {
+      cfg_remote_enabled = (val == "1" || val == "true");
+    } else if (key == "REMOTE_SSID") {
+      cfg_remote_ssid = val;
+    } else if (key == "REMOTE_PASS") {
+      cfg_remote_pass = val;
+    } else if (key == "REMOTE_HOST") {
+      cfg_remote_host = val;
+    } else if (key == "REMOTE_PORT") {
+      cfg_remote_port = val.toInt();
+      if (cfg_remote_port <= 0) cfg_remote_port = 80;
     }
   }
   f.close();
@@ -1013,6 +1037,15 @@ void saveConfig() {
     f.println("WIFI_CLIENT_SSID=" + cfg_wifi_client_ssid);
     f.println("WIFI_CLIENT_PASS=" + cfg_wifi_client_pass);
   }
+
+  // Remote dongle settings
+  f.println("REMOTE_ENABLED=" + String(cfg_remote_enabled ? "1" : "0"));
+  if (cfg_remote_ssid.length() > 0) {
+    f.println("REMOTE_SSID=" + cfg_remote_ssid);
+    f.println("REMOTE_PASS=" + cfg_remote_pass);
+  }
+  f.println("REMOTE_HOST=" + cfg_remote_host);
+  f.println("REMOTE_PORT=" + String(cfg_remote_port));
 
   f.close();
 }
@@ -2147,21 +2180,48 @@ void drawInfoScreen() {
   }
   y += lineH;
 
+  // --- Remote dongle status ---
+  if (cfg_remote_enabled) {
+    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+    gfx_setCursor(20, y);
+    gfx_print("Dongle: ");
+    if (remote_connected) {
+      gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+      gfx_print("Connected");
+      gfx_setTextColor(0x7BEF, TFT_BLACK);
+      gfx_print(" (" + cfg_remote_ssid + ")");
+    } else {
+      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+      gfx_print("Connecting...");
+    }
+    y += lineH;
+
+    // Show what's loaded on the dongle
+    if (remote_connected && remote_dongle_file.length() > 0) {
+      gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+      gfx_setCursor(20, y);
+      gfx_print("Remote: ");
+      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+      gfx_print(basenameNoExt(remote_dongle_file));
+    }
+  }
   // --- WiFi Client (internet) status ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Net: ");
-  if (wifi_sta_connected) {
-    gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-    gfx_print(wifi_sta_ip);
-    gfx_setTextColor(0x7BEF, TFT_BLACK);
-    gfx_print(" (" + cfg_wifi_client_ssid + ")");
-  } else if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
-    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-    gfx_print("Connecting...");
-  } else {
-    gfx_setTextColor(0x7BEF, TFT_BLACK);
-    gfx_print("Off");
+  else {
+    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+    gfx_setCursor(20, y);
+    gfx_print("Net: ");
+    if (wifi_sta_connected) {
+      gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+      gfx_print(wifi_sta_ip);
+      gfx_setTextColor(0x7BEF, TFT_BLACK);
+      gfx_print(" (" + cfg_wifi_client_ssid + ")");
+    } else if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
+      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+      gfx_print("Connecting...");
+    } else {
+      gfx_setTextColor(0x7BEF, TFT_BLACK);
+      gfx_print("Off");
+    }
   }
 
   // Bottom buttons: BACK + THEME + ADF/DSK — evenly spaced, uniform 148x36
@@ -2452,6 +2512,20 @@ void drawDetailsFromNFO(const String &filename) {
     }
   }
 
+  // Remote mode indicator at top-left
+  if (cfg_remote_enabled) {
+    gfx_setTextSize(1);
+    if (remote_connected) {
+      gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+      gfx_setCursor(4, 4);
+      gfx_print("[REMOTE]");
+    } else {
+      gfx_setTextColor(TFT_RED, TFT_BLACK);
+      gfx_setCursor(4, 4);
+      gfx_print("[NO LINK]");
+    }
+  }
+
   gfx_flush();
 }
 
@@ -2648,8 +2722,203 @@ size_t loadFileToRam(int index) {
   return totalRead;
 }
 
+// ============================================================================
+// REMOTE DONGLE FUNCTIONS — send disk images to WiFi Dongle via HTTP
+// ============================================================================
+
+// Send a disk image file from SD to the remote dongle via POST /api/load
+// Returns true on success. Shows progress on the themed loading screen.
+bool remoteSendFile(int index) {
+  if (index < 0 || index >= (int)file_list.size()) return false;
+  if (!remote_connected) {
+    Serial.println("Remote: not connected to dongle");
+    return false;
+  }
+
+  String filepath = file_list[index];
+  String filename = filenameOnly(filepath);
+
+  // Open file from SD
+  File f = SD_MMC.open(filepath.c_str(), "r");
+  if (!f) {
+    Serial.println("Remote: cannot open " + filepath);
+    return false;
+  }
+
+  size_t fileSize = f.size();
+  Serial.println("Remote: sending " + filename + " (" + String(fileSize) + " bytes)");
+
+  // Show themed loading screen
+  drawThemedLoadingScreen(basenameNoExt(filename));
+
+  // Build URL
+  String url = "http://" + cfg_remote_host + ":" + String(cfg_remote_port) + "/api/load";
+
+  // Use raw WiFiClient for streaming (HTTPClient buffers everything)
+  WiFiClient tcpClient;
+  if (!tcpClient.connect(cfg_remote_host.c_str(), cfg_remote_port)) {
+    Serial.println("Remote: cannot connect to " + cfg_remote_host);
+    f.close();
+    return false;
+  }
+
+  // Send HTTP headers
+  tcpClient.println("POST /api/load HTTP/1.1");
+  tcpClient.println("Host: " + cfg_remote_host);
+  tcpClient.println("X-Filename: " + filename);
+  tcpClient.println("Content-Type: application/octet-stream");
+  tcpClient.println("Content-Length: " + String(fileSize));
+  tcpClient.println("Connection: close");
+  tcpClient.println();
+
+  // Stream file data in chunks
+  uint8_t buf[4096];
+  size_t totalSent = 0;
+  int lastPctDrawn = -1;
+
+  while (totalSent < fileSize) {
+    size_t chunk = fileSize - totalSent;
+    if (chunk > sizeof(buf)) chunk = sizeof(buf);
+    size_t got = f.read(buf, chunk);
+    if (got == 0) break;
+
+    size_t written = tcpClient.write(buf, got);
+    if (written != got) {
+      Serial.println("Remote: write error at " + String(totalSent));
+      f.close();
+      tcpClient.stop();
+      return false;
+    }
+    totalSent += got;
+
+    // Update progress bar
+    int pct = (totalSent * 100) / fileSize;
+    if (pct / 5 != lastPctDrawn / 5) {
+      lastPctDrawn = pct;
+      drawThemedProgressBar(pct);
+    }
+  }
+  f.close();
+
+  // Read response
+  unsigned long timeout = millis();
+  while (!tcpClient.available() && millis() - timeout < 5000) {
+    delay(10);
+  }
+
+  bool success = false;
+  if (tcpClient.available()) {
+    String responseLine = tcpClient.readStringUntil('\n');
+    success = responseLine.indexOf("200") >= 0;
+    Serial.println("Remote: response: " + responseLine);
+  }
+  tcpClient.stop();
+
+  if (success) {
+    drawThemedProgressBar(100);
+    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+    gfx_setTextSize(2);
+    String okMsg = "SENT! " + String(totalSent / 1024) + " KB";
+    gfx_setCursor((gW - gfx_textWidth(okMsg)) / 2, 200);
+    gfx_print(okMsg);
+    gfx_flush();
+    delay(500);
+    remote_dongle_file = filename;
+  } else {
+    gfx_setTextColor(TFT_RED, TFT_BLACK);
+    gfx_setTextSize(2);
+    String errMsg = "SEND FAILED!";
+    gfx_setCursor((gW - gfx_textWidth(errMsg)) / 2, 200);
+    gfx_print(errMsg);
+    gfx_flush();
+    delay(1000);
+  }
+
+  return success;
+}
+
+// Send eject command to the remote dongle
+bool remoteEject() {
+  if (!remote_connected) return false;
+
+  WiFiClient tcpClient;
+  if (!tcpClient.connect(cfg_remote_host.c_str(), cfg_remote_port)) return false;
+
+  tcpClient.println("POST /api/eject HTTP/1.1");
+  tcpClient.println("Host: " + cfg_remote_host);
+  tcpClient.println("Content-Length: 0");
+  tcpClient.println("Connection: close");
+  tcpClient.println();
+
+  unsigned long timeout = millis();
+  while (!tcpClient.available() && millis() - timeout < 3000) { delay(10); }
+
+  bool success = false;
+  if (tcpClient.available()) {
+    String resp = tcpClient.readStringUntil('\n');
+    success = resp.indexOf("200") >= 0;
+  }
+  tcpClient.stop();
+
+  if (success) {
+    remote_dongle_file = "";
+    Serial.println("Remote: ejected");
+  }
+  return success;
+}
+
+// Query dongle status via GET /api/status
+bool remoteGetStatus() {
+  if (!remote_connected) return false;
+
+  WiFiClient tcpClient;
+  if (!tcpClient.connect(cfg_remote_host.c_str(), cfg_remote_port)) return false;
+
+  tcpClient.println("GET /api/status HTTP/1.1");
+  tcpClient.println("Host: " + cfg_remote_host);
+  tcpClient.println("Connection: close");
+  tcpClient.println();
+
+  unsigned long timeout = millis();
+  while (!tcpClient.available() && millis() - timeout < 3000) { delay(10); }
+
+  String body = "";
+  bool headersDone = false;
+  while (tcpClient.available()) {
+    String line = tcpClient.readStringUntil('\n');
+    if (!headersDone && line.length() <= 2) { headersDone = true; continue; }
+    if (headersDone) body += line;
+  }
+  tcpClient.stop();
+
+  // Simple JSON parsing for "filename" field
+  int fnIdx = body.indexOf("\"filename\":\"");
+  if (fnIdx >= 0) {
+    int start = fnIdx + 12;
+    int end = body.indexOf("\"", start);
+    if (end > start) remote_dongle_file = body.substring(start, end);
+  }
+
+  remote_dongle_status = body;
+  return true;
+}
+
+// ============================================================================
+// LOCAL DISK OPERATIONS
+// ============================================================================
+
 // Unload: remove media from USB drive so host sees no disk.
 void doUnload() {
+  // Remote mode: send eject to dongle
+  if (cfg_remote_enabled && remote_connected) {
+    remoteEject();
+    loaded_disk_index = -1;
+    cfg_lastfile = "";
+    saveConfig();
+    Serial.println("Remote: drive ejected on dongle");
+    return;
+  }
+
   tud_disconnect();
   delay(50);
 
@@ -2668,10 +2937,23 @@ void doUnload() {
 }
 
 // Full load: disconnects USB, loads file, reconnects USB, saves config.
-// Use this from loop() when USB is active.
+// In remote mode: sends file to dongle instead of local RAM disk.
 void doLoadSelected() {
   if (selected_index < 0 || selected_index >= (int)file_list.size()) return;
 
+  // Remote mode: send file to dongle over WiFi
+  if (cfg_remote_enabled && remote_connected) {
+    bool ok = remoteSendFile(selected_index);
+    if (ok) {
+      loaded_disk_index = selected_index;
+      cfg_lastfile = file_list[selected_index];
+      cfg_lastmode = (g_mode == MODE_ADF) ? "ADF" : "DSK";
+      saveConfig();
+    }
+    return;
+  }
+
+  // Local mode: load to RAM disk + USB
   tud_disconnect();
   delay(50);
 
@@ -2767,12 +3049,17 @@ void setup() {
     Serial.println("Auto-loaded: " + file_list[selected_index] + " (" + String(loaded) + " bytes)");
   }
 
-  // ── WiFi Access Point + Web Server ──
-  if (cfg_wifi_enabled) {
-    drawBootProgress("Starting WiFi AP...", 85);
+  // ── WiFi Access Point + Web Server + Remote Dongle ──
+  if (cfg_wifi_enabled || cfg_remote_enabled) {
+    drawBootProgress(cfg_remote_enabled ? "Connecting to dongle..." : "Starting WiFi AP...", 85);
     if (initWiFiAP()) {
-      startWebServer();
-      Serial.println("Web server ready at http://" + wifi_ap_ip);
+      if (cfg_wifi_enabled) {
+        startWebServer();
+        Serial.println("Web server ready at http://" + wifi_ap_ip);
+      }
+      if (cfg_remote_enabled) {
+        Serial.println("Remote mode: connecting to " + cfg_remote_ssid + "...");
+      }
     }
   }
 
@@ -3008,14 +3295,14 @@ void handleTap(uint16_t px, uint16_t py) {
       bool isCurrentLoaded = (loaded_disk_index == selected_index && loaded_disk_index >= 0);
       if (isCurrentLoaded) {
         // EJECT (unload)
-        showBusyIndicator("EJECTING...");
+        showBusyIndicator(cfg_remote_enabled ? "EJECTING REMOTE..." : "EJECTING...");
         waitForRelease();
         doUnload();
         hideBusyIndicator();
         drawDetailsFromNFO(detail_filename);
       } else {
-        // INSERT (load)
-        showBusyIndicator("INSERTING...");
+        // INSERT (load) — remote mode sends to dongle, local loads to RAM
+        showBusyIndicator(cfg_remote_enabled ? "SENDING..." : "INSERTING...");
         waitForRelease();
         doLoadSelected();
         hideBusyIndicator();
@@ -3045,7 +3332,7 @@ void handleTap(uint16_t px, uint16_t py) {
             px >= btnLeft && px <= btnLeft + btnW) {
           selected_index = disk_set[hitIdx];
           detail_filename = file_list[selected_index];
-          showBusyIndicator("SWITCHING DISK...");
+          showBusyIndicator(cfg_remote_enabled ? "SENDING DISK..." : "SWITCHING DISK...");
           waitForRelease();
           doLoadSelected();
           hideBusyIndicator();

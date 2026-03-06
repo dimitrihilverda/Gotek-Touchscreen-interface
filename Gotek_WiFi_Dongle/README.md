@@ -21,6 +21,10 @@ A minimal WiFi-to-USB dongle that plugs into a Gotek's USB port. Send disk image
 
 No SD card needed. Your game library lives on your phone/laptop.
 
+### Touchscreen Remote Mode
+
+The [Gotek Touchscreen](../README.md) can also act as a wireless remote for this dongle. Enable `REMOTE_ENABLED=1` in the touchscreen's `CONFIG.TXT` and it will connect to the dongle's WiFi AP. When you tap INSERT on the touchscreen, the disk image is sent from the SD card wirelessly to the dongle. This gives you the full touchscreen experience (cover art, game info, multi-disk support) while the dongle handles the USB floppy emulation.
+
 ## Hardware
 
 ### Seeed XIAO ESP32-S3
