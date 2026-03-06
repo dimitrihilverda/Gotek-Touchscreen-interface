@@ -2186,11 +2186,7 @@ void drawList() {
 
   int perPage = items_per_page();
 
-  // Auto-scroll to keep game_selected visible
-  if (game_selected < scroll_offset) scroll_offset = game_selected;
-  if (game_selected >= scroll_offset + perPage) scroll_offset = game_selected - perPage + 1;
-
-  // Clamp scroll_offset
+  // Clamp scroll_offset (no auto-scroll — scroll buttons control position freely)
   if (scroll_offset > (int)game_list.size() - perPage)
     scroll_offset = (int)game_list.size() - perPage;
   if (scroll_offset < 0) scroll_offset = 0;
@@ -2286,15 +2282,25 @@ void drawList() {
     gfx_fillRect(btnX - 4, thumbY, 3, thumbH, 0x4208);
   }
 
-  // Bottom action buttons: INFO + mode switch
-  drawThemedButton(20, gH - 42, 90, 36, "BTN_INFO", "INFO", TFT_YELLOW);
+  // Bottom bar: INFO button + loaded game name + mode switch
+  drawThemedButton(20, gH - 42, 70, 36, "BTN_INFO", "INFO", TFT_YELLOW);
   drawModeSwitchButton();  // ADF/DSK toggle (bottom-right)
 
-  // Show game count
+  // Show loaded game name (or game count if nothing loaded)
   gfx_setTextSize(1);
-  gfx_setTextColor(TFT_GREY, TFT_BLACK);
-  gfx_setCursor(130, gH - 30);
-  gfx_print(String((int)game_list.size()) + " games");
+  if (loaded_disk_index >= 0 && loaded_disk_index < (int)file_list.size()) {
+    String loadedName = getGameBaseName(file_list[loaded_disk_index]);
+    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+    gfx_setCursor(100, gH - 36);
+    gfx_print("Now playing:");
+    gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+    gfx_setCursor(100, gH - 24);
+    gfx_print(loadedName.substring(0, 28));
+  } else {
+    gfx_setTextColor(TFT_GREY, TFT_BLACK);
+    gfx_setCursor(100, gH - 30);
+    gfx_print(String((int)game_list.size()) + " games");
+  }
 
   gfx_flush();
 }
@@ -2413,18 +2419,16 @@ void drawDetailsFromNFO(const String &filename) {
     gfx_print(">");
   }
 
-  // Bottom action buttons
-  drawThemedButton(20, btnTop, 80, 36, "BTN_BACK", "BACK", TFT_CYAN);
+  // Bottom action buttons: BACK + INSERT/EJECT toggle
+  drawThemedButton(20, btnTop, 120, 36, "BTN_BACK", "BACK", TFT_CYAN);
 
   // LOAD/UNLOAD toggle — one button, changes based on state
   bool isCurrentLoaded = (loaded_disk_index == selected_index && loaded_disk_index >= 0);
   if (isCurrentLoaded) {
-    drawThemedButton(115, btnTop, 110, 36, "BTN_UNLOAD", "EJECT", TFT_RED);
+    drawThemedButton(160, btnTop, 140, 36, "BTN_UNLOAD", "EJECT", TFT_RED);
   } else {
-    drawThemedButton(115, btnTop, 110, 36, "BTN_LOAD", "INSERT", TFT_GREEN);
+    drawThemedButton(160, btnTop, 140, 36, "BTN_LOAD", "INSERT", TFT_GREEN);
   }
-
-  drawThemedButton(240, btnTop, 80, 36, "BTN_INFO", "INFO", TFT_YELLOW);
 
   // Loaded status indicator at top-right
   if (loaded_disk_index >= 0) {
@@ -2982,15 +2986,15 @@ void handleTap(uint16_t px, uint16_t py) {
   // ══════════════════════════════════════
   else if (current_screen == SCR_DETAILS) {
 
-    // BACK button (x: 20-100)
-    if (px >= 20 && px <= 100 && py >= gH - 42) {
+    // BACK button (x: 20-140)
+    if (px >= 20 && px <= 140 && py >= gH - 42) {
       current_screen = SCR_SELECTION;
       drawList();
       return;
     }
 
-    // INSERT/EJECT toggle button (x: 115-225)
-    if (px >= 115 && px <= 225 && py >= gH - 42) {
+    // INSERT/EJECT toggle button (x: 160-300)
+    if (px >= 160 && px <= 300 && py >= gH - 42) {
       bool isCurrentLoaded = (loaded_disk_index == selected_index && loaded_disk_index >= 0);
       if (isCurrentLoaded) {
         // EJECT (unload)
@@ -3007,13 +3011,6 @@ void handleTap(uint16_t px, uint16_t py) {
         hideBusyIndicator();
         drawDetailsFromNFO(detail_filename);
       }
-      return;
-    }
-
-    // INFO button (x: 240-320)
-    if (px >= 240 && px <= 320 && py >= gH - 42) {
-      current_screen = SCR_INFO;
-      drawInfoScreen();
       return;
     }
 
