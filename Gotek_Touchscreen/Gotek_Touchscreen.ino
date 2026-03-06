@@ -2807,6 +2807,15 @@ void loop() {
   uint16_t px = 0, py = 0;
   bool haveTouch = touchRead(&px, &py);
 
+  // DEBUG: print touch data every 500ms
+  static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 500) {
+    lastDebug = millis();
+    if (haveTouch) {
+      Serial.printf("TOUCH: x=%d y=%d active=%d busy=%d\n", px, py, touch_active, ui_busy);
+    }
+  }
+
   if (ui_busy) {
     delay(10);
     return;
@@ -2827,6 +2836,10 @@ void loop() {
     // Touch UP — determine if it was a tap or swipe
     touch_active = false;
     unsigned long now = millis();
+
+    Serial.printf("RELEASE: start=(%d,%d) last=(%d,%d) dt=%lu\n",
+      touch_start_x, touch_start_y, touch_last_x, touch_last_y,
+      now - last_touch_time);
 
     // Debounce: ignore very quick phantom touches
     if (now - last_touch_time < 200) {
@@ -2881,6 +2894,7 @@ void handleSwipe(int16_t dx, int16_t dy, uint16_t startX, uint16_t startY) {
 // Handle tap gestures
 // ============================================================================
 void handleTap(uint16_t px, uint16_t py) {
+  Serial.printf("TAP: x=%d y=%d screen=%d\n", px, py, current_screen);
 
   // ══════════════════════════════════════
   // SELECTION SCREEN
