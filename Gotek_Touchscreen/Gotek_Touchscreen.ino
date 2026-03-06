@@ -873,21 +873,30 @@ void touchInit() {
   touch_available = true;
 }
 
-bool touchRead(uint16_t *x, uint16_t *y) {
+// touchRead return values:
+//   1 = touch detected at (x,y)
+//   0 = no touch (finger released — buf[1]==0)
+//  -1 = I2C error (bus failure, NOT a release!)
+int touchReadEx(uint16_t *x, uint16_t *y) {
   uint8_t cmd[11] = {0xb5, 0xab, 0xa5, 0x5a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00};
   Wire.beginTransmission(TOUCH_ADDR);
   Wire.write(cmd, 11);
-  if (Wire.endTransmission() != 0) return false;
-  if (Wire.requestFrom((int)TOUCH_ADDR, 8) != 8) return false;
+  if (Wire.endTransmission() != 0) return -1;   // I2C error
+  if (Wire.requestFrom((int)TOUCH_ADDR, 8) != 8) return -1;  // I2C error
   uint8_t buf[8];
   for (int i = 0; i < 8; i++) buf[i] = Wire.read();
-  if (buf[1] == 0) return false;
+  if (buf[1] == 0) return 0;  // no touch (real release)
   uint16_t raw_x = ((buf[2] & 0x0F) << 8) | buf[3];
   uint16_t raw_y = ((buf[4] & 0x0F) << 8) | buf[5];
   // Rotate touch: physical portrait → virtual landscape
   *x = (LCD_HEIGHT - 1) - raw_y;
   *y = raw_x;
-  return true;
+  return 1;  // touch detected
+}
+
+// Backwards compatible wrapper
+bool touchRead(uint16_t *x, uint16_t *y) {
+  return touchReadEx(x, y) == 1;
 }
 
 #elif ACTIVE_DISPLAY == DISPLAY_WAVESHARE
@@ -1144,6 +1153,7 @@ vector<String> listImages() {
 // Forward declaration (used by findNFOFor/findJPGFor before definition)
 String getGameBaseName(const String &fullPath);
 void processTap(uint16_t px, uint16_t py);
+int touchReadEx(uint16_t *x, uint16_t *y);
 
 // Get the parent directory of a file path
 String parentDir(const String &path) {
@@ -2782,45 +2792,67 @@ bool hitBtn(uint16_t px, uint16_t py, int bx, int by, int bw, int bh) {
 #define BTN_ROW_H   44
 
 // ============================================================================
-// Main loop — ONE TAP PER TOUCH
+// Main loop — ROBUST ONE TAP PER TOUCH
 // ============================================================================
-// How it works:
-//   - touch_active tracks if finger is currently on screen
-//   - On new touch (touch_active was false): process tap immediately
-//   - While held: track drag for scroll/swipe
-//   - On release (touchRead false): reset touch_active
-//   - Debounce: separate timers for taps vs scroll to avoid interference
+// Key insight: touchReadEx returns -1 on I2C error, which is NOT a finger
+// release. Only buf[1]==0 (return 0) means the finger is truly lifted.
+// Treating I2C errors as "no touch" caused touch_active to reset randomly,
+// making subsequent reads fire as "new touch" = phantom taps.
 //
-// IMPORTANT: last_touch_time is ONLY set by taps (processTap), NOT by
-// scroll drag. This prevents scroll from blocking the next tap.
+// Rules:
+//   - touchReadEx == 1  → touch detected, process or track drag
+//   - touchReadEx == 0  → real release, reset touch_active
+//   - touchReadEx == -1 → I2C error, IGNORE (keep current state)
 
-// Minimum time between taps (processTap calls)
-#define TAP_DEBOUNCE 150
-
-// Scroll drag settings
+#define TAP_DEBOUNCE     150
 #define SCROLL_THRESHOLD 20
-#define SCROLL_INTERVAL  200   // ms between scroll steps (prevents too-fast scroll)
+#define SCROLL_INTERVAL  200
 unsigned long last_scroll_time = 0;
+
+// Count consecutive REAL no-touch frames (buf[1]==0, not I2C error)
+int release_count = 0;
+#define RELEASE_CONFIRM 2  // need 2 real no-touch reads to confirm release
 
 void loop() {
   uint16_t px = 0, py = 0;
-  bool haveTouch = touchRead(&px, &py);
+  int touchResult = touchReadEx(&px, &py);
 
-  if (!haveTouch) {
-    touch_active = false;
-    delay(10);
+  // I2C error → skip this frame entirely, keep all state
+  if (touchResult < 0) {
+    delay(5);
     return;
   }
 
-  // Block during busy
+  // Block during busy — but still track release
   if (ui_busy) {
+    if (touchResult == 0) {
+      release_count++;
+      if (release_count >= RELEASE_CONFIRM) touch_active = false;
+    } else {
+      release_count = 0;
+    }
     delay(10);
     return;
   }
+
+  if (touchResult == 0) {
+    // ══════════════════════════════════════════════
+    // NO TOUCH — count releases to confirm finger lifted
+    // ══════════════════════════════════════════════
+    release_count++;
+    if (release_count >= RELEASE_CONFIRM) {
+      touch_active = false;
+    }
+    delay(10);
+    return;
+  }
+
+  // ── touchResult == 1: finger on screen ──
+  release_count = 0;
 
   if (!touch_active) {
     // ══════════════════════════════════════════════
-    // NEW TOUCH — first frame finger detected
+    // NEW TOUCH — first confirmed frame
     // ══════════════════════════════════════════════
     touch_active = true;
     touch_start_x = px;
@@ -2830,7 +2862,6 @@ void loop() {
 
     unsigned long now = millis();
     if (now - last_touch_time < TAP_DEBOUNCE) {
-      // Too soon — ignore but keep touch_active to prevent re-fire
       delay(10);
       return;
     }
@@ -2849,7 +2880,7 @@ void loop() {
 
     unsigned long now = millis();
 
-    // Vertical drag on list → scroll (throttled)
+    // Vertical drag on list → scroll
     if (current_screen == SCR_SELECTION &&
         touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM &&
         abs(dy) > SCROLL_THRESHOLD &&
