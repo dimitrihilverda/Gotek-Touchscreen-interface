@@ -99,6 +99,20 @@ void refreshGameList() {
   buildGameList();
 }
 
+// Find a game's actual folder path on SD from game_list (avoids hardcoded path assumptions)
+// Returns "" if not found
+String getGameFolder(const String &name) {
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    if (game_list[i].name == name && game_list[i].first_file_index >= 0 &&
+        game_list[i].first_file_index < (int)file_list.size()) {
+      String dir = file_list[game_list[i].first_file_index];
+      int sl = dir.lastIndexOf('/');
+      if (sl > 0) return dir.substring(0, sl);
+    }
+  }
+  return "";
+}
+
 // ============================================================================
 // GET /api/disk/status — what's currently loaded
 // ============================================================================
@@ -451,10 +465,9 @@ void handleGameDetailParsed(WiFiClient &client, const String &mode, const String
 // ============================================================================
 
 void handleGameDeleteParsed(WiFiClient &client, const String &mode, const String &name) {
-  String modeDir = (mode == "adf") ? "/ADF" : "/DSK";
-  String gamePath = modeDir + "/" + name;
+  String gamePath = getGameFolder(name);
 
-  if (!SD_MMC.exists(gamePath.c_str())) {
+  if (gamePath.length() == 0 || !SD_MMC.exists(gamePath.c_str())) {
     sendJSON(client, 404, "{\"error\":\"Game folder not found\"}");
     return;
   }
@@ -473,8 +486,12 @@ void handleGameDeleteParsed(WiFiClient &client, const String &mode, const String
 // ============================================================================
 
 void handleNFOUpdateParsed(WiFiClient &client, const String &mode, const String &name, const String &body) {
-  String modeDir = (mode == "adf") ? "/ADF" : "/DSK";
-  String nfoPath = modeDir + "/" + name + "/" + name + ".nfo";
+  String gameDir = getGameFolder(name);
+  if (gameDir.length() == 0) {
+    sendJSON(client, 404, "{\"error\":\"Game not found\"}");
+    return;
+  }
+  String nfoPath = gameDir + "/" + name + ".nfo";
 
   String content = getFormValue(body, "content");
 
@@ -533,11 +550,9 @@ void handleCoverDownload(WiFiClient &client, const String &mode, const String &n
     return;
   }
 
-  // Determine target path
-  String modeDir = (mode == "adf") ? "/ADF" : "/DSK";
-  String gameDir = modeDir + "/" + name;
-
-  if (!SD_MMC.exists(gameDir.c_str())) {
+  // Find actual game folder from game_list
+  String gameDir = getGameFolder(name);
+  if (gameDir.length() == 0) {
     sendJSON(client, 404, "{\"error\":\"Game folder not found\"}");
     return;
   }
