@@ -364,15 +364,22 @@ String cfg_lastfile = "";
 String cfg_lastmode = "";
 String cfg_theme = "DEFAULT";   // active theme folder name
 
-// WiFi config
+// WiFi config — AP (always-on hotspot)
 bool   cfg_wifi_enabled = true;
 String cfg_wifi_ssid    = "Gotek-Setup";
 String cfg_wifi_pass    = "retrogaming";
 uint8_t cfg_wifi_channel = 6;
 
-// WiFi AP state (defined here so drawInfoScreen can use them before webserver.h)
+// WiFi config — Client (connect to home network for internet)
+bool   cfg_wifi_client_enabled = false;
+String cfg_wifi_client_ssid    = "";
+String cfg_wifi_client_pass    = "";
+
+// WiFi state (defined here so drawInfoScreen can use them before webserver.h)
 bool wifi_ap_active = false;
 String wifi_ap_ip = "";
+bool wifi_sta_connected = false;
+String wifi_sta_ip = "";
 bool isWiFiActive() { return wifi_ap_active; }
 
 // Theme system
@@ -966,6 +973,12 @@ void loadConfig() {
     } else if (key == "WIFI_CHANNEL") {
       cfg_wifi_channel = (uint8_t)val.toInt();
       if (cfg_wifi_channel < 1 || cfg_wifi_channel > 13) cfg_wifi_channel = 6;
+    } else if (key == "WIFI_CLIENT_ENABLED") {
+      cfg_wifi_client_enabled = (val == "1" || val == "true");
+    } else if (key == "WIFI_CLIENT_SSID") {
+      cfg_wifi_client_ssid = val;
+    } else if (key == "WIFI_CLIENT_PASS") {
+      cfg_wifi_client_pass = val;
     }
   }
   f.close();
@@ -995,6 +1008,11 @@ void saveConfig() {
   f.println("WIFI_SSID=" + cfg_wifi_ssid);
   f.println("WIFI_PASS=" + cfg_wifi_pass);
   f.println("WIFI_CHANNEL=" + String(cfg_wifi_channel));
+  f.println("WIFI_CLIENT_ENABLED=" + String(cfg_wifi_client_enabled ? "1" : "0"));
+  if (cfg_wifi_client_ssid.length() > 0) {
+    f.println("WIFI_CLIENT_SSID=" + cfg_wifi_client_ssid);
+    f.println("WIFI_CLIENT_PASS=" + cfg_wifi_client_pass);
+  }
 
   f.close();
 }
@@ -2105,15 +2123,33 @@ void drawInfoScreen() {
   gfx_print(cfg_theme);
   y += lineH;
 
-  // --- WiFi status ---
+  // --- WiFi AP status ---
   gfx_setTextColor(TFT_GREEN, TFT_BLACK);
   gfx_setCursor(20, y);
-  gfx_print("WiFi: ");
+  gfx_print("AP: ");
   if (isWiFiActive()) {
     gfx_setTextColor(TFT_CYAN, TFT_BLACK);
     gfx_print(wifi_ap_ip);
-    gfx_setTextColor(0x7BEF, TFT_BLACK);  // dim gray
-    gfx_print(" (" + String(WiFi.softAPgetStationNum()) + " clients)");
+    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_print(" (" + String(WiFi.softAPgetStationNum()) + ")");
+  } else {
+    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_print("Off");
+  }
+  y += lineH;
+
+  // --- WiFi Client (internet) status ---
+  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+  gfx_setCursor(20, y);
+  gfx_print("Net: ");
+  if (wifi_sta_connected) {
+    gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+    gfx_print(wifi_sta_ip);
+    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_print(" (" + cfg_wifi_client_ssid + ")");
+  } else if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
+    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+    gfx_print("Connecting...");
   } else {
     gfx_setTextColor(0x7BEF, TFT_BLACK);
     gfx_print("Off");

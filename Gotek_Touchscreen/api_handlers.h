@@ -36,20 +36,51 @@ String readFileString(const String &path) {
 
 bool deleteDir(fs::FS &fs, const String &path) {
   File dir = fs.open(path.c_str());
-  if (!dir || !dir.isDirectory()) {
+  if (!dir) return false;
+  if (!dir.isDirectory()) {
     dir.close();
     return fs.remove(path.c_str());
   }
+
+  // Collect entries first, then delete (avoids iterator issues)
+  std::vector<String> files;
+  std::vector<String> dirs;
+
   File entry;
   while ((entry = dir.openNextFile())) {
-    String entryPath = entry.name();
-    if (!entryPath.startsWith("/")) entryPath = "/" + entryPath;
-    bool isDir = entry.isDirectory();
+    String entryName = entry.name();
+    // entry.name() may return full path or just filename depending on ESP32 core
+    // Build full path from parent + filename
+    String fullPath;
+    if (entryName.startsWith("/")) {
+      fullPath = entryName;  // already absolute
+    } else {
+      fullPath = path;
+      if (!fullPath.endsWith("/")) fullPath += "/";
+      fullPath += entryName;
+    }
+    if (entry.isDirectory()) {
+      dirs.push_back(fullPath);
+    } else {
+      files.push_back(fullPath);
+    }
     entry.close();
-    if (isDir) deleteDir(fs, entryPath);
-    else fs.remove(entryPath.c_str());
   }
   dir.close();
+
+  // Delete files first
+  for (const auto &f : files) {
+    Serial.println("DEL file: " + f);
+    fs.remove(f.c_str());
+  }
+
+  // Recurse into subdirectories
+  for (const auto &d : dirs) {
+    deleteDir(fs, d);
+  }
+
+  // Now remove the (empty) directory itself
+  Serial.println("DEL dir: " + path);
   return fs.rmdir(path.c_str());
 }
 
@@ -96,7 +127,10 @@ void handleSystemInfo(WiFiClient &client) {
   json += "\"mode\":\"" + String(g_mode == MODE_ADF ? "ADF" : "DSK") + "\",";
   json += "\"wifi_ssid\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
   json += "\"wifi_ip\":\"" + wifi_ap_ip + "\",";
-  json += "\"wifi_clients\":" + String(WiFi.softAPgetStationNum());
+  json += "\"wifi_clients\":" + String(WiFi.softAPgetStationNum()) + ",";
+  json += "\"internet\":" + String(wifi_sta_connected ? "true" : "false") + ",";
+  json += "\"internet_ip\":\"" + wifi_sta_ip + "\",";
+  json += "\"internet_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\"";
   json += "}";
 
   sendJSON(client, 200, json);
@@ -115,7 +149,10 @@ void handleConfigGet(WiFiClient &client) {
   json += "\"WIFI_ENABLED\":\"" + String(cfg_wifi_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_SSID\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
   json += "\"WIFI_PASS\":\"" + jsonEscape(cfg_wifi_pass) + "\",";
-  json += "\"WIFI_CHANNEL\":\"" + String(cfg_wifi_channel) + "\"";
+  json += "\"WIFI_CHANNEL\":\"" + String(cfg_wifi_channel) + "\",";
+  json += "\"WIFI_CLIENT_ENABLED\":\"" + String(cfg_wifi_client_enabled ? "1" : "0") + "\",";
+  json += "\"WIFI_CLIENT_SSID\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\",";
+  json += "\"WIFI_CLIENT_PASS\":\"" + jsonEscape(cfg_wifi_client_pass) + "\"";
   json += "}";
 
   sendJSON(client, 200, json);
@@ -155,6 +192,19 @@ void handleConfigPost(WiFiClient &client, const String &body) {
   if (val.length() > 0) {
     cfg_wifi_channel = (uint8_t)val.toInt();
     if (cfg_wifi_channel < 1 || cfg_wifi_channel > 13) cfg_wifi_channel = 6;
+  }
+
+  val = getFormValue(body, "WIFI_CLIENT_ENABLED");
+  if (val.length() > 0) {
+    cfg_wifi_client_enabled = (val == "1" || val == "true");
+  }
+
+  val = getFormValue(body, "WIFI_CLIENT_SSID");
+  if (val.length() > 0) cfg_wifi_client_ssid = val;
+
+  // Allow empty password (open networks)
+  if (body.indexOf("WIFI_CLIENT_PASS=") >= 0) {
+    cfg_wifi_client_pass = getFormValue(body, "WIFI_CLIENT_PASS");
   }
 
   saveConfig();
@@ -317,6 +367,214 @@ void handleUploadProgress(WiFiClient &client) {
   // Upload progress is tracked in webserver.h multipart handler
   // For now return a simple status
   sendJSON(client, 200, "{\"in_progress\":false,\"bytes_received\":0}");
+}
+
+// ============================================================================
+// POST /api/games/{mode}/{name}/cover-url — download cover from internet
+// ============================================================================
+
+void handleCoverDownload(WiFiClient &client, const String &mode, const String &name, const String &body) {
+  if (!wifi_sta_connected) {
+    sendJSON(client, 503, "{\"error\":\"No internet connection. Configure WiFi Client first.\"}");
+    return;
+  }
+
+  String url = getFormValue(body, "url");
+  if (url.length() == 0) {
+    sendJSON(client, 400, "{\"error\":\"Missing url parameter\"}");
+    return;
+  }
+
+  // Determine target path
+  String modeDir = (mode == "adf") ? "/ADF" : "/DSK";
+  String gameDir = modeDir + "/" + name;
+
+  if (!SD_MMC.exists(gameDir.c_str())) {
+    sendJSON(client, 404, "{\"error\":\"Game folder not found\"}");
+    return;
+  }
+
+  // Determine extension from URL
+  String ext = ".jpg";
+  String urlLower = url;
+  urlLower.toLowerCase();
+  if (urlLower.indexOf(".png") >= 0) ext = ".png";
+
+  String savePath = gameDir + "/" + name + ext;
+
+  // Parse host and path from URL
+  String host = "";
+  String path = "/";
+  int port = 80;
+  bool useSSL = false;
+
+  String work = url;
+  if (work.startsWith("https://")) {
+    work = work.substring(8);
+    port = 443;
+    useSSL = true;
+  } else if (work.startsWith("http://")) {
+    work = work.substring(7);
+  }
+
+  int slashIdx = work.indexOf('/');
+  if (slashIdx > 0) {
+    host = work.substring(0, slashIdx);
+    path = work.substring(slashIdx);
+  } else {
+    host = work;
+  }
+
+  // Check for port in host
+  int colonIdx = host.indexOf(':');
+  if (colonIdx > 0) {
+    port = host.substring(colonIdx + 1).toInt();
+    host = host.substring(0, colonIdx);
+  }
+
+  Serial.println("Downloading cover: " + host + path);
+
+  // Use WiFiClientSecure for HTTPS, WiFiClient for HTTP
+  WiFiClient *httpClient;
+  WiFiClientSecure secureClient;
+  WiFiClient plainClient;
+
+  if (useSSL) {
+    secureClient.setInsecure();  // skip cert validation (ESP32 has limited CA store)
+    httpClient = &secureClient;
+  } else {
+    httpClient = &plainClient;
+  }
+
+  if (!httpClient->connect(host.c_str(), port)) {
+    sendJSON(client, 502, "{\"error\":\"Cannot connect to " + jsonEscape(host) + "\"}");
+    return;
+  }
+
+  // Send HTTP GET
+  httpClient->println("GET " + path + " HTTP/1.1");
+  httpClient->println("Host: " + host);
+  httpClient->println("Connection: close");
+  httpClient->println("User-Agent: Gotek-Touchscreen/" + String(FW_VERSION));
+  httpClient->println();
+
+  // Read response status
+  String statusLine = httpClient->readStringUntil('\n');
+  int statusCode = 0;
+  int sp1 = statusLine.indexOf(' ');
+  if (sp1 > 0) statusCode = statusLine.substring(sp1 + 1).toInt();
+
+  if (statusCode < 200 || statusCode >= 400) {
+    httpClient->stop();
+    sendJSON(client, 502, "{\"error\":\"HTTP " + String(statusCode) + " from server\"}");
+    return;
+  }
+
+  // Handle redirects (301, 302, 303, 307, 308)
+  if (statusCode >= 300 && statusCode < 400) {
+    String location = "";
+    while (httpClient->connected()) {
+      String hdr = httpClient->readStringUntil('\n');
+      hdr.trim();
+      if (hdr.length() == 0) break;
+      String hdrLow = hdr;
+      hdrLow.toLowerCase();
+      if (hdrLow.startsWith("location:")) {
+        location = hdr.substring(9);
+        location.trim();
+      }
+    }
+    httpClient->stop();
+    // One redirect — not recursive to avoid loops
+    sendJSON(client, 502, "{\"error\":\"Redirect to " + jsonEscape(location) + " — try that URL directly\"}");
+    return;
+  }
+
+  // Skip response headers, get content length
+  int contentLen = -1;
+  while (httpClient->connected()) {
+    String hdr = httpClient->readStringUntil('\n');
+    hdr.trim();
+    if (hdr.length() == 0) break;
+    String hdrLow = hdr;
+    hdrLow.toLowerCase();
+    if (hdrLow.startsWith("content-length:")) {
+      contentLen = hdr.substring(15).toInt();
+    }
+  }
+
+  // Stream to SD card
+  File outFile = SD_MMC.open(savePath.c_str(), "w");
+  if (!outFile) {
+    httpClient->stop();
+    sendJSON(client, 500, "{\"error\":\"Cannot write to SD card\"}");
+    return;
+  }
+
+  uint8_t buf[1024];
+  size_t totalBytes = 0;
+  unsigned long timeout = millis();
+
+  while (httpClient->connected() || httpClient->available()) {
+    if (httpClient->available()) {
+      int n = httpClient->read(buf, sizeof(buf));
+      if (n > 0) {
+        outFile.write(buf, n);
+        totalBytes += n;
+        timeout = millis();
+      }
+    } else {
+      if (millis() - timeout > 10000) break;  // 10s timeout
+      delay(1);
+    }
+  }
+
+  outFile.close();
+  httpClient->stop();
+
+  Serial.println("Cover saved: " + savePath + " (" + String(totalBytes) + " bytes)");
+
+  // Refresh game list to pick up new cover
+  refreshGameList();
+
+  sendJSON(client, 200,
+    "{\"status\":\"ok\",\"path\":\"" + jsonEscape(savePath) +
+    "\",\"bytes\":" + String(totalBytes) + "}");
+}
+
+// ============================================================================
+// GET /api/wifi/status — WiFi connection status
+// ============================================================================
+
+void handleWiFiStatus(WiFiClient &client) {
+  String json = "{";
+  json += "\"ap_active\":" + String(wifi_ap_active ? "true" : "false") + ",";
+  json += "\"ap_ip\":\"" + wifi_ap_ip + "\",";
+  json += "\"ap_ssid\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
+  json += "\"ap_clients\":" + String(WiFi.softAPgetStationNum()) + ",";
+  json += "\"sta_connected\":" + String(wifi_sta_connected ? "true" : "false") + ",";
+  json += "\"sta_ip\":\"" + wifi_sta_ip + "\",";
+  json += "\"sta_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\"";
+  json += "}";
+  sendJSON(client, 200, json);
+}
+
+// ============================================================================
+// GET /api/wifi/scan — scan for available networks
+// ============================================================================
+
+void handleWiFiScan(WiFiClient &client) {
+  int n = WiFi.scanNetworks(false, false);
+  String json = "{\"networks\":[";
+  for (int i = 0; i < n; i++) {
+    if (i > 0) json += ",";
+    json += "{\"ssid\":\"" + jsonEscape(WiFi.SSID(i)) + "\",";
+    json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
+    json += "\"encrypted\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
+  }
+  json += "]}";
+  WiFi.scanDelete();
+  sendJSON(client, 200, json);
 }
 
 // ============================================================================

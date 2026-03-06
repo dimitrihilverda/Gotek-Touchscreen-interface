@@ -12,12 +12,15 @@
 */
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 
 // Forward declarations from main sketch
 extern String cfg_display, cfg_lastfile, cfg_lastmode, cfg_theme;
 extern bool cfg_wifi_enabled;
 extern String cfg_wifi_ssid, cfg_wifi_pass;
 extern uint8_t cfg_wifi_channel;
+extern bool cfg_wifi_client_enabled;
+extern String cfg_wifi_client_ssid, cfg_wifi_client_pass;
 extern String theme_path;
 extern vector<String> theme_list;
 extern vector<String> file_list;
@@ -41,6 +44,8 @@ extern String basenameNoExt(const String &path);
 // WiFi state (defined in main .ino)
 extern bool wifi_ap_active;
 extern String wifi_ap_ip;
+extern bool wifi_sta_connected;
+extern String wifi_sta_ip;
 
 // ============================================================================
 // Raw HTTP Server
@@ -60,23 +65,67 @@ WiFiServer wifiHttpServer(80);
 bool initWiFiAP() {
   if (!cfg_wifi_enabled) return false;
 
-  WiFi.mode(WIFI_AP);
+  // Use AP+STA if client is configured, otherwise AP only
+  if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
+    WiFi.mode(WIFI_AP_STA);
+    Serial.println("WiFi mode: AP + Station (dual)");
+  } else {
+    WiFi.mode(WIFI_AP);
+    Serial.println("WiFi mode: AP only");
+  }
+
+  // Start Access Point
   WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
   delay(200);
 
   wifi_ap_ip = WiFi.softAPIP().toString();
   wifi_ap_active = true;
+  Serial.println("AP started: " + cfg_wifi_ssid + " @ " + wifi_ap_ip);
 
-  Serial.println("WiFi AP started: " + cfg_wifi_ssid);
-  Serial.println("IP: " + wifi_ap_ip);
+  // Connect to home network (non-blocking)
+  if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
+    Serial.println("Connecting to: " + cfg_wifi_client_ssid);
+    WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
+    // Don't block — checkWiFiClient() in loop will track connection
+  }
+
   return true;
+}
+
+// Call from loop() periodically to track client connection state
+unsigned long _lastWifiCheck = 0;
+void checkWiFiClient() {
+  if (!cfg_wifi_client_enabled || cfg_wifi_client_ssid.length() == 0) return;
+  if (millis() - _lastWifiCheck < 3000) return;  // check every 3s
+  _lastWifiCheck = millis();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wifi_sta_connected) {
+      wifi_sta_connected = true;
+      wifi_sta_ip = WiFi.localIP().toString();
+      Serial.println("Connected to " + cfg_wifi_client_ssid + " @ " + wifi_sta_ip);
+    }
+  } else {
+    if (wifi_sta_connected) {
+      wifi_sta_connected = false;
+      wifi_sta_ip = "";
+      Serial.println("Disconnected from " + cfg_wifi_client_ssid);
+    }
+    // Auto-reconnect
+    if (WiFi.status() != WL_IDLE_STATUS && WiFi.status() != WL_CONNECTED) {
+      WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
+    }
+  }
 }
 
 void stopWiFiAP() {
   WiFi.softAPdisconnect(true);
+  WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   wifi_ap_active = false;
   wifi_ap_ip = "";
+  wifi_sta_connected = false;
+  wifi_sta_ip = "";
 }
 
 // ============================================================================
@@ -91,6 +140,32 @@ struct HttpRequest {
   String body;          // POST body
   String boundary;      // multipart boundary
 };
+
+// Full URL decode: %XX hex → char, + → space
+String urlDecode(const String &in) {
+  String out;
+  out.reserve(in.length());
+  for (unsigned int i = 0; i < in.length(); i++) {
+    char c = in[i];
+    if (c == '+') {
+      out += ' ';
+    } else if (c == '%' && i + 2 < in.length()) {
+      char hi = in[i + 1];
+      char lo = in[i + 2];
+      int h = (hi >= '0' && hi <= '9') ? hi - '0' : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10 : -1;
+      int l = (lo >= '0' && lo <= '9') ? lo - '0' : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10 : -1;
+      if (h >= 0 && l >= 0) {
+        out += (char)((h << 4) | l);
+        i += 2;
+      } else {
+        out += c;
+      }
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
 
 // Read one HTTP request from client (with timeout)
 bool parseHttpRequest(WiFiClient &client, HttpRequest &req) {
@@ -113,8 +188,8 @@ bool parseHttpRequest(WiFiClient &client, HttpRequest &req) {
   req.method = requestLine.substring(0, sp1);
   req.path = requestLine.substring(sp1 + 1, sp2);
 
-  // URL decode %20 → space
-  req.path.replace("%20", " ");
+  // Full URL decode (%XX hex sequences)
+  req.path = urlDecode(req.path);
 
   // Read headers
   while (client.connected()) {
@@ -160,16 +235,18 @@ String getFormValue(const String &body, const String &key) {
   String search = key + "=";
   int start = body.indexOf(search);
   if (start < 0) return "";
-  start += search.length();
+  // Make sure we matched a full key (start of string or after &)
+  if (start > 0 && body[start - 1] != '&') {
+    // Could be partial match, search again
+    search = "&" + key + "=";
+    start = body.indexOf(search);
+    if (start < 0) return "";
+    start += 1;  // skip the &
+  }
+  start += key.length() + 1;  // skip "key="
   int end = body.indexOf('&', start);
   String val = (end < 0) ? body.substring(start) : body.substring(start, end);
-  // Basic URL decode
-  val.replace("+", " ");
-  val.replace("%20", " ");
-  val.replace("%2F", "/");
-  val.replace("%26", "&");
-  val.replace("%3D", "=");
-  return val;
+  return urlDecode(val);
 }
 
 // ============================================================================
@@ -468,6 +545,16 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
+  if (req.path == "/api/wifi/status" && req.method == "GET") {
+    handleWiFiStatus(client);
+    return;
+  }
+
+  if (req.path == "/api/wifi/scan" && req.method == "GET") {
+    handleWiFiScan(client);
+    return;
+  }
+
   // ── Dynamic game routes: /api/games/{mode}/{name}[/{action}] ──
   if (req.path.startsWith("/api/games/")) {
     String rest = req.path.substring(11);
@@ -489,6 +576,10 @@ void handleHttpRequest(WiFiClient &client) {
 
         if (action == "cover" && req.method == "GET") {
           handleCoverServe(client, mode, name);
+          return;
+        }
+        if (action == "cover-url" && req.method == "POST") {
+          handleCoverDownload(client, mode, name, req.body);
           return;
         }
         if (action == "nfo" && req.method == "POST") {
@@ -535,6 +626,9 @@ void stopWebServer() {
 // Call from loop() — non-blocking, checks for new clients
 void handleWebServer() {
   if (!wifi_ap_active) return;
+
+  // Track home network connection state
+  checkWiFiClient();
 
   WiFiClient client = wifiHttpServer.available();
   if (client) {

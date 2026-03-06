@@ -59,6 +59,17 @@
 # WIFI_CHANNEL
 #   WiFi channel 1-13 (default: 6)
 #
+# WIFI_CLIENT_ENABLED
+#   Connect to your home WiFi for internet access (1 or 0).
+#   Runs simultaneously with the AP (dual mode: AP+STA).
+#   Enables cover art downloads from the web UI.
+#
+# WIFI_CLIENT_SSID
+#   Your home WiFi network name.
+#
+# WIFI_CLIENT_PASS
+#   Your home WiFi password.
+#
 # ============================================================
 
 DISPLAY=JC3248
@@ -72,3 +83,10 @@ WIFI_ENABLED=1
 WIFI_SSID=Gotek-Setup
 WIFI_PASS=retrogaming
 WIFI_CHANNEL=6
+
+# WiFi Client (Internet) settings
+# Enable to connect to your home network for cover art downloads etc.
+# The AP stays active simultaneously — you can still connect directly.
+WIFI_CLIENT_ENABLED=0
+#WIFI_CLIENT_SSID=YourHomeNetwork
+#WIFI_CLIENT_PASS=YourPassword
