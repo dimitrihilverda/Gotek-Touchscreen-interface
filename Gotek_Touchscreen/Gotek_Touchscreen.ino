@@ -1844,7 +1844,8 @@ void drawThemedButton(int x, int y, int w, int h,
     int by = y + (h - imgH) / 2;
     drawPngFile(path.c_str(), bx, by);
   } else {
-    // Fallback: simple rectangle with text
+    // Fallback: filled rectangle with border and text
+    gfx_fillRect(x, y, w, h, TFT_BLACK);
     gfx_drawRect(x, y, w, h, borderColor);
     gfx_setTextColor(borderColor, TFT_BLACK);
     gfx_setTextSize(2);
@@ -2163,9 +2164,10 @@ void drawInfoScreen() {
   gfx_setTextColor(WB_ORANGE, TFT_BLACK);
   gfx_print(cfg_theme);
 
-  // Bottom buttons: BACK + THEME cycle
+  // Bottom buttons: BACK + THEME + ADF/DSK mode switch
   drawThemedButton(20, gH - 42, 90, 36, "BTN_BACK", "BACK", TFT_CYAN);
-  drawThemedButton(130, gH - 42, 110, 36, "BTN_THEME", "THEME", WB_ORANGE);
+  drawThemedButton(130, gH - 42, 100, 36, "BTN_THEME", "THEME", WB_ORANGE);
+  drawModeSwitchButton();  // ADF/DSK toggle (bottom-right)
 
   gfx_flush();
 }
@@ -2254,26 +2256,17 @@ void drawList() {
     int listH = LIST_BOTTOM - LIST_START_Y;
     int btnH = listH / 2;
 
-    // UP button
-    uint16_t upColor = (scroll_offset > 0) ? 0x2945 : 0x1082;
-    gfx_fillRect(btnX, LIST_START_Y, btnW, btnH - 1, upColor);
-    gfx_setTextColor((scroll_offset > 0) ? TFT_WHITE : 0x3186, upColor);
-    gfx_setTextSize(3);
-    int chevW = gfx_textWidth("^");
-    gfx_setCursor(btnX + (btnW - chevW) / 2, LIST_START_Y + btnH / 2 - 12);
-    gfx_print("^");
-
-    // DOWN button
+    // UP button (themed)
     int downY = LIST_START_Y + btnH + 1;
     int maxOff = (int)game_list.size() - perPage;
     if (maxOff < 0) maxOff = 0;
-    uint16_t dnColor = (scroll_offset < maxOff) ? 0x2945 : 0x1082;
-    gfx_fillRect(btnX, downY, btnW, btnH - 1, dnColor);
-    gfx_setTextColor((scroll_offset < maxOff) ? TFT_WHITE : 0x3186, dnColor);
-    gfx_setTextSize(3);
-    chevW = gfx_textWidth("v");
-    gfx_setCursor(btnX + (btnW - chevW) / 2, downY + btnH / 2 - 12);
-    gfx_print("v");
+
+    uint16_t upBorderColor = (scroll_offset > 0) ? TFT_WHITE : 0x3186;
+    drawThemedButton(btnX, LIST_START_Y, btnW, btnH - 1, "BTN_UP", "^", upBorderColor);
+
+    // DOWN button (themed)
+    uint16_t dnBorderColor = (scroll_offset < maxOff) ? TFT_WHITE : 0x3186;
+    drawThemedButton(btnX, downY, btnW, btnH - 1, "BTN_DOWN", "v", dnBorderColor);
 
     // Thin scrollbar between buttons
     int trackH = LIST_BOTTOM - LIST_START_Y;
@@ -2282,25 +2275,25 @@ void drawList() {
     gfx_fillRect(btnX - 4, thumbY, 3, thumbH, 0x4208);
   }
 
-  // Bottom bar: INFO button + loaded game name + mode switch
-  drawThemedButton(20, gH - 42, 70, 36, "BTN_INFO", "INFO", TFT_YELLOW);
-  drawModeSwitchButton();  // ADF/DSK toggle (bottom-right)
-
-  // Show loaded game name (or game count if nothing loaded)
+  // Bottom bar: status text left, INFO button right
   gfx_setTextSize(1);
   if (loaded_disk_index >= 0 && loaded_disk_index < (int)file_list.size()) {
     String loadedName = getGameBaseName(file_list[loaded_disk_index]);
     gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-    gfx_setCursor(100, gH - 36);
+    gfx_setCursor(8, gH - 38);
     gfx_print("Now playing:");
     gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-    gfx_setCursor(100, gH - 24);
-    gfx_print(loadedName.substring(0, 28));
+    gfx_setCursor(8, gH - 26);
+    gfx_print(loadedName.substring(0, 32));
   } else {
     gfx_setTextColor(TFT_GREY, TFT_BLACK);
-    gfx_setCursor(100, gH - 30);
+    gfx_setCursor(8, gH - 32);
     gfx_print(String((int)game_list.size()) + " games");
   }
+
+  // INFO button — same width as scroll chevrons, aligned right
+  int infoBtnX = gW - 44;
+  drawThemedButton(infoBtnX, gH - 42, 44, 36, "BTN_INFO", "i", TFT_YELLOW);
 
   gfx_flush();
 }
@@ -2944,26 +2937,10 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
-    // INFO button (x: 20-110)
-    if (px >= 20 && px <= 110 && py >= gH - 42) {
+    // INFO button (bottom-right, 44px wide — same as chevrons)
+    if (px >= gW - 44 && py >= gH - 42) {
       current_screen = SCR_INFO;
       drawInfoScreen();
-      return;
-    }
-
-    // Mode switch button (bottom-right area)
-    if (px >= gW - 120 && py >= gH - 42) {
-      showBusyIndicator("SCANNING...");
-      g_mode = (g_mode == MODE_ADF) ? MODE_DSK : MODE_ADF;
-      file_list = listImages();
-      buildDisplayNames(file_list);
-      sortByDisplay();
-      buildGameList();
-      selected_index = 0;
-      game_selected = 0;
-      scroll_offset = 0;
-      hideBusyIndicator();
-      drawList();
       return;
     }
 
@@ -3049,13 +3026,30 @@ void handleTap(uint16_t px, uint16_t py) {
   // INFO SCREEN
   // ══════════════════════════════════════
   else if (current_screen == SCR_INFO) {
+    // BACK button (x: 20..110)
     if (px >= 20 && px <= 110 && py >= gH - 42) {
       current_screen = SCR_SELECTION;
       drawList();
       return;
     }
-    if (px >= 130 && px <= 240 && py >= gH - 42) {
+    // THEME button (x: 130..230)
+    if (px >= 130 && px <= 230 && py >= gH - 42) {
       cycleTheme();
+      drawInfoScreen();
+      return;
+    }
+    // ADF/DSK mode switch button (bottom-right, w=110)
+    if (px >= gW - 120 && py >= gH - 42) {
+      showBusyIndicator("SCANNING...");
+      g_mode = (g_mode == MODE_ADF) ? MODE_DSK : MODE_ADF;
+      file_list = listImages();
+      buildDisplayNames(file_list);
+      sortByDisplay();
+      buildGameList();
+      selected_index = 0;
+      game_selected = 0;
+      scroll_offset = 0;
+      hideBusyIndicator();
       drawInfoScreen();
       return;
     }
