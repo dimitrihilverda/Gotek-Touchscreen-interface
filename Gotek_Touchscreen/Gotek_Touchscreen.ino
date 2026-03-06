@@ -2286,11 +2286,15 @@ void drawList() {
     gfx_fillRect(btnX - 4, thumbY, 3, thumbH, 0x4208);
   }
 
-  // Bottom action buttons
-  drawThemedButton(20, gH - 42, 90, 36, "BTN_SELECT", "SELECT", TFT_CYAN);
-  drawThemedButton(130, gH - 42, 90, 36, "BTN_OPEN", "OPEN", TFT_GREEN);
-  drawThemedButton(240, gH - 42, 90, 36, "BTN_INFO", "INFO", TFT_YELLOW);
+  // Bottom action buttons: INFO + mode switch
+  drawThemedButton(20, gH - 42, 90, 36, "BTN_INFO", "INFO", TFT_YELLOW);
   drawModeSwitchButton();  // ADF/DSK toggle (bottom-right)
+
+  // Show game count
+  gfx_setTextSize(1);
+  gfx_setTextColor(TFT_GREY, TFT_BLACK);
+  gfx_setCursor(130, gH - 30);
+  gfx_print(String((int)game_list.size()) + " games");
 
   gfx_flush();
 }
@@ -2410,9 +2414,30 @@ void drawDetailsFromNFO(const String &filename) {
   }
 
   // Bottom action buttons
-  drawThemedButton(20, btnTop, 90, 36, "BTN_BACK", "BACK", TFT_CYAN);
-  drawThemedButton(130, btnTop, 90, 36, "BTN_LOAD", "LOAD", TFT_GREEN);
-  drawThemedButton(240, btnTop, 90, 36, "BTN_UNLOAD", "UNLOAD", TFT_RED);
+  drawThemedButton(20, btnTop, 80, 36, "BTN_BACK", "BACK", TFT_CYAN);
+
+  // LOAD/UNLOAD toggle — one button, changes based on state
+  bool isCurrentLoaded = (loaded_disk_index == selected_index && loaded_disk_index >= 0);
+  if (isCurrentLoaded) {
+    drawThemedButton(115, btnTop, 110, 36, "BTN_UNLOAD", "EJECT", TFT_RED);
+  } else {
+    drawThemedButton(115, btnTop, 110, 36, "BTN_LOAD", "INSERT", TFT_GREEN);
+  }
+
+  drawThemedButton(240, btnTop, 80, 36, "BTN_INFO", "INFO", TFT_YELLOW);
+
+  // Loaded status indicator at top-right
+  if (loaded_disk_index >= 0) {
+    gfx_setTextSize(1);
+    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+    gfx_setCursor(gW - 80, 4);
+    if (isCurrentLoaded) {
+      gfx_print("[LOADED]");
+    } else {
+      gfx_setTextColor(TFT_DARKGREY, TFT_BLACK);
+      gfx_print("[OTHER]");
+    }
+  }
 
   gfx_flush();
 }
@@ -2915,6 +2940,13 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
+    // INFO button (x: 20-110)
+    if (px >= 20 && px <= 110 && py >= gH - 42) {
+      current_screen = SCR_INFO;
+      drawInfoScreen();
+      return;
+    }
+
     // Mode switch button (bottom-right area)
     if (px >= gW - 120 && py >= gH - 42) {
       showBusyIndicator("SCANNING...");
@@ -2931,48 +2963,17 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
-    // SELECT button (x: 20-110)
-    if (px >= 20 && px <= 110 && py >= gH - 42) {
-      if (game_selected < (int)game_list.size()) {
-        showBusyIndicator("LOADING...");
-        selected_index = game_list[game_selected].first_file_index;
-        detail_filename = file_list[selected_index];
-        current_screen = SCR_DETAILS;
-        hideBusyIndicator();
-        drawDetailsFromNFO(detail_filename);
-      }
-      return;
-    }
-
-    // OPEN button (x: 130-220)
-    if (px >= 130 && px <= 220 && py >= gH - 42) {
-      if (game_selected < (int)game_list.size()) {
-        selected_index = game_list[game_selected].first_file_index;
-        detail_filename = file_list[selected_index];
-        showBusyIndicator("LOADING DISK...");
-        waitForRelease();
-        doLoadSelected();
-        current_screen = SCR_DETAILS;
-        hideBusyIndicator();
-        drawDetailsFromNFO(detail_filename);
-      }
-      return;
-    }
-
-    // INFO button (x: 240-330)
-    if (px >= 240 && px <= 330 && py >= gH - 42) {
-      current_screen = SCR_INFO;
-      drawInfoScreen();
-      return;
-    }
-
-    // Game list area — tap item to select
-    if (py >= LIST_START_Y && py < LIST_BOTTOM) {
+    // Game list area — tap item → go to detail page
+    if (py >= LIST_START_Y && py < LIST_BOTTOM && px < gW - 44) {
       int idx = (py - LIST_START_Y) / LIST_ITEM_H + scroll_offset;
       if (idx >= 0 && idx < (int)game_list.size()) {
         game_selected = idx;
-        drawList();
+        selected_index = game_list[idx].first_file_index;
+        detail_filename = file_list[selected_index];
+        current_screen = SCR_DETAILS;
+        drawDetailsFromNFO(detail_filename);
       }
+      return;
     }
   }
 
@@ -2981,30 +2982,38 @@ void handleTap(uint16_t px, uint16_t py) {
   // ══════════════════════════════════════
   else if (current_screen == SCR_DETAILS) {
 
-    // BACK button (x: 20-110)
-    if (px >= 20 && px <= 110 && py >= gH - 42) {
+    // BACK button (x: 20-100)
+    if (px >= 20 && px <= 100 && py >= gH - 42) {
       current_screen = SCR_SELECTION;
       drawList();
       return;
     }
 
-    // LOAD button (x: 130-220)
-    if (px >= 130 && px <= 220 && py >= gH - 42) {
-      showBusyIndicator("LOADING DISK...");
-      waitForRelease();
-      doLoadSelected();
-      hideBusyIndicator();
-      drawDetailsFromNFO(detail_filename);
+    // INSERT/EJECT toggle button (x: 115-225)
+    if (px >= 115 && px <= 225 && py >= gH - 42) {
+      bool isCurrentLoaded = (loaded_disk_index == selected_index && loaded_disk_index >= 0);
+      if (isCurrentLoaded) {
+        // EJECT (unload)
+        showBusyIndicator("EJECTING...");
+        waitForRelease();
+        doUnload();
+        hideBusyIndicator();
+        drawDetailsFromNFO(detail_filename);
+      } else {
+        // INSERT (load)
+        showBusyIndicator("INSERTING...");
+        waitForRelease();
+        doLoadSelected();
+        hideBusyIndicator();
+        drawDetailsFromNFO(detail_filename);
+      }
       return;
     }
 
-    // UNLOAD button (x: 240-330)
-    if (px >= 240 && px <= 330 && py >= gH - 42) {
-      showBusyIndicator("UNLOADING...");
-      doUnload();
-      hideBusyIndicator();
-      current_screen = SCR_SELECTION;
-      drawList();
+    // INFO button (x: 240-320)
+    if (px >= 240 && px <= 320 && py >= gH - 42) {
+      current_screen = SCR_INFO;
+      drawInfoScreen();
       return;
     }
 
