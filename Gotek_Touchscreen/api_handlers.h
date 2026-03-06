@@ -102,22 +102,17 @@ void refreshGameList() {
 // Find a game's actual folder path on SD from game_list
 // Tries exact match first, then case-insensitive, then falls back to /ADF|DSK/{name}
 String getGameFolder(const String &name, const String &mode = "") {
-  Serial.println("getGameFolder: looking for '" + name + "' in " + String(game_list.size()) + " games");
-
-  // Pass 1: exact match
+  // Pass 1: exact match in game_list
   for (int i = 0; i < (int)game_list.size(); i++) {
     if (game_list[i].name == name && game_list[i].first_file_index >= 0 &&
         game_list[i].first_file_index < (int)file_list.size()) {
       String dir = file_list[game_list[i].first_file_index];
       int sl = dir.lastIndexOf('/');
-      if (sl > 0) {
-        Serial.println("getGameFolder: exact match -> " + dir.substring(0, sl));
-        return dir.substring(0, sl);
-      }
+      if (sl > 0) return dir.substring(0, sl);
     }
   }
 
-  // Pass 2: case-insensitive match
+  // Pass 2: case-insensitive match in game_list
   String nameLower = name;
   nameLower.toLowerCase();
   for (int i = 0; i < (int)game_list.size(); i++) {
@@ -127,39 +122,31 @@ String getGameFolder(const String &name, const String &mode = "") {
         game_list[i].first_file_index < (int)file_list.size()) {
       String dir = file_list[game_list[i].first_file_index];
       int sl = dir.lastIndexOf('/');
-      if (sl > 0) {
-        Serial.println("getGameFolder: case-insensitive match -> " + dir.substring(0, sl));
-        return dir.substring(0, sl);
-      }
+      if (sl > 0) return dir.substring(0, sl);
     }
   }
 
-  // Pass 3: fallback to constructed path /ADF/{name} or /DSK/{name}
-  String modeDir = (mode == "adf") ? "/ADF" : (mode == "dsk") ? "/DSK" :
+  // Pass 3: try constructed path directly on SD
+  const char *md = (mode == "adf") ? "/ADF" : (mode == "dsk") ? "/DSK" :
                    (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
-  String fallback = modeDir + "/" + name;
-  if (SD_MMC.exists(fallback.c_str())) {
-    Serial.println("getGameFolder: fallback exists -> " + fallback);
-    return fallback;
-  }
+  String fallback = String(md) + "/" + name;
+  if (SD_MMC.exists(fallback.c_str())) return fallback;
 
-  // Pass 4: scan the mode directory for case-insensitive folder name match
-  File root = SD_MMC.open(modeDir.c_str());
+  // Pass 4: scan SD directory for case-insensitive folder match
+  File root = SD_MMC.open(md);
   if (root && root.isDirectory()) {
     File entry;
     while ((entry = root.openNextFile())) {
       if (entry.isDirectory()) {
-        String folderName = entry.name();
-        // entry.name() may return full path or just name
-        int sl = folderName.lastIndexOf('/');
-        if (sl >= 0) folderName = folderName.substring(sl + 1);
-        String fnLower = folderName;
-        fnLower.toLowerCase();
-        if (fnLower == nameLower) {
-          String result = modeDir + "/" + folderName;
+        String fn = entry.name();
+        int sl = fn.lastIndexOf('/');
+        if (sl >= 0) fn = fn.substring(sl + 1);
+        String fnl = fn;
+        fnl.toLowerCase();
+        if (fnl == nameLower) {
+          String result = String(md) + "/" + fn;
           entry.close();
           root.close();
-          Serial.println("getGameFolder: SD scan match -> " + result);
           return result;
         }
       }
@@ -168,11 +155,7 @@ String getGameFolder(const String &name, const String &mode = "") {
     root.close();
   }
 
-  Serial.println("getGameFolder: NOT FOUND for '" + name + "'");
-  // Debug: print first 5 game names for comparison
-  for (int i = 0; i < min(5, (int)game_list.size()); i++) {
-    Serial.println("  game_list[" + String(i) + "]: '" + game_list[i].name + "'");
-  }
+  Serial.println("getGameFolder: NOT FOUND '" + name + "'");
   return "";
 }
 
@@ -620,6 +603,114 @@ void handleCoverServe(WiFiClient &client, const String &mode, const String &name
 }
 
 // ============================================================================
+// POST /api/games/{mode}/{name}/cover — upload cover image (multipart)
+// ============================================================================
+
+bool handleCoverUpload(WiFiClient &client, const HttpRequest &req, const String &mode, const String &name) {
+  if (req.boundary.length() == 0 || req.contentLength <= 0) {
+    sendJSON(client, 400, "{\"error\":\"Expected multipart upload\"}");
+    return true;
+  }
+
+  String gameDir = getGameFolder(name, mode);
+  if (gameDir.length() == 0) {
+    // Drain remaining data to avoid corrupting connection
+    unsigned long t = millis();
+    while (client.available() && millis() - t < 3000) { client.read(); }
+    sendJSON(client, 404, "{\"error\":\"Game folder not found\"}");
+    return true;
+  }
+
+  String delim = "--" + req.boundary;
+  String delimEnd = delim + "--";
+  String savePath = "";
+  File outFile;
+  bool inFileData = false;
+  bool done = false;
+  size_t totalWritten = 0;
+
+  while (client.connected() && !done) {
+    if (!inFileData) {
+      String line = client.readStringUntil('\n');
+      line.trim();
+      if (line.startsWith(delimEnd)) { done = true; break; }
+      if (line.startsWith(delim)) {
+        String disp = client.readStringUntil('\n');
+        disp.trim();
+        int fnIdx = disp.indexOf("filename=\"");
+        if (fnIdx >= 0) {
+          fnIdx += 10;
+          int fnEnd = disp.indexOf("\"", fnIdx);
+          String origName = disp.substring(fnIdx, fnEnd);
+
+          // Determine extension from original filename
+          String ext = ".jpg";
+          String origLower = origName;
+          origLower.toLowerCase();
+          if (origLower.endsWith(".png")) ext = ".png";
+          else if (origLower.endsWith(".jpeg")) ext = ".jpg";
+
+          // Use folder name as cover filename
+          String folderName = gameDir;
+          int sl = folderName.lastIndexOf('/');
+          if (sl >= 0) folderName = folderName.substring(sl + 1);
+          savePath = gameDir + "/" + folderName + ext;
+
+          // Remove old cover if different extension
+          String altExt = (ext == ".jpg") ? ".png" : ".jpg";
+          String altPath = gameDir + "/" + folderName + altExt;
+          if (SD_MMC.exists(altPath.c_str())) SD_MMC.remove(altPath.c_str());
+
+          outFile = SD_MMC.open(savePath.c_str(), "w");
+          // Skip remaining headers
+          while (client.connected()) {
+            String hdr = client.readStringUntil('\n');
+            hdr.trim();
+            if (hdr.length() == 0) break;
+          }
+          inFileData = true;
+          totalWritten = 0;
+        }
+      }
+    } else {
+      uint8_t buf[1024];
+      while (client.connected() && client.available()) {
+        int avail = min((int)sizeof(buf), client.available());
+        int n = client.readBytes(buf, avail);
+        if (n <= 0) break;
+        // Check for boundary in chunk
+        String chunk((char *)buf, n);
+        int bndIdx = chunk.indexOf(delim);
+        if (bndIdx >= 0) {
+          int writeLen = bndIdx;
+          if (writeLen >= 2) writeLen -= 2;
+          if (writeLen > 0 && outFile) { outFile.write(buf, writeLen); totalWritten += writeLen; }
+          if (outFile) outFile.close();
+          inFileData = false;
+          if (chunk.indexOf(delimEnd) >= 0) done = true;
+          break;
+        } else {
+          if (outFile) { outFile.write(buf, n); totalWritten += n; }
+        }
+        if (!client.connected()) break;
+      }
+      if (!client.available() && !client.connected()) break;
+      if (client.available() == 0) delay(1);
+    }
+  }
+
+  if (outFile) outFile.close();
+
+  // Refresh to pick up new cover
+  refreshGameList();
+
+  sendJSON(client, 200,
+    "{\"status\":\"ok\",\"path\":\"" + jsonEscape(savePath) +
+    "\",\"bytes\":" + String(totalWritten) + "}");
+  return true;
+}
+
+// ============================================================================
 // GET /api/upload/progress
 // ============================================================================
 
@@ -787,8 +878,10 @@ void handleCoverDownload(WiFiClient &client, const String &mode, const String &n
       }
     } else {
       if (millis() - timeout > 10000) break;  // 10s timeout
+      yield();
       delay(1);
     }
+    yield();  // feed watchdog during long downloads
   }
 
   outFile.close();

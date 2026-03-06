@@ -601,6 +601,10 @@ void handleHttpRequest(WiFiClient &client) {
           handleCoverServe(client, mode, name);
           return;
         }
+        if (action == "cover" && req.method == "POST") {
+          handleCoverUpload(client, req, mode, name);
+          return;
+        }
         if (action == "cover-url" && req.method == "POST") {
           handleCoverDownload(client, mode, name, req.body);
           return;
@@ -658,11 +662,13 @@ void handleWebServer() {
     unsigned long start = millis();
     while (client.connected() && !client.available()) {
       if (millis() - start > 2000) { client.stop(); return; }
+      yield();
       delay(1);
     }
     if (client.available()) {
       handleHttpRequest(client);
     }
+    delay(1);  // brief yield before stop
     client.stop();
   }
 }
