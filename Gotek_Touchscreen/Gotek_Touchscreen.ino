@@ -2235,7 +2235,7 @@ void drawList() {
     int textX = thumbX + LIST_THUMB_W + 8;
     gfx_setTextColor(isSel ? TFT_CYAN : TFT_WHITE, isSel ? 0x1082 : TFT_BLACK);
     gfx_setTextSize(2);
-    String dispName = truncateToWidth(g.name, gW - textX - 10);
+    String dispName = truncateToWidth(g.name, gW - textX - 54);
     gfx_setCursor(textX, y + 8);
     gfx_print(dispName);
 
@@ -2251,28 +2251,39 @@ void drawList() {
     gfx_fillRect(6, y + LIST_ITEM_H - 1, gW - 12, 1, 0x2104);
   }
 
-  // Scroll indicators (right edge)
+  // Scroll buttons (right edge — large touch targets)
   if ((int)game_list.size() > perPage) {
-    // Scrollbar track
-    int trackH = LIST_BOTTOM - LIST_START_Y;
-    int thumbH = max(10, trackH * perPage / (int)game_list.size());
-    int thumbY = LIST_START_Y + (trackH - thumbH) * scroll_offset / max(1, (int)game_list.size() - perPage);
-    gfx_fillRect(gW - 4, thumbY, 3, thumbH, 0x4208);
+    int btnW = 44;
+    int btnX = gW - btnW;
+    int listH = LIST_BOTTOM - LIST_START_Y;
+    int btnH = listH / 2;
 
-    // UP arrow (if can scroll up)
-    if (scroll_offset > 0) {
-      gfx_setTextColor(TFT_GREY, TFT_BLACK);
-      gfx_setTextSize(2);
-      gfx_setCursor(gW - 24, LIST_START_Y + 4);
-      gfx_print("^");
-    }
-    // DOWN arrow (if can scroll down)
-    if (scroll_offset < (int)game_list.size() - perPage) {
-      gfx_setTextColor(TFT_GREY, TFT_BLACK);
-      gfx_setTextSize(2);
-      gfx_setCursor(gW - 24, LIST_BOTTOM - 20);
-      gfx_print("v");
-    }
+    // UP button
+    uint16_t upColor = (scroll_offset > 0) ? 0x2945 : 0x1082;
+    gfx_fillRect(btnX, LIST_START_Y, btnW, btnH - 1, upColor);
+    gfx_setTextColor((scroll_offset > 0) ? TFT_WHITE : 0x3186, upColor);
+    gfx_setTextSize(3);
+    int chevW = gfx_textWidth("^");
+    gfx_setCursor(btnX + (btnW - chevW) / 2, LIST_START_Y + btnH / 2 - 12);
+    gfx_print("^");
+
+    // DOWN button
+    int downY = LIST_START_Y + btnH + 1;
+    int maxOff = (int)game_list.size() - perPage;
+    if (maxOff < 0) maxOff = 0;
+    uint16_t dnColor = (scroll_offset < maxOff) ? 0x2945 : 0x1082;
+    gfx_fillRect(btnX, downY, btnW, btnH - 1, dnColor);
+    gfx_setTextColor((scroll_offset < maxOff) ? TFT_WHITE : 0x3186, dnColor);
+    gfx_setTextSize(3);
+    chevW = gfx_textWidth("v");
+    gfx_setCursor(btnX + (btnW - chevW) / 2, downY + btnH / 2 - 12);
+    gfx_print("v");
+
+    // Thin scrollbar between buttons
+    int trackH = LIST_BOTTOM - LIST_START_Y;
+    int thumbH = max(8, trackH * perPage / (int)game_list.size());
+    int thumbY = LIST_START_Y + (trackH - thumbH) * scroll_offset / max(1, maxOff);
+    gfx_fillRect(btnX - 4, thumbY, 3, thumbH, 0x4208);
   }
 
   // Bottom action buttons
@@ -2342,22 +2353,14 @@ void drawDetailsFromNFO(const String &filename) {
   }
   detail_jpg_path = findJPGFor(filename);
 
-  // Layout: no header — full screen for content
+  // Layout: no header, no top title — maximum space for cover art
   int diskRowH = multiDisk ? 34 : 0;
   int btnTop = gH - 42;
   int diskTop = multiDisk ? (btnTop - diskRowH) : btnTop;
   int contentBottom = diskTop - 3;
 
-  // Game title at top
-  String gameTitle = multiDisk ? getGameBaseName(filename) : basenameNoExt(filenameOnly(filename));
-  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-  gfx_setTextSize(2);
-  String dispTitle = truncateToWidth(gameTitle, gW - 60);
-  gfx_setCursor((gW - gfx_textWidth(dispTitle)) / 2, 6);
-  gfx_print(dispTitle);
-
-  // Cover art (bigger — from y=28 to contentBottom minus text space)
-  int imgTop = 28;
+  // Cover art starts from the very top
+  int imgTop = 4;
   int imgW = gW - 60;  // leave room for nav arrows
 
   String title = "", blurb = "";
@@ -2887,6 +2890,30 @@ void handleTap(uint16_t px, uint16_t py) {
   // SELECTION SCREEN
   // ══════════════════════════════════════
   if (current_screen == SCR_SELECTION) {
+
+    // Scroll UP/DOWN buttons (right edge, large touch targets)
+    int scrollBtnX = gW - 44;
+    int listH = LIST_BOTTOM - LIST_START_Y;
+    int halfH = listH / 2;
+    if (px >= scrollBtnX && py >= LIST_START_Y && py < LIST_BOTTOM) {
+      int perPage = items_per_page();
+      int maxOff = (int)game_list.size() - perPage;
+      if (maxOff < 0) maxOff = 0;
+      if (py < LIST_START_Y + halfH) {
+        // UP button
+        if (scroll_offset > 0) {
+          scroll_offset--;
+          drawList();
+        }
+      } else {
+        // DOWN button
+        if (scroll_offset < maxOff) {
+          scroll_offset++;
+          drawList();
+        }
+      }
+      return;
+    }
 
     // Mode switch button (bottom-right area)
     if (px >= gW - 120 && py >= gH - 42) {
