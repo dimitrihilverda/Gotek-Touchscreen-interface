@@ -1,0 +1,54 @@
+# ============================================================
+# GOTEK TOUCHSCREEN - CONFIG.TXT
+# ============================================================
+# Place this file in the root of the SD card.
+# It is automatically read at startup and updated when
+# you load a file or switch themes.
+#
+# Lines starting with # are ignored.
+# Format: KEY=VALUE (no spaces around =)
+#
+# -- AVAILABLE OPTIONS --
+#
+# DISPLAY
+#   The display type. Used by the firmware to verify
+#   the config matches the active board.
+#   Values: JC3248 | WAVESHARE
+#
+# LASTFILE
+#   The last loaded file (full filename).
+#   This file is automatically loaded at startup.
+#   Remove this line to start without auto-load.
+#
+# LASTMODE
+#   The last used file mode.
+#   Values: ADF | DSK
+#
+# THEME
+#   Name of the active theme. This is the folder name
+#   inside /THEMES/ on the SD card.
+#   Can also be changed via the INFO screen (THEME button).
+#   Included themes:
+#     AMIGA_WB2  - Classic Amiga Workbench 2.x style
+#     STEAMPUNK  - Brass, copper and leather
+#     CYBERPUNK  - Neon glow with dark background
+#   Custom themes: create a folder in /THEMES/ with PNG files:
+#     HEADER.png      - Title bar background (480x53)
+#     BTN_SELECT.png  - Select button (90x36)
+#     BTN_OPEN.png    - Open button (90x36)
+#     BTN_INFO.png    - Info button (90x36)
+#     BTN_BACK.png    - Back button (90x36)
+#     BTN_LOAD.png    - Load button (90x36)
+#     BTN_UNLOAD.png  - Unload button (90x36)
+#     BTN_THEME.png   - Theme button (90x36)
+#     BTN_ADF.png     - ADF mode button (110x36)
+#     BTN_DSK.png     - DSK mode button (110x36)
+#     RAMDISK.png     - Ramdisk indicator (~25x25)
+#   PNG format: 32-bit RGBA (with transparency) or 24-bit RGB.
+#   Missing files fall back to drawn buttons.
+#
+# ============================================================
+
+DISPLAY=JC3248
+LASTMODE=ADF
+THEME=AMIGA_WB2
