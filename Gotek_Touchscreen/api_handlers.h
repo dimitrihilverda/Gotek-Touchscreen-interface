@@ -102,14 +102,21 @@ void refreshGameList() {
 // Find a game's actual folder path on SD from game_list
 // Tries exact match first, then case-insensitive, then falls back to /ADF|DSK/{name}
 String getGameFolder(const String &name, const String &mode = "") {
+  Serial.println("GGF: '" + name + "' mode='" + mode + "' gl=" + String(game_list.size()) + " fl=" + String(file_list.size()));
+
   // Pass 1: exact match in game_list
   for (int i = 0; i < (int)game_list.size(); i++) {
     if (game_list[i].name == name && game_list[i].first_file_index >= 0 &&
         game_list[i].first_file_index < (int)file_list.size()) {
       String dir = file_list[game_list[i].first_file_index];
       int sl = dir.lastIndexOf('/');
-      if (sl > 0) return dir.substring(0, sl);
+      if (sl > 0) { Serial.println("GGF: P1 -> " + dir.substring(0, sl)); return dir.substring(0, sl); }
     }
+  }
+  // Debug: print all game names for comparison
+  Serial.println("GGF: P1 miss. Games:");
+  for (int i = 0; i < min(10, (int)game_list.size()); i++) {
+    Serial.println("  [" + String(i) + "] '" + game_list[i].name + "' fi=" + String(game_list[i].first_file_index));
   }
 
   // Pass 2: case-insensitive match in game_list
@@ -122,40 +129,49 @@ String getGameFolder(const String &name, const String &mode = "") {
         game_list[i].first_file_index < (int)file_list.size()) {
       String dir = file_list[game_list[i].first_file_index];
       int sl = dir.lastIndexOf('/');
-      if (sl > 0) return dir.substring(0, sl);
+      if (sl > 0) { Serial.println("GGF: P2 -> " + dir.substring(0, sl)); return dir.substring(0, sl); }
     }
   }
+  Serial.println("GGF: P2 miss");
 
   // Pass 3: try constructed path directly on SD
   const char *md = (mode == "adf") ? "/ADF" : (mode == "dsk") ? "/DSK" :
                    (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
   String fallback = String(md) + "/" + name;
+  Serial.println("GGF: P3 trying '" + fallback + "' exists=" + String(SD_MMC.exists(fallback.c_str())));
   if (SD_MMC.exists(fallback.c_str())) return fallback;
 
   // Pass 4: scan SD directory for case-insensitive folder match
   File root = SD_MMC.open(md);
   if (root && root.isDirectory()) {
     File entry;
+    int count = 0;
     while ((entry = root.openNextFile())) {
       if (entry.isDirectory()) {
         String fn = entry.name();
         int sl = fn.lastIndexOf('/');
         if (sl >= 0) fn = fn.substring(sl + 1);
+        if (count < 5) Serial.println("GGF: P4 dir '" + fn + "'");
+        count++;
         String fnl = fn;
         fnl.toLowerCase();
         if (fnl == nameLower) {
           String result = String(md) + "/" + fn;
           entry.close();
           root.close();
+          Serial.println("GGF: P4 -> " + result);
           return result;
         }
       }
       entry.close();
     }
     root.close();
+    Serial.println("GGF: P4 scanned " + String(count) + " dirs, no match");
+  } else {
+    Serial.println("GGF: P4 cannot open '" + String(md) + "'");
   }
 
-  Serial.println("getGameFolder: NOT FOUND '" + name + "'");
+  Serial.println("GGF: NOT FOUND '" + name + "'");
   return "";
 }
 
@@ -607,6 +623,7 @@ void handleCoverServe(WiFiClient &client, const String &mode, const String &name
 // ============================================================================
 
 bool handleCoverUpload(WiFiClient &client, const HttpRequest &req, const String &mode, const String &name) {
+  Serial.println("CoverUpload: mode=" + mode + " name=" + name + " boundary=" + req.boundary);
   if (req.boundary.length() == 0 || req.contentLength <= 0) {
     sendJSON(client, 400, "{\"error\":\"Expected multipart upload\"}");
     return true;
@@ -617,7 +634,7 @@ bool handleCoverUpload(WiFiClient &client, const HttpRequest &req, const String 
     // Drain remaining data to avoid corrupting connection
     unsigned long t = millis();
     while (client.available() && millis() - t < 3000) { client.read(); }
-    sendJSON(client, 404, "{\"error\":\"Game folder not found\"}");
+    sendJSON(client, 404, "{\"error\":\"Game folder not found: name='" + jsonEscape(name) + "' mode='" + mode + "' games=" + String(game_list.size()) + "\"}");
     return true;
   }
 
@@ -725,21 +742,23 @@ void handleUploadProgress(WiFiClient &client) {
 // ============================================================================
 
 void handleCoverDownload(WiFiClient &client, const String &mode, const String &name, const String &body) {
+  Serial.println("CoverDL: mode=" + mode + " name='" + name + "' bodyLen=" + String(body.length()));
   if (!wifi_sta_connected) {
     sendJSON(client, 503, "{\"error\":\"No internet connection. Configure WiFi Client first.\"}");
     return;
   }
 
   String url = getFormValue(body, "url");
+  Serial.println("CoverDL: url='" + url + "'");
   if (url.length() == 0) {
-    sendJSON(client, 400, "{\"error\":\"Missing url parameter\"}");
+    sendJSON(client, 400, "{\"error\":\"Missing url parameter. Body: " + jsonEscape(body.substring(0, 100)) + "\"}");
     return;
   }
 
   // Find actual game folder from game_list
   String gameDir = getGameFolder(name, mode);
   if (gameDir.length() == 0) {
-    sendJSON(client, 404, "{\"error\":\"Game folder not found\"}");
+    sendJSON(client, 404, "{\"error\":\"Game folder not found: name='" + jsonEscape(name) + "' mode='" + mode + "' games=" + String(game_list.size()) + "\"}");
     return;
   }
 
