@@ -4,6 +4,13 @@
   A tiny ESP32-S3 based WiFi USB dongle that plugs into a Gotek's USB port.
   No display, no touchscreen — all control via phone/laptop web browser.
 
+  Target board: Seeed XIAO ESP32-S3 (Sense variant recommended for microSD)
+    - 21 x 17.5 mm — small enough for USB stick form factor
+    - ESP32-S3 dual-core 240MHz, 8MB Flash, 8MB PSRAM, 512KB SRAM
+    - WiFi 802.11 b/g/n + Bluetooth 5.0 LE
+    - USB-C (USB OTG capable)
+    - 11 GPIO pins: IO2-IO10, IO20, IO21
+
   Features:
     - USB Mass Storage emulation (FAT12 RAM disk in PSRAM)
     - WiFi AP + optional STA for internet access
@@ -11,17 +18,35 @@
     - SD card for game image storage (ADF/DSK/IMG)
     - Cover art, NFO files, multi-disk game support
 
-  Board settings:
-    Board: ESP32S3 Dev Module
+  Board settings (Arduino IDE):
+    Board: XIAO_ESP32S3
     USB CDC On Boot → Enabled
     PSRAM → OPI PSRAM
-    Flash Size → 16MB (or 4MB depending on board)
+    Flash Size → 8MB
     Partition → Huge APP (3MB No OTA/1MB SPIFFS)
 
-  Supported boards:
-    - Lolin S3 Mini
-    - Waveshare ESP32-S3-Zero
-    - Any ESP32-S3 with PSRAM + SD card slot
+  XIAO ESP32-S3 Pinout:
+    IO2  (A0)   — GPIO, ADC
+    IO3  (A1)   — GPIO, ADC          ⚠ avoid (flash related)
+    IO4  (A2)   — GPIO, ADC
+    IO5  (A3)   — GPIO, ADC
+    IO6  (SDA)  — GPIO, I2C Data
+    IO7  (SCL)  — GPIO, I2C Clock
+    IO8  (SCK)  — GPIO, SPI Clock
+    IO9  (MISO) — GPIO, SPI Data     ⚠ avoid (bootstrap)
+    IO10 (MOSI) — GPIO, SPI Data     ⚠ avoid (bootstrap)
+    IO20 (RX)   — UART Receive       ⚠ avoid (USB)
+    IO21 (TX)   — UART Transmit / LED
+
+  SD Card wiring (SDMMC 1-bit mode):
+    SD_CLK → IO7 (SCL)
+    SD_CMD → IO8 (SCK)
+    SD_D0  → IO9 (MISO)    — or use SPI mode on safe pins
+
+  For XIAO ESP32-S3 Sense variant:
+    Built-in microSD slot uses dedicated pins (no GPIO needed)
+
+  Safe GPIO for general use: IO2, IO4, IO5, IO6, IO21
 */
 
 #include <Arduino.h>
@@ -54,24 +79,49 @@ using std::sort;
 using std::swap;
 
 // ==========================================================================
-// SD Card Pin Configuration
+// BOARD SELECTOR
 // ==========================================================================
-// Adjust these for your specific board:
 
-// Lolin S3 Mini / generic ESP32-S3 with SDMMC 1-bit
-#define SD_CLK  12
-#define SD_CMD  11
-#define SD_D0   13
+#define BOARD_XIAO_S3        1
+#define BOARD_XIAO_S3_SENSE  2
+#define BOARD_GENERIC_S3     3
 
-// If your board uses different pins, override here:
-// #define SD_CLK  14
-// #define SD_CMD  17
-// #define SD_D0   16
+// SELECT YOUR BOARD HERE:
+#define ACTIVE_BOARD BOARD_XIAO_S3_SENSE
 
 // ==========================================================================
-// STATUS LED (optional — blink to show activity)
+// SD Card Pin Configuration (per board)
 // ==========================================================================
-#define LED_PIN 2   // Most ESP32-S3 boards have an LED on GPIO2
+
+#if ACTIVE_BOARD == BOARD_XIAO_S3_SENSE
+  // XIAO ESP32-S3 Sense — built-in microSD slot
+  // Uses dedicated internal pins, no external wiring needed
+  #define SD_CLK  7
+  #define SD_CMD  9
+  #define SD_D0   8
+
+#elif ACTIVE_BOARD == BOARD_XIAO_S3
+  // XIAO ESP32-S3 (no Sense) — external microSD breakout
+  // SDMMC 1-bit mode on safe GPIO pins
+  #define SD_CLK  7   // IO7 (SCL)
+  #define SD_CMD  5   // IO5 (A3)
+  #define SD_D0   4   // IO4 (A2)
+
+#elif ACTIVE_BOARD == BOARD_GENERIC_S3
+  // Generic ESP32-S3 dev board
+  #define SD_CLK  12
+  #define SD_CMD  11
+  #define SD_D0   13
+#endif
+
+// ==========================================================================
+// STATUS LED
+// ==========================================================================
+#if ACTIVE_BOARD == BOARD_XIAO_S3 || ACTIVE_BOARD == BOARD_XIAO_S3_SENSE
+  #define LED_PIN 21  // XIAO ESP32-S3 built-in LED on IO21
+#else
+  #define LED_PIN 2   // Generic boards typically use GPIO2
+#endif
 bool has_led = false;
 
 void ledInit() {
