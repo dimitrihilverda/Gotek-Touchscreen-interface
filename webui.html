@@ -119,6 +119,7 @@ textarea{min-height:80px;resize:vertical}
   <div class="tab" data-view="config">Config</div>
   <div class="tab" data-view="games">Games</div>
   <div class="tab" data-view="ftp">FTP</div>
+  <div class="tab" data-view="webdav">WebDAV</div>
   <div class="tab" data-view="themes">Themes</div>
 </div>
 
@@ -190,7 +191,8 @@ textarea{min-height:80px;resize:vertical}
       <div id="wifi-status-box" style="margin-top:10px;padding:8px;background:var(--light);border:1px inset #999;font-size:13px;display:none"></div>
 
       <h2 style="margin-top:16px">FTP Network Source</h2>
-      <p style="font-size:12px;color:#555;margin-bottom:8px">Browse and download games from your NAS via FTP (requires WiFi Client)</p>
+      <p style="font-size:12px;color:#555;margin-bottom:4px">Browse and download games from your NAS via FTP (requires WiFi Client)</p>
+      <p style="font-size:11px;color:var(--red);margin-bottom:8px;font-weight:600">Note: plain FTP only — SFTP (SSH) is not supported. Use WebDAV for secure connections.</p>
 
       <label>FTP Enabled</label>
       <select name="FTP_ENABLED" id="cfg-ftp-enabled">
@@ -212,6 +214,36 @@ textarea{min-height:80px;resize:vertical}
 
       <label>FTP Base Path</label>
       <input type="text" name="FTP_PATH" id="cfg-ftp-path" placeholder="/" value="/">
+
+      <h2 style="margin-top:16px">WebDAV Network Source</h2>
+      <p style="font-size:12px;color:#555;margin-bottom:8px">Browse and download games via WebDAV (Stackstorage, Nextcloud, etc.)</p>
+
+      <label>WebDAV Enabled</label>
+      <select name="DAV_ENABLED" id="cfg-dav-enabled">
+        <option value="0">No</option>
+        <option value="1">Yes</option>
+      </select>
+
+      <label>WebDAV Host</label>
+      <input type="text" name="DAV_HOST" id="cfg-dav-host" placeholder="username.stackstorage.com">
+
+      <label>WebDAV Port</label>
+      <input type="number" name="DAV_PORT" id="cfg-dav-port" placeholder="443" value="443">
+
+      <label>Use HTTPS</label>
+      <select name="DAV_HTTPS" id="cfg-dav-https">
+        <option value="1">Yes (port 443)</option>
+        <option value="0">No (port 80)</option>
+      </select>
+
+      <label>WebDAV User</label>
+      <input type="text" name="DAV_USER" id="cfg-dav-user" placeholder="username">
+
+      <label>WebDAV Password</label>
+      <input type="password" name="DAV_PASS" id="cfg-dav-pass">
+
+      <label>WebDAV Base Path</label>
+      <input type="text" name="DAV_PATH" id="cfg-dav-path" placeholder="/remote.php/webdav/" value="/remote.php/webdav/">
 
       <div style="margin-top:16px">
         <button type="submit" class="btn btn-primary">Save Configuration</button>
@@ -256,7 +288,8 @@ textarea{min-height:80px;resize:vertical}
 <div class="content view hidden" id="view-ftp">
   <div class="card">
     <h2>FTP Network Source</h2>
-    <p style="font-size:13px;color:#555;margin-bottom:10px">Browse and download games from your NAS or network FTP server</p>
+    <p style="font-size:13px;color:#555;margin-bottom:4px">Browse and download games from your NAS or network FTP server</p>
+    <p style="font-size:11px;color:var(--red);margin-bottom:10px;font-weight:600">Plain FTP only — SFTP (SSH) is not supported. Use the WebDAV tab for secure connections.</p>
     <div id="ftp-status-bar" class="ftp-status disconnected">Not connected</div>
     <div id="ftp-no-config" style="display:none;padding:16px;background:#ffe8e8;border:1px solid var(--red);border-radius:2px;margin-bottom:12px">
       <strong style="color:var(--red)">FTP Not Configured</strong>
@@ -271,6 +304,27 @@ textarea{min-height:80px;resize:vertical}
     <div id="ftp-breadcrumb" class="ftp-breadcrumb"></div>
     <div class="game-list" id="ftp-list"></div>
     <div id="ftp-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading...</div>
+  </div>
+</div>
+
+<!-- WEBDAV -->
+<div class="content view hidden" id="view-webdav">
+  <div class="card">
+    <h2>WebDAV Network Source</h2>
+    <p style="font-size:13px;color:#555;margin-bottom:10px">Browse and download games from Stackstorage, Nextcloud, or any WebDAV server</p>
+    <div id="dav-status-bar" class="ftp-status disconnected">Not connected</div>
+    <div id="dav-no-config" style="display:none;padding:16px;background:#ffe8e8;border:1px solid var(--red);border-radius:2px;margin-bottom:12px">
+      <strong style="color:var(--red)">WebDAV Not Configured</strong>
+      <p style="font-size:13px;margin-top:4px">Add WebDAV settings in the Config tab or in CONFIG.TXT on the SD card.</p>
+    </div>
+    <div id="dav-actions" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-primary" id="dav-connect-btn" onclick="davConnect()">Connect</button>
+      <button class="btn btn-danger" id="dav-disconnect-btn" onclick="davDisconnect()" style="display:none">Disconnect</button>
+      <button class="btn" onclick="davRefresh()">Refresh</button>
+    </div>
+    <div id="dav-breadcrumb" class="ftp-breadcrumb"></div>
+    <div class="game-list" id="dav-list"></div>
+    <div id="dav-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading...</div>
   </div>
 </div>
 
@@ -344,6 +398,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.view === 'config') loadConfig();
     if (tab.dataset.view === 'games') loadGames();
     if (tab.dataset.view === 'ftp') ftpLoadStatus();
+    if (tab.dataset.view === 'webdav') davLoadStatus();
     if (tab.dataset.view === 'themes') loadThemes();
   });
 });
@@ -422,6 +477,13 @@ async function loadConfig() {
   document.getElementById('cfg-ftp-user').value = cfg.FTP_USER || 'anonymous';
   document.getElementById('cfg-ftp-pass').value = cfg.FTP_PASS || '';
   document.getElementById('cfg-ftp-path').value = cfg.FTP_PATH || '/';
+  document.getElementById('cfg-dav-enabled').value = cfg.DAV_ENABLED || '0';
+  document.getElementById('cfg-dav-host').value = cfg.DAV_HOST || '';
+  document.getElementById('cfg-dav-port').value = cfg.DAV_PORT || '443';
+  document.getElementById('cfg-dav-https').value = cfg.DAV_HTTPS || '1';
+  document.getElementById('cfg-dav-user').value = cfg.DAV_USER || '';
+  document.getElementById('cfg-dav-pass').value = cfg.DAV_PASS || '';
+  document.getElementById('cfg-dav-path').value = cfg.DAV_PATH || '/remote.php/webdav/';
 
   // Load themes for dropdown
   const themes = await api('/api/themes/list');
@@ -1076,6 +1138,174 @@ async function ftpDownload(remotePath, btn) {
     btn.textContent = 'Done!';
     toast(result.file + ' downloaded (' + (result.bytes / 1024).toFixed(0) + ' KB)');
     loadGames();  // refresh game list
+  } catch (e) {
+    btn.textContent = 'Failed';
+    btn.disabled = false;
+    toast('Download failed: ' + (e.message || 'Unknown error'), 'error');
+  }
+}
+
+// ── WebDAV Functions ──
+
+let davCurrentPath = '/';
+let davConnected = false;
+
+async function davLoadStatus() {
+  try {
+    const status = await api('/api/dav/status');
+    davConnected = status.connected;
+    const bar = document.getElementById('dav-status-bar');
+    const noConfig = document.getElementById('dav-no-config');
+    const connectBtn = document.getElementById('dav-connect-btn');
+    const disconnectBtn = document.getElementById('dav-disconnect-btn');
+
+    if (!status.enabled || !status.host) {
+      bar.className = 'ftp-status error';
+      bar.textContent = 'WebDAV not configured';
+      noConfig.style.display = '';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = 'none';
+    } else if (!status.wifi_connected) {
+      bar.className = 'ftp-status disconnected';
+      bar.textContent = 'WiFi not connected — enable WiFi Client in Config';
+      noConfig.style.display = 'none';
+      connectBtn.style.display = 'none';
+    } else if (status.connected) {
+      bar.className = 'ftp-status connected';
+      bar.textContent = 'Connected to ' + status.host + (status.https ? ' (HTTPS)' : ' (HTTP)');
+      noConfig.style.display = 'none';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = '';
+      if (!document.getElementById('dav-list').innerHTML) davBrowse('/');
+    } else {
+      bar.className = 'ftp-status disconnected';
+      bar.textContent = 'Disconnected — ' + status.host;
+      noConfig.style.display = 'none';
+      connectBtn.style.display = '';
+      disconnectBtn.style.display = 'none';
+    }
+  } catch (e) {
+    document.getElementById('dav-status-bar').className = 'ftp-status error';
+    document.getElementById('dav-status-bar').textContent = 'Failed to get WebDAV status';
+  }
+}
+
+async function davConnect() {
+  const btn = document.getElementById('dav-connect-btn');
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+  document.getElementById('dav-loading').style.display = '';
+
+  try {
+    await api('/api/dav/connect', { method: 'POST' });
+    davConnected = true;
+    toast('WebDAV connected!');
+    davCurrentPath = '/';
+    await davLoadStatus();
+    await davBrowse('/');
+  } catch (e) {
+    toast('WebDAV connection failed: ' + (e.message || 'Unknown error'), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+    document.getElementById('dav-loading').style.display = 'none';
+  }
+}
+
+async function davDisconnect() {
+  try {
+    await api('/api/dav/disconnect', { method: 'POST' });
+    davConnected = false;
+    document.getElementById('dav-list').innerHTML = '';
+    document.getElementById('dav-breadcrumb').innerHTML = '';
+    await davLoadStatus();
+    toast('WebDAV disconnected');
+  } catch (e) { toast('Disconnect failed', 'error'); }
+}
+
+async function davRefresh() {
+  if (davConnected) {
+    await davBrowse(davCurrentPath);
+  } else {
+    await davLoadStatus();
+  }
+}
+
+async function davBrowse(path) {
+  davCurrentPath = path;
+  const list = document.getElementById('dav-list');
+  const loading = document.getElementById('dav-loading');
+  loading.style.display = '';
+  davUpdateBreadcrumb(path);
+
+  try {
+    const data = await api('/api/dav/list?path=' + encodeURIComponent(path));
+    let html = '';
+    const entries = data.entries || [];
+
+    // Show ".." for navigation up
+    if (path !== '/' && path !== '') {
+      let parentPath = path.replace(/\/+$/, '');
+      let li = parentPath.lastIndexOf('/');
+      parentPath = li > 0 ? parentPath.substring(0, li + 1) : '/';
+      html += '<div class="ftp-item dir" onclick="davBrowse(\'' + parentPath.replace(/'/g, "\\'") + '\')">' +
+        '<div class="ftp-icon">&#128193;</div>' +
+        '<div class="ftp-name">..</div>' +
+        '<div class="ftp-size"></div></div>';
+    }
+
+    for (const entry of entries) {
+      let fullPath = path.endsWith('/') ? path + entry.name : path + '/' + entry.name;
+      if (entry.dir) {
+        html += '<div class="ftp-item dir" onclick="davBrowse(\'' + fullPath.replace(/'/g, "\\'") + '\')">' +
+          '<div class="ftp-icon">&#128193;</div>' +
+          '<div class="ftp-name">' + esc(entry.name) + '</div>' +
+          '<div class="ftp-size"></div></div>';
+      } else {
+        let sizeStr = entry.size > 1048576 ? (entry.size / 1048576).toFixed(1) + ' MB' :
+                      entry.size > 1024 ? (entry.size / 1024).toFixed(0) + ' KB' : entry.size + ' B';
+        html += '<div class="ftp-item">' +
+          '<div class="ftp-icon">&#128190;</div>' +
+          '<div class="ftp-name">' + esc(entry.name) + '</div>' +
+          '<div class="ftp-size">' + sizeStr + '</div>' +
+          '<button class="dl-btn" onclick="davDownload(\'' + fullPath.replace(/'/g, "\\'") + '\',this)">Download</button>' +
+          '</div>';
+      }
+    }
+
+    list.innerHTML = html || '<p style="color:#555;text-align:center;padding:20px">No disk images found in this folder</p>';
+  } catch (e) {
+    list.innerHTML = '<p style="color:var(--red);padding:12px">Error: ' + esc(e.message || 'Failed to list directory') + '</p>';
+  } finally {
+    loading.style.display = 'none';
+  }
+}
+
+function davUpdateBreadcrumb(path) {
+  const bc = document.getElementById('dav-breadcrumb');
+  const parts = path.split('/').filter(p => p.length > 0);
+  let html = '<a onclick="davBrowse(\'/\')">WebDAV Root</a>';
+  let p = '';
+  for (const part of parts) {
+    p += '/' + part;
+    html += ' / <a onclick="davBrowse(\'' + p.replace(/'/g, "\\'") + '\')">' + esc(part) + '</a>';
+  }
+  bc.innerHTML = html;
+}
+
+async function davDownload(remotePath, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Downloading...';
+
+  try {
+    const result = await api('/api/dav/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'path=' + encodeURIComponent(remotePath)
+    });
+    btn.textContent = 'Done!';
+    toast(result.file + ' downloaded (' + (result.bytes / 1024).toFixed(0) + ' KB)');
+    loadGames();
   } catch (e) {
     btn.textContent = 'Failed';
     btn.disabled = false;

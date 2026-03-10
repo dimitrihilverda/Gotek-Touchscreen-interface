@@ -707,6 +707,36 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
+  // ── WebDAV API routes ──
+  if (req.path == "/api/dav/status" && req.method == "GET") {
+    handleDAVStatus(client);
+    return;
+  }
+  if (req.path == "/api/dav/connect" && req.method == "POST") {
+    handleDAVConnect(client);
+    return;
+  }
+  if (req.path == "/api/dav/disconnect" && req.method == "POST") {
+    handleDAVDisconnect(client);
+    return;
+  }
+  if (req.path == "/api/dav/list" && req.method == "GET") {
+    String davPath = "/";
+    int pIdx = req.query.indexOf("path=");
+    if (pIdx >= 0) {
+      davPath = req.query.substring(pIdx + 5);
+      int ampIdx = davPath.indexOf("&");
+      if (ampIdx >= 0) davPath = davPath.substring(0, ampIdx);
+      davPath = urlDecode(davPath);
+    }
+    handleDAVList(client, davPath);
+    return;
+  }
+  if (req.path == "/api/dav/download" && req.method == "POST") {
+    handleDAVDownload(client, req.body);
+    return;
+  }
+
   // ── 404 ──
   sendJSON(client, 404, "{\"error\":\"Not found\"}");
 }

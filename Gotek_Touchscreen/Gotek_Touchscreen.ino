@@ -377,13 +377,22 @@ bool   cfg_wifi_client_enabled = false;
 String cfg_wifi_client_ssid    = "";
 String cfg_wifi_client_pass    = "";
 
-// FTP config — browse and download from a network FTP server
+// FTP config — browse and download from a network FTP server (plain FTP, not SFTP)
 bool   cfg_ftp_enabled = false;
 String cfg_ftp_host    = "";
 int    cfg_ftp_port    = 21;
 String cfg_ftp_user    = "anonymous";
 String cfg_ftp_pass    = "gotek@local";
 String cfg_ftp_path    = "/";
+
+// WebDAV config — browse and download from WebDAV server (Stackstorage, Nextcloud, etc.)
+bool   cfg_dav_enabled = false;
+String cfg_dav_host    = "";
+int    cfg_dav_port    = 443;
+String cfg_dav_user    = "";
+String cfg_dav_pass    = "";
+String cfg_dav_path    = "/remote.php/webdav/";
+bool   cfg_dav_https   = true;
 
 // Remote dongle config — send disk images to a WiFi Dongle instead of local USB
 bool   cfg_remote_enabled  = false;
@@ -1026,6 +1035,21 @@ void loadConfig() {
       cfg_ftp_pass = val;
     } else if (key == "FTP_PATH") {
       cfg_ftp_path = val;
+    } else if (key == "DAV_ENABLED") {
+      cfg_dav_enabled = (val == "1" || val == "true");
+    } else if (key == "DAV_HOST") {
+      cfg_dav_host = val;
+    } else if (key == "DAV_PORT") {
+      cfg_dav_port = val.toInt();
+      if (cfg_dav_port <= 0) cfg_dav_port = 443;
+    } else if (key == "DAV_USER") {
+      cfg_dav_user = val;
+    } else if (key == "DAV_PASS") {
+      cfg_dav_pass = val;
+    } else if (key == "DAV_PATH") {
+      cfg_dav_path = val;
+    } else if (key == "DAV_HTTPS") {
+      cfg_dav_https = (val == "1" || val == "true");
     }
   }
   f.close();
@@ -1078,6 +1102,17 @@ void saveConfig() {
     f.println("FTP_USER=" + cfg_ftp_user);
     f.println("FTP_PASS=" + cfg_ftp_pass);
     f.println("FTP_PATH=" + cfg_ftp_path);
+  }
+
+  // WebDAV settings
+  f.println("DAV_ENABLED=" + String(cfg_dav_enabled ? "1" : "0"));
+  if (cfg_dav_host.length() > 0) {
+    f.println("DAV_HOST=" + cfg_dav_host);
+    f.println("DAV_PORT=" + String(cfg_dav_port));
+    f.println("DAV_USER=" + cfg_dav_user);
+    f.println("DAV_PASS=" + cfg_dav_pass);
+    f.println("DAV_PATH=" + cfg_dav_path);
+    f.println("DAV_HTTPS=" + String(cfg_dav_https ? "1" : "0"));
   }
 
   f.close();
@@ -3192,6 +3227,7 @@ void doLoadSelected() {
 // WiFi Web Server (include after all game/theme functions are defined)
 // ============================================================================
 #include "ftp_client.h"
+#include "webdav_client.h"
 #include "webserver.h"
 
 void setup() {

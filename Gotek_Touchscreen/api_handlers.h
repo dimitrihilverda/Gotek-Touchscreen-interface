@@ -391,7 +391,14 @@ void handleConfigGet(WiFiClient &client) {
   json += "\"FTP_PORT\":\"" + String(cfg_ftp_port) + "\",";
   json += "\"FTP_USER\":\"" + jsonEscape(cfg_ftp_user) + "\",";
   json += "\"FTP_PASS\":\"" + jsonEscape(cfg_ftp_pass) + "\",";
-  json += "\"FTP_PATH\":\"" + jsonEscape(cfg_ftp_path) + "\"";
+  json += "\"FTP_PATH\":\"" + jsonEscape(cfg_ftp_path) + "\",";
+  json += "\"DAV_ENABLED\":\"" + String(cfg_dav_enabled ? "1" : "0") + "\",";
+  json += "\"DAV_HOST\":\"" + jsonEscape(cfg_dav_host) + "\",";
+  json += "\"DAV_PORT\":\"" + String(cfg_dav_port) + "\",";
+  json += "\"DAV_USER\":\"" + jsonEscape(cfg_dav_user) + "\",";
+  json += "\"DAV_PASS\":\"" + jsonEscape(cfg_dav_pass) + "\",";
+  json += "\"DAV_PATH\":\"" + jsonEscape(cfg_dav_path) + "\",";
+  json += "\"DAV_HTTPS\":\"" + String(cfg_dav_https ? "1" : "0") + "\"";
   json += "}";
 
   sendJSON(client, 200, json);
@@ -471,6 +478,37 @@ void handleConfigPost(WiFiClient &client, const String &body) {
 
   val = getFormValue(body, "FTP_PATH");
   if (val.length() > 0) cfg_ftp_path = val;
+
+  // WebDAV config
+  val = getFormValue(body, "DAV_ENABLED");
+  if (val.length() > 0) {
+    cfg_dav_enabled = (val == "1" || val == "true");
+  }
+
+  val = getFormValue(body, "DAV_HOST");
+  if (val.length() > 0) cfg_dav_host = val;
+  else if (body.indexOf("DAV_HOST=") >= 0) cfg_dav_host = "";
+
+  val = getFormValue(body, "DAV_PORT");
+  if (val.length() > 0) {
+    cfg_dav_port = val.toInt();
+    if (cfg_dav_port <= 0) cfg_dav_port = 443;
+  }
+
+  val = getFormValue(body, "DAV_USER");
+  if (val.length() > 0) cfg_dav_user = val;
+
+  if (body.indexOf("DAV_PASS=") >= 0) {
+    cfg_dav_pass = getFormValue(body, "DAV_PASS");
+  }
+
+  val = getFormValue(body, "DAV_PATH");
+  if (val.length() > 0) cfg_dav_path = val;
+
+  val = getFormValue(body, "DAV_HTTPS");
+  if (val.length() > 0) {
+    cfg_dav_https = (val == "1" || val == "true");
+  }
 
   saveConfig();
   sendJSON(client, 200, "{\"status\":\"ok\"}");
@@ -1179,6 +1217,148 @@ void handleFTPDownload(WiFiClient &client, const String &body) {
   long bytes = ftpClient.downloadFile(remotePath, localPath);
   if (bytes < 0) {
     sendJSON(client, 500, "{\"error\":\"" + jsonEscape(ftpClient.lastError()) + "\"}");
+    return;
+  }
+
+  // Rescan game list
+  file_list = listImages();
+  buildDisplayNames(file_list);
+  sortByDisplay();
+  buildGameList();
+
+  sendJSON(client, 200, "{\"status\":\"ok\",\"file\":\"" + jsonEscape(filename) + "\",\"bytes\":" + String(bytes) +
+    ",\"game\":\"" + jsonEscape(gameName) + "\"}");
+}
+
+// ============================================================================
+// WebDAV API Handlers
+// ============================================================================
+
+// GET /api/dav/status — WebDAV connection status and config
+void handleDAVStatus(WiFiClient &client) {
+  String json = "{";
+  json += "\"enabled\":" + String(cfg_dav_enabled ? "true" : "false");
+  json += ",\"host\":\"" + jsonEscape(cfg_dav_host) + "\"";
+  json += ",\"port\":" + String(cfg_dav_port);
+  json += ",\"user\":\"" + jsonEscape(cfg_dav_user) + "\"";
+  json += ",\"path\":\"" + jsonEscape(cfg_dav_path) + "\"";
+  json += ",\"https\":" + String(cfg_dav_https ? "true" : "false");
+  json += ",\"connected\":" + String(davClient.isConnected() ? "true" : "false");
+  json += ",\"wifi_connected\":" + String((WiFi.status() == WL_CONNECTED) ? "true" : "false");
+  json += "}";
+  sendJSON(client, 200, json);
+}
+
+// POST /api/dav/connect — Connect to WebDAV server
+void handleDAVConnect(WiFiClient &client) {
+  if (!cfg_dav_enabled) {
+    sendJSON(client, 400, "{\"error\":\"WebDAV not enabled in config\"}");
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    sendJSON(client, 503, "{\"error\":\"WiFi client not connected to network\"}");
+    return;
+  }
+  if (davClient.connect()) {
+    sendJSON(client, 200, "{\"status\":\"connected\"}");
+  } else {
+    sendJSON(client, 503, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
+  }
+}
+
+// POST /api/dav/disconnect — Disconnect from WebDAV server
+void handleDAVDisconnect(WiFiClient &client) {
+  davClient.disconnect();
+  sendJSON(client, 200, "{\"status\":\"disconnected\"}");
+}
+
+// GET /api/dav/list?path=/subdir — List WebDAV directory
+void handleDAVList(WiFiClient &client, const String &queryPath) {
+  if (!cfg_dav_enabled) {
+    sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}");
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}");
+    return;
+  }
+
+  String path = queryPath;
+  if (path.length() == 0) path = "/";
+
+  std::vector<DAVFileEntry> entries;
+  if (!davClient.listDir(path, entries)) {
+    sendJSON(client, 500, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
+    return;
+  }
+
+  // Build JSON response (same format as FTP)
+  String json = "{\"path\":\"" + jsonEscape(path) + "\",\"entries\":[";
+  for (int i = 0; i < (int)entries.size(); i++) {
+    if (i > 0) json += ",";
+    json += "{\"name\":\"" + jsonEscape(entries[i].name) + "\"";
+    json += ",\"dir\":" + String(entries[i].isDir ? "true" : "false");
+    json += ",\"size\":" + String(entries[i].size);
+    json += "}";
+  }
+  json += "]}";
+  sendJSON(client, 200, json);
+}
+
+// POST /api/dav/download — Download file from WebDAV to SD card
+// Body: path=/subdir/game.adf
+void handleDAVDownload(WiFiClient &client, const String &body) {
+  if (!cfg_dav_enabled) {
+    sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}");
+    return;
+  }
+
+  // Parse path from body
+  String remotePath = "";
+  int pathIdx = body.indexOf("path=");
+  if (pathIdx >= 0) {
+    remotePath = body.substring(pathIdx + 5);
+    int ampIdx = remotePath.indexOf("&");
+    if (ampIdx >= 0) remotePath = remotePath.substring(0, ampIdx);
+    remotePath = urlDecode(remotePath);
+  }
+
+  if (remotePath.length() == 0) {
+    sendJSON(client, 400, "{\"error\":\"Missing path parameter\"}");
+    return;
+  }
+
+  // Determine filename and local destination
+  String filename = remotePath;
+  int lastSlash = filename.lastIndexOf('/');
+  if (lastSlash >= 0) filename = filename.substring(lastSlash + 1);
+
+  // Extract game name (strip extension and disk number)
+  String gameName = filename;
+  int dotIdx = gameName.lastIndexOf('.');
+  if (dotIdx > 0) gameName = gameName.substring(0, dotIdx);
+  gameName.replace("(Disk 1)", "");
+  gameName.replace("(Disk 2)", "");
+  gameName.replace("(Disk 3)", "");
+  gameName.replace("(Disk 4)", "");
+  gameName.trim();
+
+  // Save to /ADF/{GameName}/ or /DSK/{GameName}/
+  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
+  String lowerName = filename;
+  lowerName.toLowerCase();
+  if (lowerName.endsWith(".dsk")) modeDir = "/DSK";
+  else if (lowerName.endsWith(".adf") || lowerName.endsWith(".adz")) modeDir = "/ADF";
+
+  String gameDir = modeDir + "/" + gameName;
+  SD_MMC.mkdir(gameDir.c_str());
+  String localPath = gameDir + "/" + filename;
+
+  Serial.println("DAV: downloading " + remotePath + " -> " + localPath);
+
+  long bytes = davClient.downloadFile(remotePath, localPath);
+  if (bytes < 0) {
+    sendJSON(client, 500, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
     return;
   }
 
