@@ -1201,22 +1201,52 @@ void handleArchiveDebug(WiFiClient &client, const String &page) {
     yield();
   }
 
-  // Read first 4KB of body
+  // Read body, find first game link pattern, then capture 4KB from there
   String body = "";
   body.reserve(4096);
+  String skipBuf = "";
+  skipBuf.reserve(2048);
   int bytesRead = 0;
+  int totalRead = 0;
+  bool foundLink = false;
+
   while ((httpsClient->available() || httpsClient->connected()) && bytesRead < 4000) {
     yield();
     if (!httpsClient->available()) { delay(10); continue; }
     char c = httpsClient->read();
-    body += c;
-    bytesRead++;
+    totalRead++;
+
+    if (!foundLink) {
+      skipBuf += c;
+      // Look for "item.php" or "href=" patterns that indicate game links
+      if (skipBuf.indexOf("item.php") >= 0 || skipBuf.indexOf("id=") >= 0) {
+        // Back up a bit to capture context
+        int start = skipBuf.length() > 200 ? skipBuf.length() - 200 : 0;
+        body = skipBuf.substring(start);
+        bytesRead = body.length();
+        foundLink = true;
+        skipBuf = "";  // free memory
+      }
+      // Don't let skip buffer grow too large
+      if (skipBuf.length() > 2000) {
+        skipBuf = skipBuf.substring(1000);
+      }
+    } else {
+      body += c;
+      bytesRead++;
+    }
+  }
+
+  // If we never found the pattern, use what we have
+  if (!foundLink && skipBuf.length() > 0) {
+    body = skipBuf;
+    bytesRead = body.length();
   }
 
   httpsClient->stop();
   delete httpsClient;
 
-  String json = "{\"headers\":\"" + jsonEscape(headers) + "\",\"body_length\":" + String(bytesRead) + ",\"body\":\"" + jsonEscape(body) + "\"}";
+  String json = "{\"headers\":\"" + jsonEscape(headers) + "\",\"total_read\":" + String(totalRead) + ",\"body_length\":" + String(bytesRead) + ",\"body\":\"" + jsonEscape(body) + "\"}";
   sendJSON(client, 200, json);
 }
 
