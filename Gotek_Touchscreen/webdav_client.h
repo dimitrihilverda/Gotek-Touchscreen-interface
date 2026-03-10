@@ -295,6 +295,146 @@ public:
     return totalBytes;
   }
 
+  // Stream a file directly into a memory buffer via GET
+  // Returns bytes written, or -1 on error
+  long streamToBuffer(const String &remotePath, uint8_t *buf, size_t bufSize) {
+    _lastError = "";
+
+    // Build full remote path
+    String fullRemote = cfg_dav_path;
+    if (!fullRemote.endsWith("/")) fullRemote += "/";
+    if (remotePath.startsWith("/")) fullRemote += remotePath.substring(1);
+    else fullRemote += remotePath;
+
+    String encodedPath = _urlEncodePath(fullRemote);
+    _log("DAV: GET->RAM " + encodedPath + " bufSize=" + String(bufSize));
+
+    // Create HTTPS or HTTP client on heap
+    WiFiClient *tcp = nullptr;
+    WiFiClientSecure *secure = nullptr;
+    if (cfg_dav_https) {
+      secure = new WiFiClientSecure();
+      if (!secure) { _lastError = "Out of memory"; return -1; }
+      secure->setInsecure();
+      secure->setTimeout(30);
+      tcp = secure;
+    } else {
+      tcp = new WiFiClient();
+      if (!tcp) { _lastError = "Out of memory"; return -1; }
+      tcp->setTimeout(30);
+    }
+
+    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
+      _lastError = "Connection failed";
+      delete tcp;
+      return -1;
+    }
+
+    String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
+
+    tcp->println("GET " + encodedPath + " HTTP/1.1");
+    tcp->println("Host: " + cfg_dav_host);
+    tcp->println("Authorization: Basic " + auth);
+    tcp->println("Connection: close");
+    tcp->println();
+
+    // Read HTTP headers
+    long contentLength = -1;
+    bool chunked = false;
+    unsigned long timeout = millis();
+    while (tcp->connected() && millis() - timeout < 15000) {
+      if (!tcp->available()) { delay(1); continue; }
+      String line = tcp->readStringUntil('\n');
+      line.trim();
+
+      if (line.startsWith("HTTP/")) {
+        int sp = line.indexOf(' ');
+        if (sp > 0) {
+          int code = line.substring(sp + 1, sp + 4).toInt();
+          if (code >= 400) {
+            _lastError = "HTTP " + String(code);
+            tcp->stop();
+            delete tcp;
+            return -1;
+          }
+        }
+      }
+      if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
+        contentLength = line.substring(line.indexOf(':') + 1).toInt();
+      }
+      if (line.indexOf("chunked") >= 0) chunked = true;
+      if (line.length() == 0) break;
+      timeout = millis();
+    }
+
+    _log("DAV: stream contentLen=" + String(contentLength) + (chunked ? " chunked" : ""));
+
+    long totalBytes = 0;
+    timeout = millis();
+
+    if (chunked) {
+      // Chunked transfer: read each chunk into buffer
+      while (tcp->connected() && millis() - timeout < 30000) {
+        if (!tcp->available()) { delay(1); continue; }
+        String sizeLine = tcp->readStringUntil('\n');
+        sizeLine.trim();
+        if (sizeLine.length() == 0) { timeout = millis(); continue; }
+        long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
+        if (chunkSize <= 0) break;
+        long bytesRead = 0;
+        while (bytesRead < chunkSize && tcp->connected() && millis() - timeout < 30000) {
+          if (tcp->available()) {
+            size_t avail = tcp->available();
+            size_t want = chunkSize - bytesRead;
+            if (avail > want) avail = want;
+            size_t space = bufSize - totalBytes;
+            if (space == 0) { bytesRead += avail; continue; }  // buffer full, drain
+            if (avail > space) avail = space;
+            size_t got = tcp->read(&buf[totalBytes], avail);
+            totalBytes += got;
+            bytesRead += got;
+            timeout = millis();
+          } else {
+            delay(1);
+          }
+        }
+        // Drain any overflow if buffer was full
+        while (bytesRead < chunkSize && tcp->connected() && millis() - timeout < 30000) {
+          if (tcp->available()) { tcp->read(); bytesRead++; timeout = millis(); }
+          else delay(1);
+        }
+        if (tcp->available()) tcp->read();  // \r
+        if (tcp->available()) tcp->read();  // \n
+        timeout = millis();
+      }
+    } else {
+      // Content-Length or read-till-close
+      while ((tcp->connected() || tcp->available()) && millis() - timeout < 30000) {
+        size_t avail = tcp->available();
+        if (avail == 0) { delay(5); continue; }
+        size_t space = bufSize - totalBytes;
+        if (space == 0) break;  // buffer full
+        if (avail > space) avail = space;
+        size_t got = tcp->read(&buf[totalBytes], avail);
+        if (got > 0) {
+          totalBytes += got;
+          timeout = millis();
+        }
+      }
+    }
+
+    tcp->stop();
+    delete tcp;
+
+    if (totalBytes == 0) {
+      if (_lastError.length() == 0) _lastError = "Zero bytes received";
+      return -1;
+    }
+
+    _log("DAV: streamed " + String(totalBytes) + " bytes to RAM");
+    return totalBytes;
+  }
+
 private:
   bool   _connected;
   String _lastError;

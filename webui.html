@@ -1281,27 +1281,40 @@ async function davBrowse(path) {
       let parentPath = path.replace(/\/+$/, '');
       let li = parentPath.lastIndexOf('/');
       parentPath = li > 0 ? parentPath.substring(0, li + 1) : '/';
-      html += '<div class="ftp-item dir" onclick="davBrowse(\'' + parentPath.replace(/'/g, "\\'") + '\')">' +
-        '<div class="ftp-icon">&#128193;</div>' +
-        '<div class="ftp-name">..</div>' +
-        '<div class="ftp-size"></div></div>';
+      html += '<div class="game-item" onclick="davBrowse(\'' + parentPath.replace(/'/g, "\\'") + '\')">' +
+        '<div class="game-cover empty" style="font-size:18px">&#11014;</div>' +
+        '<div class="game-info"><div class="game-name">.. (Back)</div></div>' +
+        '</div>';
     }
 
     for (const entry of entries) {
       let fullPath = path.endsWith('/') ? path + entry.name : path + '/' + entry.name;
       if (entry.dir) {
-        html += '<div class="ftp-item dir" onclick="davBrowse(\'' + fullPath.replace(/'/g, "\\'") + '\')">' +
-          '<div class="ftp-icon">&#128193;</div>' +
-          '<div class="ftp-name">' + esc(entry.name) + '</div>' +
-          '<div class="ftp-size"></div></div>';
+        html += '<div class="game-item" onclick="davBrowse(\'' + fullPath.replace(/'/g, "\\'") + '\')">' +
+          '<div class="game-cover empty">&#128193;</div>' +
+          '<div class="game-info">' +
+            '<div class="game-name">' + esc(entry.name) + '</div>' +
+            '<div class="game-meta"><span class="badge" style="background:#888;color:#fff">Folder</span></div>' +
+          '</div>' +
+          '</div>';
       } else {
         let sizeStr = entry.size > 1048576 ? (entry.size / 1048576).toFixed(1) + ' MB' :
                       entry.size > 1024 ? (entry.size / 1024).toFixed(0) + ' KB' : entry.size + ' B';
-        html += '<div class="ftp-item">' +
-          '<div class="ftp-icon">&#128190;</div>' +
-          '<div class="ftp-name">' + esc(entry.name) + '</div>' +
-          '<div class="ftp-size">' + sizeStr + '</div>' +
-          '<button class="dl-btn" onclick="davDownload(\'' + fullPath.replace(/'/g, "\\'") + '\',this)">Download</button>' +
+        let ext = entry.name.split('.').pop().toUpperCase();
+        let isDisk = ['ADF','DSK','ADZ','IMG'].includes(ext);
+        html += '<div class="game-item" style="cursor:default">' +
+          '<div class="game-cover empty">&#128190;</div>' +
+          '<div class="game-info">' +
+            '<div class="game-name">' + esc(entry.name) + '</div>' +
+            '<div class="game-meta">' +
+              '<span class="badge" style="background:var(--blue);color:#fff">' + ext + '</span> ' +
+              '<span style="font-size:12px;color:#888">' + sizeStr + '</span>' +
+            '</div>' +
+            '<div style="margin-top:6px;display:flex;gap:6px">' +
+              (isDisk ? '<button class="btn btn-primary" style="font-size:12px;padding:4px 12px" onclick="event.stopPropagation();davInsert(\'' + fullPath.replace(/'/g, "\\'") + '\',\'' + esc(entry.name).replace(/'/g, "\\'") + '\',this)">Insert</button>' : '') +
+              '<button class="btn" style="font-size:12px;padding:4px 12px" onclick="event.stopPropagation();davDownload(\'' + fullPath.replace(/'/g, "\\'") + '\',this)">Save to SD</button>' +
+            '</div>' +
+          '</div>' +
           '</div>';
       }
     }
@@ -1326,9 +1339,55 @@ function davUpdateBreadcrumb(path) {
   bc.innerHTML = html;
 }
 
+let davLoadedFile = '';
+
+async function davInsert(remotePath, displayName, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Loading...';
+
+  try {
+    const res = await fetch(API + '/api/dav/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'path=' + encodeURIComponent(remotePath)
+    });
+    const data = await res.json().catch(() => ({}));
+    davShowDebug(data);
+    if (!res.ok) {
+      throw new Error(data.error || 'HTTP ' + res.status);
+    }
+    davLoadedFile = remotePath;
+    btn.textContent = 'Playing!';
+    btn.style.background = 'var(--green)';
+    toast(data.name + ' loaded! (' + (data.bytes / 1024).toFixed(0) + ' KB)');
+    // Show eject button
+    document.getElementById('dav-disconnect-btn').style.display = '';
+    // Update status bar
+    const bar = document.getElementById('dav-status-bar');
+    bar.className = 'ftp-status connected';
+    bar.innerHTML = '<span class="active-indicator"></span>Playing: ' + esc(displayName) +
+      ' <button class="btn btn-danger" style="font-size:11px;padding:2px 8px;margin-left:8px" onclick="davEject()">Eject</button>';
+  } catch (e) {
+    btn.textContent = 'Insert';
+    btn.disabled = false;
+    toast('Load failed: ' + (e.message || 'Unknown error'), 'error');
+  }
+}
+
+async function davEject() {
+  try {
+    await api('/api/disk/unload', { method: 'POST' });
+    davLoadedFile = '';
+    toast('Disk ejected');
+    await davLoadStatus();
+  } catch (e) {
+    toast('Eject failed', 'error');
+  }
+}
+
 async function davDownload(remotePath, btn) {
   btn.disabled = true;
-  btn.textContent = 'Downloading...';
+  btn.textContent = 'Saving...';
 
   try {
     const result = await api('/api/dav/download', {
@@ -1336,11 +1395,11 @@ async function davDownload(remotePath, btn) {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'path=' + encodeURIComponent(remotePath)
     });
-    btn.textContent = 'Done!';
-    toast(result.file + ' downloaded (' + (result.bytes / 1024).toFixed(0) + ' KB)');
+    btn.textContent = 'Saved!';
+    toast(result.file + ' saved to SD (' + (result.bytes / 1024).toFixed(0) + ' KB)');
     loadGames();
   } catch (e) {
-    btn.textContent = 'Failed';
+    btn.textContent = 'Save to SD';
     btn.disabled = false;
     toast('Download failed: ' + (e.message || 'Unknown error'), 'error');
   }

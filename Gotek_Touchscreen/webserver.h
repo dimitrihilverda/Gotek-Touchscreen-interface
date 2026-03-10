@@ -736,6 +736,10 @@ void handleHttpRequest(WiFiClient &client) {
     handleDAVDownload(client, req.body);
     return;
   }
+  if (req.path == "/api/dav/load" && req.method == "POST") {
+    handleDAVLoad(client, req.body);
+    return;
+  }
 
   // ── 404 ──
   sendJSON(client, 404, "{\"error\":\"Not found\"}");

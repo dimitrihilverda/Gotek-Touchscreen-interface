@@ -1391,4 +1391,56 @@ void handleDAVDownload(WiFiClient &client, const String &body) {
     ",\"game\":\"" + jsonEscape(gameName) + "\"}");
 }
 
+// ============================================================================
+// POST /api/dav/load — Load disk image from WebDAV directly into RAM
+// Body: path=/subdir/game.adf
+// ============================================================================
+
+void handleDAVLoad(WiFiClient &client, const String &body) {
+  if (!cfg_dav_enabled) {
+    sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}");
+    return;
+  }
+
+  // Parse path from body
+  String remotePath = "";
+  int pathIdx = body.indexOf("path=");
+  if (pathIdx >= 0) {
+    remotePath = body.substring(pathIdx + 5);
+    int ampIdx = remotePath.indexOf("&");
+    if (ampIdx >= 0) remotePath = remotePath.substring(0, ampIdx);
+    remotePath = urlDecode(remotePath);
+  }
+
+  if (remotePath.length() == 0) {
+    sendJSON(client, 400, "{\"error\":\"Missing path parameter\"}");
+    return;
+  }
+
+  // Extract display name from path
+  String displayName = remotePath;
+  int lastSlash = displayName.lastIndexOf('/');
+  if (lastSlash >= 0) displayName = displayName.substring(lastSlash + 1);
+  int dotIdx = displayName.lastIndexOf('.');
+  if (dotIdx > 0) displayName = displayName.substring(0, dotIdx);
+
+  size_t loaded = loadFileFromDAV(remotePath, displayName);
+  if (loaded > 0) {
+    // Mark as loaded (use -2 to indicate DAV-loaded, not from file_list)
+    loaded_disk_index = -2;
+    current_screen = SCR_DETAILS;
+
+    sendJSON(client, 200,
+      "{\"status\":\"ok\",\"file\":\"" + jsonEscape(remotePath) +
+      "\",\"bytes\":" + String(loaded) +
+      "\",\"name\":\"" + jsonEscape(displayName) + "\"}");
+  } else {
+    String dbg = davClient.lastDebug();
+    String json = "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"";
+    if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+    json += "}";
+    sendJSON(client, 500, json);
+  }
+}
+
 #endif // API_HANDLERS_H
