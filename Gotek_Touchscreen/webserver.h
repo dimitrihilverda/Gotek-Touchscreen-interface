@@ -729,6 +729,10 @@ void handleHttpRequest(WiFiClient &client) {
     handleArchiveDownload(client, gameId);
     return;
   }
+  if (req.path == "/api/archive/save-index" && req.method == "POST") {
+    handleArchiveSaveIndex(client, req.body);
+    return;
+  }
 
   // ── 404 ──
   sendJSON(client, 404, "{\"error\":\"Not found\"}");

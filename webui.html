@@ -967,17 +967,73 @@ async function loadArchive() {
 async function fetchArchiveIndex() {
   const loading = document.getElementById('archive-loading');
   loading.style.display = 'block';
-  loading.textContent = 'Fetching from amiga500archive.com... (this may take a minute)';
 
-  try {
-    archiveIndex = await api('/api/archive/fetch', { method: 'POST' });
-    loading.style.display = 'none';
-    buildArchiveAlpha(archiveIndex.games || []);
-    renderArchiveList(archiveIndex.games || []);
-    toast('Archive index loaded: ' + (archiveIndex.games || []).length + ' games');
-  } catch (e) {
-    loading.innerHTML = '<p style="color:var(--red)">Failed to fetch archive. Check internet connection.</p>';
+  const pages = 'abcdefghijklmnopqrstuvwxyz'.split('').concat(['0-9']);
+  const games = [];
+  const seen = new Set();
+
+  for (let i = 0; i < pages.length; i++) {
+    loading.textContent = 'Fetching ' + pages[i].toUpperCase() + '... (' + (i+1) + '/' + pages.length + ', ' + games.length + ' games found)';
+
+    try {
+      // Fetch directly from browser (no ESP32 HTTPS needed!)
+      const resp = await fetch('https://amiga500archive.com/games/' + pages[i], { mode: 'cors' }).catch(() => null);
+      if (!resp || !resp.ok) {
+        // CORS blocked? Fall back to ESP32 proxy for this page
+        // Actually, CORS will likely block this. Let's use the ESP32 as fallback.
+        continue;
+      }
+      const html = await resp.text();
+
+      // Parse game links from HTML
+      const re = /href="\/game\/([^"\/]+)"[^>]*>([^<]+)</g;
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const slug = m[1];
+        const title = m[2].trim();
+        if (slug.length >= 2 && title.length > 0 && !seen.has(slug)) {
+          seen.add(slug);
+          games.push({ name: title, id: slug, cached: false });
+        }
+      }
+    } catch (e) {
+      // Ignore individual page failures
+    }
   }
+
+  // If CORS blocked all requests, fall back to ESP32 fetch
+  if (games.length === 0) {
+    loading.textContent = 'Browser fetch blocked by CORS, using ESP32... (this takes a while)';
+    try {
+      await api('/api/archive/fetch', { method: 'POST' });
+      // Wait a bit then reload index
+      await new Promise(r => setTimeout(r, 2000));
+      archiveIndex = await api('/api/archive/index');
+      loading.style.display = 'none';
+      buildArchiveAlpha(archiveIndex.games || []);
+      renderArchiveList(archiveIndex.games || []);
+      toast('Archive index loaded: ' + (archiveIndex.games || []).length + ' games');
+      return;
+    } catch (e) {
+      loading.innerHTML = '<p style="color:var(--red)">Failed to fetch archive index.</p>';
+      return;
+    }
+  }
+
+  // Save index to ESP32 SD cache
+  try {
+    await api('/api/archive/save-index', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ games: games.map(g => g.name + '|' + g.id + '||').join('\n') })
+    });
+  } catch (e) { /* ignore save errors */ }
+
+  archiveIndex = { games: games };
+  loading.style.display = 'none';
+  buildArchiveAlpha(games);
+  renderArchiveList(games);
+  toast('Archive index loaded: ' + games.length + ' games');
 }
 
 async function searchArchive() {
