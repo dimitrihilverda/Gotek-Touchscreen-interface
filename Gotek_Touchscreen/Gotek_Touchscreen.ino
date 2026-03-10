@@ -2290,8 +2290,28 @@ int items_per_page() {
 #define ALPHA_BAR_W  16       // width of the alphabet strip
 #define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
 
-// Find the first game_list index that starts with given letter (or next available)
+// Active letters in the alphabet bar (only letters that have games)
+char active_letters[26];    // letters with games (e.g. "ABCDFGKLMPRST")
+int  active_letter_count = 0;
+
+// Build the list of active letters from game_list (call after sorting)
+void buildActiveLetters() {
+  bool seen[26] = {false};
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    char c = toupper(game_list[i].name.charAt(0));
+    if (c >= 'A' && c <= 'Z') seen[c - 'A'] = true;
+  }
+  active_letter_count = 0;
+  for (int i = 0; i < 26; i++) {
+    if (seen[i]) {
+      active_letters[active_letter_count++] = 'A' + i;
+    }
+  }
+}
+
+// Find the first game_list index that starts with given letter (case-insensitive)
 int findFirstGameWithLetter(char letter) {
+  letter = toupper(letter);
   for (int i = 0; i < (int)game_list.size(); i++) {
     char first = toupper(game_list[i].name.charAt(0));
     if (first >= letter) return i;
@@ -2308,40 +2328,40 @@ char getCurrentLetter() {
 }
 
 void drawAlphabetBar() {
+  if (active_letter_count == 0) return;
+
   int barTop = LIST_START_Y;
   int barH = LIST_BOTTOM - LIST_START_Y;
   char curLetter = getCurrentLetter();
 
-  // On smaller screens (Waveshare 240px), show every other letter
-  bool showAll = (barH >= 230);  // JC3248: 268px, Waveshare: ~188px
-  int letterCount = showAll ? 26 : 13;
+  int letterCount = active_letter_count;
 
   // Background strip
   gfx_fillRect(ALPHA_BAR_X, barTop, ALPHA_BAR_W, barH, 0x1082);
 
   int letterH = barH / letterCount;
+  if (letterH < 10) letterH = 10;  // minimum height per letter
   gfx_setTextSize(1);
 
   for (int i = 0; i < letterCount; i++) {
-    char letter = 'A' + (showAll ? i : i * 2);
+    char letter = active_letters[i];
     int ly = barTop + i * letterH;
+    if (ly + letterH > LIST_BOTTOM) break;  // don't draw outside bar
 
     if (letter == curLetter) {
-      // Highlight current letter
-      gfx_fillRect(ALPHA_BAR_X, ly, ALPHA_BAR_W, letterH, 0x03E0);  // dark green
+      gfx_fillRect(ALPHA_BAR_X, ly, ALPHA_BAR_W, letterH, 0x03E0);
       gfx_setTextColor(TFT_WHITE, 0x03E0);
     } else {
       gfx_setTextColor(TFT_GREY, 0x1082);
     }
 
-    // Center letter in its slot
     int cx = ALPHA_BAR_X + (ALPHA_BAR_W - 6) / 2;
     int cy = ly + (letterH - 8) / 2;
     gfx_setCursor(cx, cy);
     gfx_print(String(letter));
   }
 
-  // Scrollbar position indicator (thin line next to alphabet)
+  // Scrollbar position indicator
   int maxOff = (int)game_list.size() - items_per_page();
   if (maxOff > 0) {
     int thumbH = max(6, barH * items_per_page() / (int)game_list.size());
@@ -2353,17 +2373,17 @@ void drawAlphabetBar() {
 // Handle touch/drag on the alphabet bar — returns true if handled
 bool handleAlphabetTouch(uint16_t px, uint16_t py) {
   if (px < ALPHA_BAR_X || py < LIST_START_Y || py >= LIST_BOTTOM) return false;
+  if (active_letter_count == 0) return false;
 
   int barH = LIST_BOTTOM - LIST_START_Y;
-  bool showAll = (barH >= 230);
-  int letterCount = showAll ? 26 : 13;
-  int letterH = barH / letterCount;
+  int letterH = barH / active_letter_count;
+  if (letterH < 10) letterH = 10;
 
   int idx = (py - LIST_START_Y) / letterH;
   if (idx < 0) idx = 0;
-  if (idx >= letterCount) idx = letterCount - 1;
+  if (idx >= active_letter_count) idx = active_letter_count - 1;
 
-  char letter = 'A' + (showAll ? idx : idx * 2);
+  char letter = active_letters[idx];
 
   // Jump to first game starting with this letter
   int gameIdx = findFirstGameWithLetter(letter);
@@ -2745,14 +2765,21 @@ void buildGameList() {
     game_list.push_back(entry);
   }
 
-  // Sort alphabetically by name
+  // Sort alphabetically by name (case-insensitive)
   for (int i = 0; i < (int)game_list.size(); i++) {
     for (int j = i + 1; j < (int)game_list.size(); j++) {
-      if (game_list[i].name.compareTo(game_list[j].name) > 0) {
+      String a = game_list[i].name;
+      String b = game_list[j].name;
+      a.toLowerCase();
+      b.toLowerCase();
+      if (a.compareTo(b) > 0) {
         swap(game_list[i], game_list[j]);
       }
     }
   }
+
+  // Build active letters for the A-Z bar (only letters that have games)
+  buildActiveLetters();
 }
 
 // Core file loading: reads SD file into RAM disk, builds FAT chain.
