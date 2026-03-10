@@ -3307,20 +3307,29 @@ void loop() {
       if (curDx > touch_max_dx) touch_max_dx = curDx;
 
       // ── TOUCH DIAGNOSTIC (top of screen) ──
-      // Shows live touch data to diagnose if controller reports movement
       static unsigned long lastDiagDraw = 0;
       if (millis() - lastDiagDraw > 100) {
-        gfx_fillRect(0, 0, 320, 24, TFT_BLACK);
+        gfx_fillRect(0, 0, gW, 36, TFT_BLACK);
         gfx_setTextSize(1);
         gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
         gfx_setCursor(2, 2);
         gfx_print("X:" + String(px) + " Y:" + String(py) +
-                   " sY:" + String(touch_start_y) +
+                   " sX:" + String(touch_start_x) + " sY:" + String(touch_start_y) +
                    " mDy:" + String(touch_max_dy) +
                    " drg:" + String(drag_scrolling));
         gfx_setCursor(2, 13);
-        gfx_print("dy:" + String((int16_t)py - (int16_t)touch_start_y) +
-                   " dur:" + String(millis() - touch_start_time) + "ms");
+        // Show which conditions pass/fail for the game list drag check
+        bool c1 = (current_screen == SCR_SELECTION);
+        bool c2 = (touch_start_x < ALPHA_BAR_X);
+        bool c3 = (touch_start_y >= LIST_START_Y);
+        bool c4 = (touch_start_y < LIST_BOTTOM);
+        bool c5 = (touch_max_dy > DRAG_THRESHOLD);
+        gfx_print("scr:" + String(c1) + " xOk:" + String(c2) +
+                   " yMin:" + String(c3) + " yMax:" + String(c4) +
+                   " thresh:" + String(c5));
+        gfx_setCursor(2, 24);
+        gfx_print("ABX:" + String(ALPHA_BAR_X) + " LSY:" + String(LIST_START_Y) +
+                   " LB:" + String(LIST_BOTTOM) + " DT:" + String(DRAG_THRESHOLD));
         gfx_flush();
         lastDiagDraw = millis();
       }
