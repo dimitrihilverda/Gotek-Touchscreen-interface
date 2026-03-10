@@ -1320,6 +1320,7 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
   String curTitle = "";
   String curPublisher = "";
   String curId = "";
+  String curImg = "";  // image filename without extension and path
 
   while (httpsClient->available() || httpsClient->connected()) {
     yield();
@@ -1327,10 +1328,22 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
 
     String line = httpsClient->readStringUntil('\n');
 
+    // Look for screenshot image: files/_images/games/FILENAME.png
+    if (curImg.length() == 0) {
+      int imgIdx = line.indexOf("_images/games/");
+      if (imgIdx >= 0) {
+        int imgStart = imgIdx + 14;
+        int imgEnd = line.indexOf(".png", imgStart);
+        if (imgEnd > imgStart) {
+          curImg = line.substring(imgStart, imgEnd);
+        }
+      }
+    }
+
     // Look for game title: <div class="title">NAME</div>
     int titleIdx = line.indexOf("class=\"title\">");
     if (titleIdx >= 0) {
-      int tStart = titleIdx + 14;  // length of 'class="title">'
+      int tStart = titleIdx + 14;
       int tEnd = line.indexOf("</div>", tStart);
       if (tEnd > tStart) {
         curTitle = line.substring(tStart, tEnd);
@@ -1339,7 +1352,6 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
     }
 
     // Look for publisher: <a href="items.php?search=PUB">PUB</a>
-    // Only grab first publisher per game (reset when we emit)
     if (curPublisher.length() == 0) {
       int pubIdx = line.indexOf("items.php?search=");
       if (pubIdx >= 0) {
@@ -1358,7 +1370,7 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
     // Look for download link: <a href="dl.php?id=XXXXX"
     int dlIdx = line.indexOf("dl.php?id=");
     if (dlIdx >= 0) {
-      int idStart = dlIdx + 10;  // length of 'dl.php?id='
+      int idStart = dlIdx + 10;
       int idEnd = line.indexOf("\"", idStart);
       if (idEnd > idStart) {
         curId = line.substring(idStart, idEnd);
@@ -1371,6 +1383,7 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
         json += "{\"name\":\"" + jsonEscape(curTitle) + "\"";
         json += ",\"id\":\"" + jsonEscape(curId) + "\"";
         if (curPublisher.length() > 0) json += ",\"pub\":\"" + jsonEscape(curPublisher) + "\"";
+        if (curImg.length() > 0) json += ",\"img\":\"" + jsonEscape(curImg) + "\"";
         json += "}";
         count++;
       }
@@ -1378,6 +1391,7 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
       curTitle = "";
       curPublisher = "";
       curId = "";
+      curImg = "";
     }
   }
 
@@ -1528,14 +1542,91 @@ void handleArchiveFetch(WiFiClient &client) {
 }
 
 // Download a game from the archive by slug/id
+// Extract ADF/DSK files from a ZIP on the SD card.
+// ZIP local file header: PK\x03\x04 (4 bytes)
+//   version (2) + flags (2) + compression (2) + modtime (2) + moddate (2)
+//   crc32 (4) + compressed_size (4) + uncompressed_size (4)
+//   filename_len (2) + extra_len (2) + filename (variable) + extra (variable)
+// If compression == 0 (STORED), file data follows directly.
+int extractZipADFs(const String &zipPath, const String &destDir) {
+  File zf = SD_MMC.open(zipPath.c_str(), "r");
+  if (!zf) return 0;
+
+  int extracted = 0;
+  uint8_t hdr[30];
+  String ext1 = (g_mode == MODE_ADF) ? ".adf" : ".dsk";
+
+  while (zf.available() >= 30) {
+    yield();
+    if (zf.read(hdr, 30) != 30) break;
+
+    // Check PK\x03\x04 signature
+    if (hdr[0] != 0x50 || hdr[1] != 0x4B || hdr[2] != 0x03 || hdr[3] != 0x04) break;
+
+    uint16_t compression = hdr[8] | (hdr[9] << 8);
+    uint32_t compSize   = hdr[18] | (hdr[19] << 8) | (hdr[20] << 16) | (hdr[21] << 24);
+    uint32_t uncompSize = hdr[22] | (hdr[23] << 8) | (hdr[24] << 16) | (hdr[25] << 24);
+    uint16_t fnLen      = hdr[26] | (hdr[27] << 8);
+    uint16_t extraLen   = hdr[28] | (hdr[29] << 8);
+
+    // Read filename
+    char fnBuf[256];
+    int toRead = (fnLen < 255) ? fnLen : 255;
+    zf.read((uint8_t*)fnBuf, toRead);
+    fnBuf[toRead] = 0;
+    if (fnLen > 255) zf.seek(zf.position() + (fnLen - 255));  // skip rest
+
+    // Skip extra field
+    if (extraLen > 0) zf.seek(zf.position() + extraLen);
+
+    String entryName = String(fnBuf);
+    // Strip path from filename
+    int lastSlash = entryName.lastIndexOf('/');
+    if (lastSlash >= 0) entryName = entryName.substring(lastSlash + 1);
+
+    String entryLower = entryName;
+    entryLower.toLowerCase();
+
+    bool isADF = entryLower.endsWith(".adf") || entryLower.endsWith(".dsk") || entryLower.endsWith(".img");
+
+    if (isADF && compression == 0 && compSize > 0) {
+      // STORED — extract directly
+      String outPath = destDir + "/" + entryName;
+      File outFile = SD_MMC.open(outPath.c_str(), "w");
+      if (outFile) {
+        uint8_t buf[4096];
+        uint32_t remaining = compSize;
+        while (remaining > 0 && zf.available()) {
+          yield();
+          size_t chunk = (remaining > sizeof(buf)) ? sizeof(buf) : remaining;
+          size_t n = zf.read(buf, chunk);
+          outFile.write(buf, n);
+          remaining -= n;
+        }
+        outFile.close();
+        extracted++;
+        Serial.println("ZIP extracted: " + outPath + " (" + String(compSize) + " bytes)");
+      }
+    } else {
+      // Skip this entry's data
+      if (compSize > 0) zf.seek(zf.position() + compSize);
+    }
+  }
+
+  zf.close();
+  return extracted;
+}
+
 // Download a game from the archive.
-// POST body: id=IELEEKKGHE&name=1000+Miglia
-// Uses dl.php?id=XXXXX which returns a ZIP directly
+// POST body: id=IELEEKKGHE&name=1000+Miglia&img=1000_miglia
+// Uses dl.php?id=XXXXX which returns a ZIP, then extracts ADF files.
+// Also downloads cover image from archive.
 void handleArchiveDownload(WiFiClient &client, const String &body) {
   String gameId = "";
   String gameName = "";
+  String gameImg = "";
 
-  // Parse id= and name= from POST body
+  // Parse id=, name=, img= from POST body
   int idIdx = body.indexOf("id=");
   if (idIdx >= 0) {
     int start = idIdx + 3;
@@ -1550,6 +1641,13 @@ void handleArchiveDownload(WiFiClient &client, const String &body) {
     gameName = (end >= 0) ? body.substring(start, end) : body.substring(start);
     gameName = urlDecode(gameName);
   }
+  int imgIdx = body.indexOf("img=");
+  if (imgIdx >= 0) {
+    int start = imgIdx + 4;
+    int end = body.indexOf("&", start);
+    gameImg = (end >= 0) ? body.substring(start, end) : body.substring(start);
+    gameImg = urlDecode(gameImg);
+  }
 
   if (gameId.length() == 0) {
     sendJSON(client, 400, "{\"error\":\"Missing game id\"}");
@@ -1563,7 +1661,14 @@ void handleArchiveDownload(WiFiClient &client, const String &body) {
 
   Serial.println("Archive download: " + gameName + " id=" + gameId + " (heap: " + String(ESP.getFreeHeap()) + ")");
 
-  // Fetch dl.php?id=XXXXX — this returns a ZIP file directly
+  // Create game folder
+  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
+  String gameDir = modeDir + "/" + gameName;
+  if (!SD_MMC.exists(gameDir.c_str())) {
+    SD_MMC.mkdir(gameDir.c_str());
+  }
+
+  // === Step 1: Download ZIP ===
   WiFiClientSecure *dlClient = new WiFiClientSecure();
   if (!dlClient) {
     sendJSON(client, 500, "{\"error\":\"Out of memory\"}");
@@ -1591,38 +1696,14 @@ void handleArchiveDownload(WiFiClient &client, const String &body) {
     yield();
   }
 
-  // Read headers — check for redirect, content-disposition, content-length
-  int contentLength = -1;
-  String filename = gameName + ".zip";
-  String contentType = "";
+  // Read headers
   while (dlClient->available()) {
     String line = dlClient->readStringUntil('\n');
     line.trim();
     if (line.length() == 0) break;
-
+    // Handle redirect
     String lower = line;
     lower.toLowerCase();
-
-    if (lower.startsWith("content-length:")) {
-      contentLength = line.substring(16).toInt();
-    }
-    if (lower.startsWith("content-type:")) {
-      contentType = line.substring(14);
-      contentType.trim();
-    }
-    // Extract filename from Content-Disposition header
-    if (lower.startsWith("content-disposition:")) {
-      int fnIdx = lower.indexOf("filename=");
-      if (fnIdx >= 0) {
-        filename = line.substring(fnIdx + 9 + (line.length() - lower.length()));
-        // Actually re-extract from original case
-        fnIdx = line.indexOf("filename=");
-        if (fnIdx >= 0) filename = line.substring(fnIdx + 9);
-        filename.replace("\"", "");
-        filename.trim();
-      }
-    }
-    // Handle redirect
     if (lower.startsWith("location:")) {
       String redirectUrl = line.substring(10);
       redirectUrl.trim();
@@ -1634,20 +1715,14 @@ void handleArchiveDownload(WiFiClient &client, const String &body) {
     yield();
   }
 
-  // Create game folder
-  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
-  String gameDir = modeDir + "/" + gameName;
-  if (!SD_MMC.exists(gameDir.c_str())) {
-    SD_MMC.mkdir(gameDir.c_str());
-  }
-
-  // Save downloaded file to SD
-  String filePath = gameDir + "/" + filename;
-  File outFile = SD_MMC.open(filePath.c_str(), "w");
-  if (!outFile) {
+  // Save ZIP to temp file
+  String zipPath = "/CACHE/_download.zip";
+  if (!SD_MMC.exists("/CACHE")) SD_MMC.mkdir("/CACHE");
+  File zipFile = SD_MMC.open(zipPath.c_str(), "w");
+  if (!zipFile) {
     dlClient->stop();
     delete dlClient;
-    sendJSON(client, 500, "{\"error\":\"Cannot create file on SD\"}");
+    sendJSON(client, 500, "{\"error\":\"Cannot create temp ZIP\"}");
     return;
   }
 
@@ -1660,24 +1735,92 @@ void handleArchiveDownload(WiFiClient &client, const String &body) {
     size_t toRead = (avail > sizeof(buf)) ? sizeof(buf) : avail;
     size_t bytesRead = dlClient->read(buf, toRead);
     if (bytesRead > 0) {
-      outFile.write(buf, bytesRead);
+      zipFile.write(buf, bytesRead);
       totalBytes += bytesRead;
     }
   }
-
-  outFile.close();
+  zipFile.close();
   dlClient->stop();
   delete dlClient;
 
-  Serial.println("Archive: saved " + filePath + " (" + String(totalBytes) + " bytes)");
+  Serial.println("Archive: ZIP saved (" + String(totalBytes) + " bytes), extracting...");
 
-  // Rescan game list
+  // === Step 2: Extract ADF files from ZIP ===
+  int extracted = extractZipADFs(zipPath, gameDir);
+
+  // Clean up temp ZIP
+  SD_MMC.remove(zipPath.c_str());
+
+  if (extracted == 0) {
+    // ZIP might contain ADF directly without compression, or wrong format
+    // Try just renaming the ZIP to ADF (in case dl.php returns raw ADF)
+    Serial.println("Archive: no ADF found in ZIP, trying as raw ADF...");
+    // Re-download and save as ADF directly
+    // (Actually: the file is already deleted. Just report the error.)
+    sendJSON(client, 500, "{\"error\":\"No ADF/DSK files found in download (compressed ZIPs not supported, only STORED)\"}");
+    return;
+  }
+
+  // === Step 3: Download cover image ===
+  if (gameImg.length() > 0) {
+    WiFiClientSecure *imgClient = new WiFiClientSecure();
+    if (imgClient) {
+      imgClient->setInsecure();
+      imgClient->setTimeout(10000);
+      if (imgClient->connect(ARCHIVE_HOST, 443)) {
+        String imgPath = "/files/_images/games/" + gameImg + ".png";
+        imgClient->println("GET " + imgPath + " HTTP/1.1");
+        imgClient->println("Host: " + String(ARCHIVE_HOST));
+        imgClient->println("Connection: close");
+        imgClient->println("User-Agent: Mozilla/5.0");
+        imgClient->println();
+
+        timeout = millis();
+        while (!imgClient->available() && millis() - timeout < 8000) {
+          delay(50); yield();
+        }
+
+        // Check for 200 OK
+        String statusLine = imgClient->readStringUntil('\n');
+        bool imgOk = statusLine.indexOf("200") >= 0;
+
+        // Skip remaining headers
+        while (imgClient->available()) {
+          String line = imgClient->readStringUntil('\n');
+          line.trim();
+          if (line.length() == 0) break;
+          yield();
+        }
+
+        if (imgOk) {
+          String coverPath = gameDir + "/cover.png";
+          File coverFile = SD_MMC.open(coverPath.c_str(), "w");
+          if (coverFile) {
+            while (imgClient->connected() || imgClient->available()) {
+              yield();
+              size_t avail = imgClient->available();
+              if (avail == 0) { delay(10); continue; }
+              size_t toRead = (avail > sizeof(buf)) ? sizeof(buf) : avail;
+              size_t n = imgClient->read(buf, toRead);
+              if (n > 0) coverFile.write(buf, n);
+            }
+            coverFile.close();
+            Serial.println("Archive: cover saved " + coverPath);
+          }
+        }
+      }
+      imgClient->stop();
+      delete imgClient;
+    }
+  }
+
+  // === Step 4: Rescan game list ===
   file_list = listImages();
   buildDisplayNames(file_list);
   sortByDisplay();
   buildGameList();
 
-  sendJSON(client, 200, "{\"status\":\"ok\",\"name\":\"" + jsonEscape(gameName) + "\",\"file\":\"" + jsonEscape(filename) + "\",\"bytes\":" + String(totalBytes) + "}");
+  sendJSON(client, 200, "{\"status\":\"ok\",\"name\":\"" + jsonEscape(gameName) + "\",\"extracted\":" + String(extracted) + ",\"bytes\":" + String(totalBytes) + "}");
 }
 
 // ============================================================================

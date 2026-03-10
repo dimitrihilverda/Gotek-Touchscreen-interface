@@ -27,6 +27,7 @@
 #include <USB.h>
 #include <USBMSC.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
 // ============================================================================
@@ -2583,10 +2584,246 @@ void archiveFetchIndex() {
   drawArchiveScreen();
 }
 
-// Stub: archiveDownloadSelected — calls the web API handler internally
-// The actual download is done through the web API (/api/archive/download)
+// Simple ZIP extractor for ADF/DSK files (STORED method only)
+int extractZipToDir(const String &zipPath, const String &destDir) {
+  File zf = SD_MMC.open(zipPath.c_str(), "r");
+  if (!zf) return 0;
+  int extracted = 0;
+  uint8_t hdr[30];
+  while (zf.available() >= 30) {
+    yield();
+    if (zf.read(hdr, 30) != 30) break;
+    if (hdr[0] != 0x50 || hdr[1] != 0x4B || hdr[2] != 0x03 || hdr[3] != 0x04) break;
+    uint16_t compression = hdr[8] | (hdr[9] << 8);
+    uint32_t compSize   = hdr[18] | (hdr[19] << 8) | (hdr[20] << 16) | (hdr[21] << 24);
+    uint16_t fnLen      = hdr[26] | (hdr[27] << 8);
+    uint16_t extraLen   = hdr[28] | (hdr[29] << 8);
+    char fnBuf[256];
+    int toRead = (fnLen < 255) ? fnLen : 255;
+    zf.read((uint8_t*)fnBuf, toRead);
+    fnBuf[toRead] = 0;
+    if (fnLen > 255) zf.seek(zf.position() + (fnLen - 255));
+    if (extraLen > 0) zf.seek(zf.position() + extraLen);
+    String entryName = String(fnBuf);
+    int lastSlash = entryName.lastIndexOf('/');
+    if (lastSlash >= 0) entryName = entryName.substring(lastSlash + 1);
+    String entryLower = entryName;
+    entryLower.toLowerCase();
+    bool isImage = entryLower.endsWith(".adf") || entryLower.endsWith(".dsk") || entryLower.endsWith(".img");
+    if (isImage && compression == 0 && compSize > 0) {
+      File outFile = SD_MMC.open((destDir + "/" + entryName).c_str(), "w");
+      if (outFile) {
+        uint8_t buf[4096];
+        uint32_t remaining = compSize;
+        while (remaining > 0 && zf.available()) {
+          yield();
+          size_t chunk = (remaining > sizeof(buf)) ? sizeof(buf) : remaining;
+          size_t n = zf.read(buf, chunk);
+          outFile.write(buf, n);
+          remaining -= n;
+        }
+        outFile.close();
+        extracted++;
+        Serial.println("ZIP extracted: " + destDir + "/" + entryName);
+      }
+    } else {
+      if (compSize > 0) zf.seek(zf.position() + compSize);
+    }
+  }
+  zf.close();
+  return extracted;
+}
+
+// Download selected archive game, extract ADF, download cover, load into RAM
 void archiveDownloadSelected() {
-  archive_download_status = "Use web UI to download";
+  if (archive_selected < 0 || archive_selected >= (int)archive_list.size()) return;
+  if (!wifi_sta_connected) {
+    archive_download_status = "No internet!";
+    drawArchiveScreen();
+    return;
+  }
+
+  ArchiveEntry &entry = archive_list[archive_selected];
+  archive_download_status = "Downloading " + entry.name + "...";
+  drawArchiveScreen();
+
+  // Create game folder
+  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
+  String gameDir = modeDir + "/" + entry.name;
+  if (!SD_MMC.exists(gameDir.c_str())) {
+    SD_MMC.mkdir(gameDir.c_str());
+  }
+
+  // Download ZIP via dl.php
+  WiFiClientSecure *dlClient = new WiFiClientSecure();
+  if (!dlClient) {
+    archive_download_status = "Out of memory!";
+    drawArchiveScreen();
+    return;
+  }
+  dlClient->setInsecure();
+  dlClient->setTimeout(30000);
+
+  if (!dlClient->connect("amiga500archive.com", 443)) {
+    delete dlClient;
+    archive_download_status = "Connect failed!";
+    drawArchiveScreen();
+    return;
+  }
+
+  String dlPath = "/dl.php?id=" + entry.slug;
+  dlClient->println("GET " + dlPath + " HTTP/1.1");
+  dlClient->println("Host: amiga500archive.com");
+  dlClient->println("Connection: close");
+  dlClient->println("User-Agent: Mozilla/5.0");
+  dlClient->println();
+
+  unsigned long timeout = millis();
+  while (!dlClient->available() && millis() - timeout < 15000) {
+    delay(50); yield();
+  }
+
+  // Skip HTTP headers
+  while (dlClient->available()) {
+    String line = dlClient->readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) break;
+    yield();
+  }
+
+  // Save ZIP to temp file
+  if (!SD_MMC.exists("/CACHE")) SD_MMC.mkdir("/CACHE");
+  String zipPath = "/CACHE/_download.zip";
+  File zipFile = SD_MMC.open(zipPath.c_str(), "w");
+  if (!zipFile) {
+    dlClient->stop();
+    delete dlClient;
+    archive_download_status = "SD write error!";
+    drawArchiveScreen();
+    return;
+  }
+
+  size_t totalBytes = 0;
+  uint8_t buf[4096];
+  while (dlClient->connected() || dlClient->available()) {
+    yield();
+    size_t avail = dlClient->available();
+    if (avail == 0) { delay(10); continue; }
+    size_t toRead = (avail > sizeof(buf)) ? sizeof(buf) : avail;
+    size_t n = dlClient->read(buf, toRead);
+    if (n > 0) { zipFile.write(buf, n); totalBytes += n; }
+  }
+  zipFile.close();
+  dlClient->stop();
+  delete dlClient;
+
+  archive_download_status = "Extracting...";
+  drawArchiveScreen();
+
+  // Extract ADF from ZIP
+  int extracted = extractZipToDir(zipPath, gameDir);
+  SD_MMC.remove(zipPath.c_str());
+
+  if (extracted == 0) {
+    archive_download_status = "No ADF in ZIP!";
+    drawArchiveScreen();
+    return;
+  }
+
+  // Download cover image
+  archive_download_status = "Getting cover...";
+  drawArchiveScreen();
+
+  // We stored the image slug in ArchiveEntry — use publisher field for now
+  // Actually we don't have img in ArchiveEntry. Try to derive from name.
+  // The archive uses lowercase_with_underscores: "1000 Miglia" -> "1000_miglia"
+  // This is a best-effort approach:
+  String imgSlug = entry.name;
+  imgSlug.toLowerCase();
+  imgSlug.replace(" ", "_");
+  imgSlug.replace("'", "");
+  imgSlug.replace("!", "");
+  imgSlug.replace(":", "");
+  imgSlug.replace("&", "and");
+
+  WiFiClientSecure *imgClient = new WiFiClientSecure();
+  if (imgClient) {
+    imgClient->setInsecure();
+    imgClient->setTimeout(10000);
+    if (imgClient->connect("amiga500archive.com", 443)) {
+      String imgPath = "/files/_images/games/" + imgSlug + ".png";
+      imgClient->println("GET " + imgPath + " HTTP/1.1");
+      imgClient->println("Host: amiga500archive.com");
+      imgClient->println("Connection: close");
+      imgClient->println("User-Agent: Mozilla/5.0");
+      imgClient->println();
+
+      timeout = millis();
+      while (!imgClient->available() && millis() - timeout < 8000) {
+        delay(50); yield();
+      }
+
+      String statusLine = imgClient->readStringUntil('\n');
+      bool imgOk = statusLine.indexOf("200") >= 0;
+      while (imgClient->available()) {
+        String line = imgClient->readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) break;
+        yield();
+      }
+
+      if (imgOk) {
+        File coverFile = SD_MMC.open((gameDir + "/cover.png").c_str(), "w");
+        if (coverFile) {
+          while (imgClient->connected() || imgClient->available()) {
+            yield();
+            size_t avail = imgClient->available();
+            if (avail == 0) { delay(10); continue; }
+            size_t toRead = (avail > sizeof(buf)) ? sizeof(buf) : avail;
+            size_t n = imgClient->read(buf, toRead);
+            if (n > 0) coverFile.write(buf, n);
+          }
+          coverFile.close();
+        }
+      }
+    }
+    imgClient->stop();
+    delete imgClient;
+  }
+
+  // Rescan game list
+  file_list = listImages();
+  buildDisplayNames(file_list);
+  sortByDisplay();
+  buildGameList();
+
+  // Find the newly added game in file_list and load it into RAM
+  archive_download_status = "Loading into RAM...";
+  drawArchiveScreen();
+
+  int newGameIndex = -1;
+  for (int i = 0; i < (int)file_list.size(); i++) {
+    if (file_list[i].indexOf(entry.name) >= 0) {
+      newGameIndex = i;
+      break;
+    }
+  }
+
+  if (newGameIndex >= 0) {
+    selected_index = newGameIndex;
+    size_t loaded = loadFileToRam(newGameIndex);
+    if (loaded > 0) {
+      loaded_disk_index = newGameIndex;
+      cfg_lastfile = file_list[newGameIndex];
+      saveConfig();
+      // Switch to selection screen showing the loaded game
+      current_screen = SCR_SELECTION;
+      drawList();
+      return;
+    }
+  }
+
+  archive_download_status = "Done! " + String(extracted) + " disk(s)";
   drawArchiveScreen();
 }
 
