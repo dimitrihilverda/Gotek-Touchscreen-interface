@@ -451,6 +451,7 @@ bool touch_active = false;
 uint16_t touch_start_x = 0, touch_start_y = 0;
 uint16_t touch_last_x = 0, touch_last_y = 0;
 unsigned long touch_start_time = 0;
+Screen touch_start_screen = SCR_SELECTION;  // which screen was active when touch began
 
 // ============================================================================
 // GRAPHICS LAYER - JC3248 Display
@@ -3295,6 +3296,7 @@ void loop() {
       touch_last_y = py;
       drag_last_y = py;
       touch_start_time = millis();
+      touch_start_screen = current_screen;  // remember which screen we started on
     } else {
       // Touch HELD — track maximum movement from start point
       touch_last_x = px;
@@ -3314,22 +3316,12 @@ void loop() {
         gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
         gfx_setCursor(2, 2);
         gfx_print("X:" + String(px) + " Y:" + String(py) +
-                   " sX:" + String(touch_start_x) + " sY:" + String(touch_start_y) +
                    " mDy:" + String(touch_max_dy) +
                    " drg:" + String(drag_scrolling));
         gfx_setCursor(2, 13);
-        // Show which conditions pass/fail for the game list drag check
-        bool c1 = (current_screen == SCR_SELECTION);
-        bool c2 = (touch_start_x < ALPHA_BAR_X);
-        bool c3 = (touch_start_y >= LIST_START_Y);
-        bool c4 = (touch_start_y < LIST_BOTTOM);
-        bool c5 = (touch_max_dy > DRAG_THRESHOLD);
-        gfx_print("scr:" + String(c1) + " xOk:" + String(c2) +
-                   " yMin:" + String(c3) + " yMax:" + String(c4) +
-                   " thresh:" + String(c5));
-        gfx_setCursor(2, 24);
-        gfx_print("ABX:" + String(ALPHA_BAR_X) + " LSY:" + String(LIST_START_Y) +
-                   " LB:" + String(LIST_BOTTOM) + " DT:" + String(DRAG_THRESHOLD));
+        // Show actual screen value: 0=SEL, 1=DET, 2=INFO
+        gfx_print("SCREEN=" + String((int)current_screen) +
+                   " (0=SEL 1=DET 2=INFO)");
         gfx_flush();
         lastDiagDraw = millis();
       }
@@ -3345,12 +3337,17 @@ void loop() {
         }
       }
       // Game list: live drag-scrolling (finger moves list in real-time)
-      else if (current_screen == SCR_SELECTION &&
-               touch_start_x < ALPHA_BAR_X &&
+      // NOTE: checking current_screen at touch START time, not now
+      //       (screen might change during touch due to bugs)
+      else if (touch_start_x < ALPHA_BAR_X &&
                touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM) {
-        int16_t totalDy = (int16_t)py - (int16_t)touch_start_y;
-
+        // Enter drag mode if ANY vertical movement detected
         if (!drag_scrolling && touch_max_dy > DRAG_THRESHOLD) {
+          // Force screen back to selection if we're dragging on the list
+          if (current_screen != SCR_SELECTION) {
+            current_screen = SCR_SELECTION;
+            drawList();
+          }
           // Max movement from start crossed the threshold → enter drag-scroll mode
           drag_scrolling = true;
           drag_last_y = py;
@@ -3391,7 +3388,23 @@ void loop() {
       }
     }
   } else if (touch_active) {
-    // Touch UP — determine action
+    // Touch might be released — but first check for bounce/glitch.
+    // Capacitive touch controllers can briefly report "no touch" during
+    // a continuous press. Re-read after a short delay to confirm.
+    delay(15);
+    uint16_t recheck_x, recheck_y;
+    if (touchRead(&recheck_x, &recheck_y)) {
+      // Still touching! It was just a bounce — update position and continue
+      touch_last_x = recheck_x;
+      touch_last_y = recheck_y;
+      int16_t curDy = abs((int16_t)recheck_y - (int16_t)touch_start_y);
+      int16_t curDx = abs((int16_t)recheck_x - (int16_t)touch_start_x);
+      if (curDy > touch_max_dy) touch_max_dy = curDy;
+      if (curDx > touch_max_dx) touch_max_dx = curDx;
+      return;  // Not a real release — keep touch_active true
+    }
+
+    // Confirmed: touch is really released
     touch_active = false;
     unsigned long now = millis();
 
@@ -3409,7 +3422,7 @@ void loop() {
     // the final position. This catches fast flicks where the finger
     // may have moved a lot but touch_last is close to touch_start
     // because the loop was too fast or touch release snapped back.
-    bool wasInListArea = (current_screen == SCR_SELECTION &&
+    bool wasInListArea = (touch_start_screen == SCR_SELECTION &&
                           touch_start_x < ALPHA_BAR_X &&
                           touch_start_y >= LIST_START_Y &&
                           touch_start_y < LIST_BOTTOM);
