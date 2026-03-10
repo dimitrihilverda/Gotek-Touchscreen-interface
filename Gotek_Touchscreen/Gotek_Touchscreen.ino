@@ -2587,18 +2587,35 @@ void archiveFetchIndex() {
 // ZIP extractor for ADF/DSK files — supports STORED and DEFLATE.
 // Uses PSRAM buffers + zlib (provided by PNGdec library).
 // PNGdec's zlib has a 3-arg inflate(strm, flush, check_crc).
-// For raw DEFLATE (ZIP method 8), we use inflateInit2 with -MAX_WBITS.
+// Custom zalloc/zfree route zlib's internal allocs to PSRAM to avoid
+// heap exhaustion (WiFiClientSecure may still hold ~40KB of heap).
+
+// PSRAM-backed allocator for zlib internal state
+static voidpf psram_zalloc(voidpf opaque, uInt items, uInt size) {
+  (void)opaque;
+  return ps_malloc((size_t)items * size);
+}
+static void psram_zfree(voidpf opaque, voidpf address) {
+  (void)opaque;
+  free(address);
+}
 
 int extractZipToDir(const String &zipPath, const String &destDir) {
   File zf = SD_MMC.open(zipPath.c_str(), "r");
-  if (!zf) return 0;
+  if (!zf) { Serial.println("ZIP: cannot open " + zipPath); return 0; }
   int extracted = 0;
   uint8_t hdr[30];
+
+  Serial.println("ZIP: opening " + zipPath + " size=" + String(zf.size()));
+  Serial.println("ZIP: free heap=" + String(ESP.getFreeHeap()) +
+                 " free PSRAM=" + String(ESP.getFreePsram()));
 
   while (zf.available() >= 30) {
     yield();
     if (zf.read(hdr, 30) != 30) break;
-    if (hdr[0] != 0x50 || hdr[1] != 0x4B || hdr[2] != 0x03 || hdr[3] != 0x04) break;
+    // Check for PK signature; also stop at central directory (PK\x01\x02)
+    if (hdr[0] != 0x50 || hdr[1] != 0x4B) break;
+    if (hdr[2] != 0x03 || hdr[3] != 0x04) break;
 
     uint16_t compression = hdr[8] | (hdr[9] << 8);
     uint32_t compSize   = hdr[18] | (hdr[19] << 8) | (hdr[20] << 16) | (hdr[21] << 24);
@@ -2621,13 +2638,15 @@ int extractZipToDir(const String &zipPath, const String &destDir) {
     entryLower.toLowerCase();
     bool isImage = entryLower.endsWith(".adf") || entryLower.endsWith(".dsk") || entryLower.endsWith(".img");
 
+    Serial.println("ZIP entry: " + entryName + " comp=" + String(compression) +
+                   " csize=" + String(compSize) + " usize=" + String(uncompSize) +
+                   " match=" + String(isImage));
+
     if (isImage && compSize > 0 && (compression == 0 || compression == 8)) {
       String outPath = destDir + "/" + entryName;
-      Serial.println("ZIP entry: " + entryName + " comp=" + String(compression) +
-                     " csize=" + String(compSize) + " usize=" + String(uncompSize));
 
       if (compression == 0) {
-        // STORED — copy directly
+        // STORED — copy directly in 4KB chunks
         File outFile = SD_MMC.open(outPath.c_str(), "w");
         if (outFile) {
           uint8_t buf[4096];
@@ -2645,11 +2664,16 @@ int extractZipToDir(const String &zipPath, const String &destDir) {
         }
       } else {
         // DEFLATE — decompress using zlib + PSRAM buffers
-        uint32_t outBufSize = uncompSize > 0 ? uncompSize : 901120;  // default ADF size
+        uint32_t outBufSize = uncompSize > 0 ? uncompSize : 901120;
+
+        Serial.println("ZIP: DEFLATE alloc comp=" + String(compSize) +
+                       " out=" + String(outBufSize) +
+                       " freePSRAM=" + String(ESP.getFreePsram()));
+
         uint8_t *compBuf = (uint8_t *)ps_malloc(compSize);
         uint8_t *outBuf  = (uint8_t *)ps_malloc(outBufSize);
         if (!compBuf || !outBuf) {
-          Serial.println("ZIP: PSRAM alloc failed (need " + String(compSize + outBufSize) + " bytes)");
+          Serial.println("ZIP: PSRAM alloc FAILED");
           if (compBuf) free(compBuf);
           if (outBuf) free(outBuf);
           zf.seek(zf.position() + compSize);
@@ -2665,19 +2689,29 @@ int extractZipToDir(const String &zipPath, const String &destDir) {
           size_t n = zf.read(compBuf + readTotal, chunk);
           readTotal += n;
         }
+        Serial.println("ZIP: read " + String(readTotal) + " compressed bytes");
 
-        // Decompress using zlib inflate (raw DEFLATE = -MAX_WBITS)
+        // Decompress — use PSRAM allocator so zlib internals don't exhaust heap
         z_stream strm;
         memset(&strm, 0, sizeof(strm));
-        strm.next_in   = compBuf;
-        strm.avail_in  = compSize;
-        strm.next_out  = outBuf;
+        strm.zalloc   = psram_zalloc;
+        strm.zfree    = psram_zfree;
+        strm.opaque   = Z_NULL;
+        strm.next_in  = compBuf;
+        strm.avail_in = compSize;
+        strm.next_out = outBuf;
         strm.avail_out = outBufSize;
 
-        int ret = inflateInit2(&strm, -MAX_WBITS);  // raw DEFLATE, no zlib/gzip header
+        Serial.println("ZIP: calling inflateInit2...");
+        int ret = inflateInit2(&strm, -MAX_WBITS);  // raw DEFLATE
         if (ret == Z_OK) {
-          ret = inflate(&strm, Z_FINISH, 0);  // 3rd arg: check_crc (PNGdec zlib)
+          Serial.println("ZIP: inflateInit2 OK, calling inflate...");
+          ret = inflate(&strm, Z_FINISH, 0);  // PNGdec zlib 3-arg
           inflateEnd(&strm);
+          Serial.println("ZIP: inflate done, ret=" + String(ret) +
+                         " total_out=" + String((uint32_t)strm.total_out));
+        } else {
+          Serial.println("ZIP: inflateInit2 FAILED ret=" + String(ret));
         }
 
         free(compBuf);
@@ -2696,10 +2730,11 @@ int extractZipToDir(const String &zipPath, const String &destDir) {
             }
             outFile.close();
             extracted++;
-            Serial.println("ZIP extracted (deflate): " + outPath + " (" + String(decompSize) + " bytes)");
+            Serial.println("ZIP extracted (deflate): " + outPath +
+                           " (" + String(decompSize) + " bytes)");
           }
         } else {
-          Serial.println("ZIP: inflate failed, ret=" + String(ret));
+          Serial.println("ZIP: inflate FAILED ret=" + String(ret));
         }
         free(outBuf);
       }
@@ -2709,6 +2744,7 @@ int extractZipToDir(const String &zipPath, const String &destDir) {
     }
   }
   zf.close();
+  Serial.println("ZIP: done, extracted=" + String(extracted));
   return extracted;
 }
 
