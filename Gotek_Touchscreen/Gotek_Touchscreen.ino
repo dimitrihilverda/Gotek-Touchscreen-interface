@@ -3253,9 +3253,9 @@ void waitForRelease(unsigned long timeout_ms = 2000) {
 //   - Simple 200ms debounce
 
 #define SWIPE_THRESHOLD  20    // px — minimum for horizontal swipe (detail nav)
-#define DRAG_THRESHOLD   10    // px — start live-scrolling after this much vertical drag
-#define TAP_MAX_DURATION 200   // ms — only short, still touches count as taps
-#define TAP_MAX_MOVE     6     // px — any movement beyond this = not a tap
+#define DRAG_THRESHOLD   5     // px — start live-scrolling after this much vertical drag (lowered: was 10)
+#define TAP_MAX_DURATION 150   // ms — only short, still touches count as taps
+#define TAP_MAX_MOVE     4     // px — any movement beyond this = not a tap
 
 // Drag-scroll state
 bool drag_scrolling = false;        // true once we've entered drag-scroll mode
@@ -3292,7 +3292,18 @@ void loop() {
       drag_last_y = py;
       touch_start_time = millis();
     } else {
-      // Touch HELD — check for live drag-scrolling
+      // Touch HELD — track movement for drag-scrolling
+      // Small delay so touch controller reports updated coordinates
+      // (without this, loop() runs so fast that px/py haven't changed yet)
+      delay(5);
+
+      // Re-read touch to get freshest position after the delay
+      uint16_t fresh_x = px, fresh_y = py;
+      if (touchRead(&fresh_x, &fresh_y)) {
+        px = fresh_x;
+        py = fresh_y;
+      }
+
       touch_last_x = px;
       touch_last_y = py;
 
