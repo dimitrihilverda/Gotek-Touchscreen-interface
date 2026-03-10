@@ -88,14 +88,10 @@ textarea{min-height:80px;resize:vertical}
 .alpha-btn:hover{background:var(--blue);color:var(--white);border-color:var(--blue)}
 .alpha-btn.active{background:var(--orange);color:var(--white);border-color:var(--orange)}
 .alpha-btn.disabled{opacity:.3;cursor:default;pointer-events:none}
-.archive-item{display:flex;gap:12px;align-items:center;background:var(--light);border:1px solid #999;padding:10px;border-radius:2px;transition:all .1s}
-.archive-item:hover{border-color:var(--blue);background:#d8d8e8}
-.archive-item .game-info{flex:1}
-.archive-item .game-name{font-weight:700;font-size:14px}
-.archive-item .game-meta{font-size:12px;color:#555;margin-top:2px}
-.archive-dl-btn{padding:4px 12px;font-size:12px;font-weight:600;border:2px outset var(--light);background:var(--green);color:var(--white);cursor:pointer;border-radius:2px;border-color:#006600}
-.archive-dl-btn:hover{background:#00cc00}
-.archive-dl-btn:disabled{opacity:.5;cursor:default}
+
+.dl-btn{padding:4px 12px;font-size:12px;font-weight:600;border:2px outset var(--light);background:var(--green);color:var(--white);cursor:pointer;border-radius:2px;border-color:#006600}
+.dl-btn:hover{background:#00cc00}
+.dl-btn:disabled{opacity:.5;cursor:default}
 .ftp-item{display:flex;gap:12px;align-items:center;background:var(--light);border:1px solid #999;padding:10px;border-radius:2px;cursor:pointer;transition:all .1s}
 .ftp-item:hover{border-color:var(--blue);background:#d8d8e8}
 .ftp-item.dir{font-weight:700}
@@ -122,7 +118,6 @@ textarea{min-height:80px;resize:vertical}
   <div class="tab active" data-view="dashboard">Dashboard</div>
   <div class="tab" data-view="config">Config</div>
   <div class="tab" data-view="games">Games</div>
-  <div class="tab" data-view="archive">Archive</div>
   <div class="tab" data-view="ftp">FTP</div>
   <div class="tab" data-view="themes">Themes</div>
 </div>
@@ -257,36 +252,6 @@ textarea{min-height:80px;resize:vertical}
   </div>
 </div>
 
-<!-- ARCHIVE -->
-<div class="content view hidden" id="view-archive">
-  <div class="card">
-    <h2>Amiga 500 Archive</h2>
-    <p style="font-size:13px;color:#555;margin-bottom:10px">Browse and download games from amiga500archive.com — requires internet connection</p>
-    <div id="archive-no-internet" style="display:none;padding:16px;background:#ffe8e8;border:1px solid var(--red);border-radius:2px;margin-bottom:12px">
-      <strong style="color:var(--red)">No Internet Connection</strong>
-      <p style="font-size:13px;margin-top:4px">Enable WiFi Client in Config and connect to your home network to use the archive.</p>
-    </div>
-    <div id="archive-controls" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="archive-search" placeholder="Search archive..." style="flex:1;min-width:150px;max-width:300px">
-      <button class="btn btn-primary" onclick="searchArchive()">Search</button>
-      <span id="archive-count" style="font-size:13px;color:#555"></span>
-    </div>
-    <div id="archive-alpha" style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:2px"></div>
-    <div class="game-list" id="archive-list"></div>
-    <div id="archive-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading archive index...</div>
-    <div style="margin-top:12px;padding:8px;background:#eee;border:1px solid #ccc;border-radius:2px">
-      <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
-        <button class="btn btn-sm" onclick="debugArchive('/items.php?category=games')">Test /items.php?category=games</button>
-        <button class="btn btn-sm" onclick="debugArchive('/')">Test /</button>
-        <button class="btn btn-sm" onclick="debugArchive('/sitemap.xml')">Sitemap</button>
-        <input type="text" id="debug-path" placeholder="/custom/path" style="width:140px;font-size:12px">
-        <button class="btn btn-sm" onclick="debugArchive(document.getElementById('debug-path').value)">Test custom</button>
-      </div>
-      <pre id="archive-debug" style="max-height:400px;overflow:auto;font-size:11px;margin-top:8px;display:none;white-space:pre-wrap;word-break:break-all"></pre>
-    </div>
-  </div>
-</div>
-
 <!-- FTP -->
 <div class="content view hidden" id="view-ftp">
   <div class="card">
@@ -378,7 +343,6 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.view === 'dashboard') loadDashboard();
     if (tab.dataset.view === 'config') loadConfig();
     if (tab.dataset.view === 'games') loadGames();
-    if (tab.dataset.view === 'archive') loadArchive();
     if (tab.dataset.view === 'ftp') ftpLoadStatus();
     if (tab.dataset.view === 'themes') loadThemes();
   });
@@ -936,219 +900,6 @@ async function activateTheme(name) {
   loadThemes();
 }
 
-// ═══════════════ ARCHIVE ═══════════════
-
-let archiveIndex = null;
-let archiveAlpha = '';
-
-async function loadArchive() {
-  const noInet = document.getElementById('archive-no-internet');
-  const controls = document.getElementById('archive-controls');
-  noInet.style.display = 'none';
-  controls.style.display = 'flex';
-
-  // Load cached archive index if available
-  if (!archiveIndex) {
-    const loading = document.getElementById('archive-loading');
-    loading.style.display = 'block';
-    try {
-      const data = await api('/api/archive/index');
-      if (data.games && data.games.length > 0) {
-        archiveIndex = data;
-        loading.style.display = 'none';
-        buildArchiveAlpha(archiveIndex.games);
-        renderArchiveList(archiveIndex.games);
-      } else {
-        loading.innerHTML = '<p>No cached archive index. <button class="btn btn-sm" onclick="fetchArchiveIndex()">Fetch from amiga500archive.com</button></p>';
-      }
-    } catch (e) {
-      loading.innerHTML = '<p style="color:var(--red)">Failed to load archive index. <button class="btn btn-sm" onclick="fetchArchiveIndex()">Fetch from amiga500archive.com</button></p>';
-    }
-  }
-}
-
-async function fetchArchiveIndex() {
-  const loading = document.getElementById('archive-loading');
-  loading.style.display = 'block';
-
-  // Check if ESP32 has internet (STA connected)
-  try { systemInfo = await api('/api/system/info'); } catch(e) {}
-  if (!systemInfo.internet) {
-    loading.innerHTML = '<p style="color:var(--red)">ESP32 has no internet connection. Enable WiFi Client in Config and connect to your home network first.</p>';
-    return;
-  }
-
-  // Site has 68 pages: /items.php?category=games&page=1..68
-  const totalPages = 68;
-  const games = [];
-  const seen = new Set();
-  let errors = 0;
-  let emptyPages = 0;
-
-  for (let pg = 1; pg <= totalPages; pg++) {
-    loading.textContent = 'Fetching page ' + pg + '/' + totalPages + '... (' + games.length + ' games found)';
-
-    try {
-      const data = await fetch(API + '/api/archive/proxy?page=' + pg).then(r => r.json());
-      if (data.games && data.games.length > 0) {
-        for (const g of data.games) {
-          if (!seen.has(g.id)) {
-            seen.add(g.id);
-            games.push({ name: g.name, id: g.id, pub: g.pub || '', cached: false });
-          }
-        }
-        emptyPages = 0;
-      } else {
-        emptyPages++;
-        if (emptyPages >= 3) break;  // stop if 3 empty pages in a row (end of list)
-      }
-    } catch (e) {
-      errors++;
-      if (errors > 5) {
-        loading.innerHTML = '<p style="color:var(--red)">Too many errors fetching archive. Check WiFi connection.</p>';
-        return;
-      }
-    }
-  }
-
-  if (games.length === 0) {
-    loading.innerHTML = '<p style="color:var(--red)">No games found. Check internet connection.</p>';
-    return;
-  }
-
-  // Save index to ESP32 SD cache
-  try {
-    await api('/api/archive/save-index', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ games: games.map(g => g.name + '|' + g.id + '|' + (g.pub || '') + '|').join('\n') })
-    });
-  } catch (e) { /* ignore save errors */ }
-
-  archiveIndex = { games: games };
-  loading.style.display = 'none';
-  buildArchiveAlpha(games);
-  renderArchiveList(games);
-  toast('Archive index loaded: ' + games.length + ' games');
-}
-
-async function debugArchive(path) {
-  if (!path) path = '/';
-  const pre = document.getElementById('archive-debug');
-  pre.style.display = 'block';
-  pre.textContent = 'Fetching ' + path + ' ...';
-  try {
-    const resp = await fetch(API + '/api/archive/debug?page=' + encodeURIComponent(path));
-    const data = await resp.json();
-    pre.textContent = 'URL: ' + path + '\n\nHEADERS:\n' + data.headers + '\n\nBODY (' + data.body_length + ' bytes):\n' + data.body;
-  } catch (e) {
-    pre.textContent = 'Error: ' + e.message;
-  }
-}
-
-async function searchArchive() {
-  const q = document.getElementById('archive-search').value.trim();
-  if (!archiveIndex || !archiveIndex.games) {
-    // Try fetching first
-    await fetchArchiveIndex();
-    if (!archiveIndex) return;
-  }
-
-  archiveAlpha = '';
-  let games = archiveIndex.games || [];
-  if (q) {
-    const ql = q.toLowerCase();
-    games = games.filter(g => g.name.toLowerCase().includes(ql));
-  }
-  buildArchiveAlpha(archiveIndex.games || []);
-  renderArchiveList(games);
-}
-
-function buildArchiveAlpha(games) {
-  const letters = new Set();
-  games.forEach(g => {
-    const c = g.name.charAt(0).toUpperCase();
-    if (c >= 'A' && c <= 'Z') letters.add(c);
-    else letters.add('#');
-  });
-  const bar = document.getElementById('archive-alpha');
-  let html = '<span class="alpha-btn' + (archiveAlpha === '' ? ' active' : '') + '" onclick="setArchiveAlpha(\'\')">All</span>';
-  for (let i = 0; i < 26; i++) {
-    const l = String.fromCharCode(65 + i);
-    const has = letters.has(l);
-    html += `<span class="alpha-btn${!has ? ' disabled' : ''}${archiveAlpha === l ? ' active' : ''}" onclick="setArchiveAlpha('${l}')">${l}</span>`;
-  }
-  bar.innerHTML = html;
-}
-
-function setArchiveAlpha(letter) {
-  archiveAlpha = letter;
-  document.getElementById('archive-search').value = '';
-  if (!archiveIndex || !archiveIndex.games) return;
-
-  let games = archiveIndex.games;
-  if (letter) {
-    games = games.filter(g => {
-      const c = g.name.charAt(0).toUpperCase();
-      if (letter === '#') return !(c >= 'A' && c <= 'Z');
-      return c === letter;
-    });
-  }
-  buildArchiveAlpha(archiveIndex.games);
-  renderArchiveList(games);
-}
-
-function renderArchiveList(games) {
-  document.getElementById('archive-count').textContent = games.length + ' games';
-  const list = document.getElementById('archive-list');
-
-  if (games.length === 0) {
-    list.innerHTML = '<p style="color:#555;padding:20px;text-align:center">No games found.</p>';
-    return;
-  }
-
-  // Show max 100 at a time for performance
-  const show = games.slice(0, 100);
-  const more = games.length > 100 ? `<p style="text-align:center;color:#555;padding:10px">Showing ${show.length} of ${games.length} — use search or A-Z to narrow down</p>` : '';
-
-  list.innerHTML = show.map(g => `
-    <div class="archive-item">
-      ${g.img ? `<img src="https://amiga500archive.com/files/_images/games/${esc(g.img)}.png" style="width:64px;height:48px;object-fit:cover;border-radius:2px;border:1px solid #999" onerror="this.style.display='none'" loading="lazy">` : ''}
-      <div class="game-info">
-        <div class="game-name">${esc(g.name)}</div>
-        <div class="game-meta">${g.pub ? esc(g.pub) : (g.publisher ? esc(g.publisher) : '')} ${g.cached ? '<span class="badge badge-cover">Downloaded</span>' : ''}</div>
-      </div>
-      <button class="archive-dl-btn" onclick="downloadArchiveGame('${esc(g.id)}','${esc(g.name)}','${esc(g.img || '')}')" ${g.cached ? 'disabled' : ''}>
-        ${g.cached ? 'Downloaded' : 'Download'}
-      </button>
-    </div>
-  `).join('') + more;
-}
-
-async function downloadArchiveGame(gameId, gameName, gameImg) {
-  const btn = event.target;
-  btn.disabled = true;
-  btn.textContent = 'Downloading...';
-
-  try {
-    let body = 'id=' + encodeURIComponent(gameId) + '&name=' + encodeURIComponent(gameName || gameId);
-    if (gameImg) body += '&img=' + encodeURIComponent(gameImg);
-    const result = await api('/api/archive/download', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body
-    });
-    btn.textContent = 'Downloaded';
-    toast(result.name + ' downloaded to SD!');
-    // Refresh archive and games list
-    archiveIndex = null;  // force reload to update cached status
-    loadGames();
-  } catch (e) {
-    btn.textContent = 'Failed';
-    btn.disabled = false;
-  }
-}
-
 // ── FTP Functions ──
 
 let ftpCurrentPath = '/';
@@ -1288,7 +1039,7 @@ async function ftpBrowse(path) {
           '<div class="ftp-icon">&#128190;</div>' +
           '<div class="ftp-name">' + esc(entry.name) + '</div>' +
           '<div class="ftp-size">' + sizeStr + '</div>' +
-          '<button class="archive-dl-btn" onclick="ftpDownload(\'' + fullPath.replace(/'/g, "\\'") + '\',this)">Download</button>' +
+          '<button class="dl-btn" onclick="ftpDownload(\'' + fullPath.replace(/'/g, "\\'") + '\',this)">Download</button>' +
           '</div>';
       }
     });
@@ -1331,11 +1082,6 @@ async function ftpDownload(remotePath, btn) {
     toast('Download failed: ' + (e.message || 'Unknown error'), 'error');
   }
 }
-
-// Enter key on archive search
-document.getElementById('archive-search').addEventListener('keyup', e => {
-  if (e.key === 'Enter') searchArchive();
-});
 
 // Enter key on game search
 document.getElementById('game-search').addEventListener('keyup', e => {

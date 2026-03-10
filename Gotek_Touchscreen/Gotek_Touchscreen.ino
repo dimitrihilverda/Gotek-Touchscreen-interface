@@ -422,7 +422,7 @@ USBMSC msc;
 uint32_t msc_block_count;
 
 // UI state
-enum Screen { SCR_SELECTION = 0, SCR_DETAILS = 1, SCR_INFO = 2, SCR_ARCHIVE = 3 };
+enum Screen { SCR_SELECTION = 0, SCR_DETAILS = 1, SCR_INFO = 2 };
 Screen current_screen = SCR_SELECTION;
 
 // File list
@@ -449,20 +449,6 @@ String detail_jpg_path = "";
 // Multi-disk support
 vector<int> disk_set;         // file_list indices for all disks of current game
 int loaded_disk_index = -1;   // file_list index of currently loaded disk (-1 = none)
-
-// Archive screen state
-struct ArchiveEntry {
-  String name;
-  String slug;       // URL slug / game ID
-  String year;
-  String publisher;
-};
-vector<ArchiveEntry> archive_list;  // loaded from cache file
-int archive_scroll = 0;
-int archive_selected = -1;
-bool archive_loaded = false;
-char archive_filter_letter = 0;  // 0 = show all
-String archive_download_status = "";
 
 // Touch state
 bool touch_available = false;
@@ -2349,8 +2335,8 @@ void drawInfoScreen() {
     gfx_setTextSize(2);  // restore after drawToggle
   }
 
-  // Bottom buttons: BACK + THEME + ADF/DSK + ARCHIVE — 4 buttons evenly spaced
-  int btnW = (gW - 20 - 3 * 8) / 4;  // 4 buttons, 3 gaps, 10px margin each side
+  // Bottom buttons: BACK + THEME + ADF/DSK — 3 buttons evenly spaced
+  int btnW = (gW - 20 - 2 * 8) / 3;  // 3 buttons, 2 gaps, 10px margin each side
   int btnH = 36, btnY = gH - 42, gap = 8, marginX = 10;
   drawThemedButton(marginX,                        btnY, btnW, btnH, "BTN_BACK",    "BACK",    TFT_CYAN);
   drawThemedButton(marginX + (btnW + gap),         btnY, btnW, btnH, "BTN_THEME",   "THEME",   WB_ORANGE);
@@ -2360,586 +2346,15 @@ void drawInfoScreen() {
   } else {
     drawThemedButton(marginX + 2 * (btnW + gap),   btnY, btnW, btnH, "BTN_DSK",     "DSK",     TFT_CYAN);
   }
-  drawThemedButton(marginX + 3 * (btnW + gap),     btnY, btnW, btnH, "BTN_ARCHIVE", "ARCHIVE", TFT_GREEN);
 
   gfx_flush();
 }
 
 // ============================================================================
-// ALPHABET BAR constants (shared between game list and archive screen)
+// ALPHABET BAR constants (used by game list)
 // ============================================================================
 #define ALPHA_BAR_W  16       // width of the alphabet strip
 #define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
-
-// ============================================================================
-// ARCHIVE SCREEN — browse amiga500archive.com cached index
-// ============================================================================
-
-// Load archive index from SD cache file
-void loadArchiveIndex() {
-  archive_list.clear();
-  archive_loaded = false;
-
-  File f = SD_MMC.open("/CACHE/archive_index.txt", "r");
-  if (!f) {
-    Serial.println("Archive: no cache file found");
-    return;
-  }
-
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) continue;
-
-    // Format: name|slug|year|publisher
-    ArchiveEntry entry;
-    int p1 = line.indexOf('|');
-    if (p1 < 0) continue;
-    entry.name = line.substring(0, p1);
-
-    int p2 = line.indexOf('|', p1 + 1);
-    if (p2 < 0) { entry.slug = line.substring(p1 + 1); }
-    else {
-      entry.slug = line.substring(p1 + 1, p2);
-      int p3 = line.indexOf('|', p2 + 1);
-      if (p3 < 0) { entry.year = line.substring(p2 + 1); }
-      else {
-        entry.year = line.substring(p2 + 1, p3);
-        entry.publisher = line.substring(p3 + 1);
-      }
-    }
-
-    archive_list.push_back(entry);
-  }
-  f.close();
-  archive_loaded = true;
-  Serial.println("Archive: loaded " + String(archive_list.size()) + " entries from cache");
-}
-
-// Get filtered archive list indices for current filter letter
-int archiveFilteredCount() {
-  if (archive_filter_letter == 0) return archive_list.size();
-  int count = 0;
-  for (int i = 0; i < (int)archive_list.size(); i++) {
-    if (archive_list[i].name.length() > 0 &&
-        toupper(archive_list[i].name.charAt(0)) == archive_filter_letter) {
-      count++;
-    }
-  }
-  return count;
-}
-
-// Get the n-th filtered archive entry index
-int archiveFilteredIndex(int n) {
-  if (archive_filter_letter == 0) return n;
-  int count = 0;
-  for (int i = 0; i < (int)archive_list.size(); i++) {
-    if (archive_list[i].name.length() > 0 &&
-        toupper(archive_list[i].name.charAt(0)) == archive_filter_letter) {
-      if (count == n) return i;
-      count++;
-    }
-  }
-  return -1;
-}
-
-// Draw the archive screen
-void drawArchiveScreen() {
-  gfx_fillScreen(TFT_BLACK);
-
-  // Title bar
-  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-  gfx_setTextSize(2);
-  gfx_setCursor(10, 6);
-  gfx_print("ARCHIVE");
-
-  // Status
-  gfx_setTextColor(0x7BEF, TFT_BLACK);
-  gfx_setTextSize(1);
-  if (!wifi_sta_connected) {
-    gfx_setCursor(100, 10);
-    gfx_print("(no internet)");
-  } else if (!archive_loaded || archive_list.size() == 0) {
-    gfx_setCursor(100, 10);
-    gfx_print("(fetch from web UI first)");
-  } else {
-    gfx_setCursor(100, 10);
-    int fc = archiveFilteredCount();
-    gfx_print(String(fc) + " games");
-    if (archive_filter_letter != 0) {
-      gfx_print(" [");
-      gfx_print(String(archive_filter_letter));
-      gfx_print("]");
-    }
-  }
-
-  // Download status message
-  if (archive_download_status.length() > 0) {
-    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-    gfx_setTextSize(1);
-    gfx_setCursor(10, 22);
-    gfx_print(archive_download_status);
-  }
-
-  // List area
-  int listY = 32;
-  int listH = gH - 76;  // leave room for bottom buttons
-  int itemH = 20;
-  int maxItems = listH / itemH;
-  int totalFiltered = archiveFilteredCount();
-
-  if (!archive_loaded || archive_list.size() == 0) {
-    gfx_setTextColor(0x7BEF, TFT_BLACK);
-    gfx_setTextSize(2);
-    gfx_setCursor(20, gH / 2 - 20);
-    gfx_print("No archive data cached.");
-    gfx_setTextSize(1);
-    gfx_setCursor(20, gH / 2 + 10);
-    gfx_print("Use the web interface Archive tab");
-    gfx_setCursor(20, gH / 2 + 22);
-    gfx_print("to fetch the index first.");
-  } else {
-    gfx_setTextSize(1);
-    for (int row = 0; row < maxItems && (archive_scroll + row) < totalFiltered; row++) {
-      int realIdx = archiveFilteredIndex(archive_scroll + row);
-      if (realIdx < 0) break;
-
-      int y = listY + row * itemH;
-      bool selected = (realIdx == archive_selected);
-
-      if (selected) {
-        gfx_fillRect(0, y, gW - ALPHA_BAR_W, itemH, 0x1082);  // dark blue highlight
-      }
-
-      // Game name
-      gfx_setTextColor(selected ? TFT_YELLOW : TFT_WHITE, selected ? 0x1082 : TFT_BLACK);
-      gfx_setCursor(4, y + 3);
-      String displayName = archive_list[realIdx].name;
-      // Truncate if too long
-      int maxChars = (gW - ALPHA_BAR_W - 8) / 6;  // 6px per char at textSize 1
-      if ((int)displayName.length() > maxChars) {
-        displayName = displayName.substring(0, maxChars - 2) + "..";
-      }
-      gfx_print(displayName);
-
-      // Year/publisher on right (if room)
-      if (archive_list[realIdx].year.length() > 0) {
-        String meta = archive_list[realIdx].year;
-        gfx_setTextColor(0x7BEF, selected ? 0x1082 : TFT_BLACK);
-        int metaX = gW - ALPHA_BAR_W - (meta.length() * 6) - 4;
-        if (metaX > (int)(displayName.length() * 6 + 10)) {
-          gfx_setCursor(metaX, y + 3);
-          gfx_print(meta);
-        }
-      }
-    }
-  }
-
-  // A-Z bar on right edge (same style as game list)
-  if (archive_loaded && archive_list.size() > 0) {
-    int barY = listY;
-    int barH = listH;
-    int letterH = barH / 27;  // 26 letters + ALL
-    if (letterH < 8) letterH = 8;
-
-    // "ALL" at top
-    bool allActive = (archive_filter_letter == 0);
-    gfx_fillRect(ALPHA_BAR_X, barY, ALPHA_BAR_W, letterH, allActive ? WB_ORANGE : 0x2104);
-    gfx_setTextColor(allActive ? TFT_BLACK : TFT_WHITE, allActive ? WB_ORANGE : 0x2104);
-    gfx_setTextSize(1);
-    gfx_setCursor(ALPHA_BAR_X + 2, barY + (letterH - 8) / 2);
-    gfx_print("*");
-
-    for (int i = 0; i < 26 && barY + (i + 1) * letterH < barY + barH; i++) {
-      char c = 'A' + i;
-      int y = barY + (i + 1) * letterH;
-      bool active = (archive_filter_letter == c);
-      gfx_fillRect(ALPHA_BAR_X, y, ALPHA_BAR_W, letterH, active ? WB_ORANGE : 0x2104);
-      gfx_setTextColor(active ? TFT_BLACK : TFT_WHITE, active ? WB_ORANGE : 0x2104);
-      gfx_setCursor(ALPHA_BAR_X + 5, y + (letterH - 8) / 2);
-      char buf[2] = {c, 0};
-      gfx_print(buf);
-    }
-  }
-
-  // Bottom buttons: BACK, FETCH, DOWNLOAD
-  int btnW = 148, btnH = 36, btnY = gH - 42, gap = 8, marginX = 10;
-  drawThemedButton(marginX, btnY, btnW, btnH, "BTN_BACK", "BACK", TFT_CYAN);
-
-  if (wifi_sta_connected) {
-    drawThemedButton(marginX + btnW + gap, btnY, btnW, btnH, "BTN_FETCH", "FETCH INDEX", WB_ORANGE);
-    if (archive_selected >= 0) {
-      drawThemedButton(marginX + 2 * (btnW + gap), btnY, btnW, btnH, "BTN_DOWNLOAD", "DOWNLOAD", TFT_GREEN);
-    }
-  }
-
-  gfx_flush();
-}
-
-// Stub: archiveFetchIndex — calls the web API handler internally
-// The actual HTTPS scraping is done through the web API (/api/archive/fetch)
-// On the touchscreen, show a message to use the web UI
-void archiveFetchIndex() {
-  archive_download_status = "Use web UI to fetch index";
-  drawArchiveScreen();
-}
-
-// ZIP extractor for ADF/DSK files — supports STORED and DEFLATE.
-// Uses PSRAM buffers + zlib (provided by PNGdec library).
-// PNGdec's zlib has a 3-arg inflate(strm, flush, check_crc).
-// Custom zalloc/zfree route zlib's internal allocs to PSRAM to avoid
-// heap exhaustion (WiFiClientSecure may still hold ~40KB of heap).
-
-// PSRAM-backed allocator for zlib internal state
-static voidpf psram_zalloc(voidpf opaque, uInt items, uInt size) {
-  (void)opaque;
-  return ps_malloc((size_t)items * size);
-}
-static void psram_zfree(voidpf opaque, voidpf address) {
-  (void)opaque;
-  free(address);
-}
-
-int extractZipToDir(const String &zipPath, const String &destDir) {
-  File zf = SD_MMC.open(zipPath.c_str(), "r");
-  if (!zf) { Serial.println("ZIP: cannot open " + zipPath); return 0; }
-  int extracted = 0;
-  uint8_t hdr[30];
-
-  Serial.println("ZIP: opening " + zipPath + " size=" + String(zf.size()));
-  Serial.println("ZIP: free heap=" + String(ESP.getFreeHeap()) +
-                 " free PSRAM=" + String(ESP.getFreePsram()));
-
-  while (zf.available() >= 30) {
-    yield();
-    if (zf.read(hdr, 30) != 30) break;
-    // Check for PK signature; also stop at central directory (PK\x01\x02)
-    if (hdr[0] != 0x50 || hdr[1] != 0x4B) break;
-    if (hdr[2] != 0x03 || hdr[3] != 0x04) break;
-
-    uint16_t compression = hdr[8] | (hdr[9] << 8);
-    uint32_t compSize   = hdr[18] | (hdr[19] << 8) | (hdr[20] << 16) | (hdr[21] << 24);
-    uint32_t uncompSize = hdr[22] | (hdr[23] << 8) | (hdr[24] << 16) | (hdr[25] << 24);
-    uint16_t fnLen      = hdr[26] | (hdr[27] << 8);
-    uint16_t extraLen   = hdr[28] | (hdr[29] << 8);
-
-    // Read filename
-    char fnBuf[256];
-    int toRead = (fnLen < 255) ? fnLen : 255;
-    zf.read((uint8_t*)fnBuf, toRead);
-    fnBuf[toRead] = 0;
-    if (fnLen > 255) zf.seek(zf.position() + (fnLen - 255));
-    if (extraLen > 0) zf.seek(zf.position() + extraLen);
-
-    String entryName = String(fnBuf);
-    int lastSlash = entryName.lastIndexOf('/');
-    if (lastSlash >= 0) entryName = entryName.substring(lastSlash + 1);
-    String entryLower = entryName;
-    entryLower.toLowerCase();
-    bool isImage = entryLower.endsWith(".adf") || entryLower.endsWith(".dsk") || entryLower.endsWith(".img");
-
-    Serial.println("ZIP entry: " + entryName + " comp=" + String(compression) +
-                   " csize=" + String(compSize) + " usize=" + String(uncompSize) +
-                   " match=" + String(isImage));
-
-    if (isImage && compSize > 0 && (compression == 0 || compression == 8)) {
-      String outPath = destDir + "/" + entryName;
-
-      if (compression == 0) {
-        // STORED — copy directly in 4KB chunks
-        File outFile = SD_MMC.open(outPath.c_str(), "w");
-        if (outFile) {
-          uint8_t buf[4096];
-          uint32_t remaining = compSize;
-          while (remaining > 0 && zf.available()) {
-            yield();
-            size_t chunk = (remaining > sizeof(buf)) ? sizeof(buf) : remaining;
-            size_t n = zf.read(buf, chunk);
-            outFile.write(buf, n);
-            remaining -= n;
-          }
-          outFile.close();
-          extracted++;
-          Serial.println("ZIP extracted (stored): " + outPath);
-        }
-      } else {
-        // DEFLATE — decompress using zlib + PSRAM buffers
-        uint32_t outBufSize = uncompSize > 0 ? uncompSize : 901120;
-
-        Serial.println("ZIP: DEFLATE alloc comp=" + String(compSize) +
-                       " out=" + String(outBufSize) +
-                       " freePSRAM=" + String(ESP.getFreePsram()));
-
-        uint8_t *compBuf = (uint8_t *)ps_malloc(compSize);
-        uint8_t *outBuf  = (uint8_t *)ps_malloc(outBufSize);
-        if (!compBuf || !outBuf) {
-          Serial.println("ZIP: PSRAM alloc FAILED");
-          if (compBuf) free(compBuf);
-          if (outBuf) free(outBuf);
-          zf.seek(zf.position() + compSize);
-          continue;
-        }
-
-        // Read all compressed data into PSRAM
-        size_t readTotal = 0;
-        while (readTotal < compSize && zf.available()) {
-          yield();
-          size_t chunk = compSize - readTotal;
-          if (chunk > 4096) chunk = 4096;
-          size_t n = zf.read(compBuf + readTotal, chunk);
-          readTotal += n;
-        }
-        Serial.println("ZIP: read " + String(readTotal) + " compressed bytes");
-
-        // Decompress — use PSRAM allocator so zlib internals don't exhaust heap
-        z_stream strm;
-        memset(&strm, 0, sizeof(strm));
-        strm.zalloc   = psram_zalloc;
-        strm.zfree    = psram_zfree;
-        strm.opaque   = Z_NULL;
-        strm.next_in  = compBuf;
-        strm.avail_in = compSize;
-        strm.next_out = outBuf;
-        strm.avail_out = outBufSize;
-
-        Serial.println("ZIP: calling inflateInit2...");
-        int ret = inflateInit2(&strm, -MAX_WBITS);  // raw DEFLATE
-        if (ret == Z_OK) {
-          Serial.println("ZIP: inflateInit2 OK, calling inflate...");
-          ret = inflate(&strm, Z_FINISH, 0);  // PNGdec zlib 3-arg
-          inflateEnd(&strm);
-          Serial.println("ZIP: inflate done, ret=" + String(ret) +
-                         " total_out=" + String((uint32_t)strm.total_out));
-        } else {
-          Serial.println("ZIP: inflateInit2 FAILED ret=" + String(ret));
-        }
-
-        free(compBuf);
-
-        if (ret == Z_STREAM_END || ret == Z_OK) {
-          size_t decompSize = strm.total_out;
-          File outFile = SD_MMC.open(outPath.c_str(), "w");
-          if (outFile) {
-            size_t written = 0;
-            while (written < decompSize) {
-              yield();
-              size_t chunk = decompSize - written;
-              if (chunk > 4096) chunk = 4096;
-              outFile.write(outBuf + written, chunk);
-              written += chunk;
-            }
-            outFile.close();
-            extracted++;
-            Serial.println("ZIP extracted (deflate): " + outPath +
-                           " (" + String(decompSize) + " bytes)");
-          }
-        } else {
-          Serial.println("ZIP: inflate FAILED ret=" + String(ret));
-        }
-        free(outBuf);
-      }
-    } else {
-      // Skip this entry
-      if (compSize > 0) zf.seek(zf.position() + compSize);
-    }
-  }
-  zf.close();
-  Serial.println("ZIP: done, extracted=" + String(extracted));
-  return extracted;
-}
-
-// Download selected archive game, extract ADF, download cover, load into RAM
-void archiveDownloadSelected() {
-  if (archive_selected < 0 || archive_selected >= (int)archive_list.size()) return;
-  if (!wifi_sta_connected) {
-    archive_download_status = "No internet!";
-    drawArchiveScreen();
-    return;
-  }
-
-  ArchiveEntry &entry = archive_list[archive_selected];
-  archive_download_status = "Downloading " + entry.name + "...";
-  drawArchiveScreen();
-
-  // Create game folder
-  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
-  String gameDir = modeDir + "/" + entry.name;
-  if (!SD_MMC.exists(gameDir.c_str())) {
-    SD_MMC.mkdir(gameDir.c_str());
-  }
-
-  // Download ZIP via dl.php
-  WiFiClientSecure *dlClient = new WiFiClientSecure();
-  if (!dlClient) {
-    archive_download_status = "Out of memory!";
-    drawArchiveScreen();
-    return;
-  }
-  dlClient->setInsecure();
-  dlClient->setTimeout(30000);
-
-  if (!dlClient->connect("amiga500archive.com", 443)) {
-    delete dlClient;
-    archive_download_status = "Connect failed!";
-    drawArchiveScreen();
-    return;
-  }
-
-  String dlPath = "/dl.php?id=" + entry.slug;
-  dlClient->println("GET " + dlPath + " HTTP/1.1");
-  dlClient->println("Host: amiga500archive.com");
-  dlClient->println("Connection: close");
-  dlClient->println("User-Agent: Mozilla/5.0");
-  dlClient->println();
-
-  unsigned long timeout = millis();
-  while (!dlClient->available() && millis() - timeout < 15000) {
-    delay(50); yield();
-  }
-
-  // Skip HTTP headers
-  while (dlClient->available()) {
-    String line = dlClient->readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) break;
-    yield();
-  }
-
-  // Save ZIP to temp file
-  if (!SD_MMC.exists("/CACHE")) SD_MMC.mkdir("/CACHE");
-  String zipPath = "/CACHE/_download.zip";
-  File zipFile = SD_MMC.open(zipPath.c_str(), "w");
-  if (!zipFile) {
-    dlClient->stop();
-    delete dlClient;
-    archive_download_status = "SD write error!";
-    drawArchiveScreen();
-    return;
-  }
-
-  size_t totalBytes = 0;
-  uint8_t buf[4096];
-  while (dlClient->connected() || dlClient->available()) {
-    yield();
-    size_t avail = dlClient->available();
-    if (avail == 0) { delay(10); continue; }
-    size_t toRead = (avail > sizeof(buf)) ? sizeof(buf) : avail;
-    size_t n = dlClient->read(buf, toRead);
-    if (n > 0) { zipFile.write(buf, n); totalBytes += n; }
-  }
-  zipFile.close();
-  dlClient->stop();
-  delete dlClient;
-
-  archive_download_status = "Extracting...";
-  drawArchiveScreen();
-
-  // Extract ADF from ZIP
-  int extracted = extractZipToDir(zipPath, gameDir);
-  SD_MMC.remove(zipPath.c_str());
-
-  if (extracted == 0) {
-    archive_download_status = "No ADF in ZIP!";
-    drawArchiveScreen();
-    return;
-  }
-
-  // Download cover image
-  archive_download_status = "Getting cover...";
-  drawArchiveScreen();
-
-  // We stored the image slug in ArchiveEntry — use publisher field for now
-  // Actually we don't have img in ArchiveEntry. Try to derive from name.
-  // The archive uses lowercase_with_underscores: "1000 Miglia" -> "1000_miglia"
-  // This is a best-effort approach:
-  String imgSlug = entry.name;
-  imgSlug.toLowerCase();
-  imgSlug.replace(" ", "_");
-  imgSlug.replace("'", "");
-  imgSlug.replace("!", "");
-  imgSlug.replace(":", "");
-  imgSlug.replace("&", "and");
-
-  WiFiClientSecure *imgClient = new WiFiClientSecure();
-  if (imgClient) {
-    imgClient->setInsecure();
-    imgClient->setTimeout(10000);
-    if (imgClient->connect("amiga500archive.com", 443)) {
-      String imgPath = "/files/_images/games/" + imgSlug + ".png";
-      imgClient->println("GET " + imgPath + " HTTP/1.1");
-      imgClient->println("Host: amiga500archive.com");
-      imgClient->println("Connection: close");
-      imgClient->println("User-Agent: Mozilla/5.0");
-      imgClient->println();
-
-      timeout = millis();
-      while (!imgClient->available() && millis() - timeout < 8000) {
-        delay(50); yield();
-      }
-
-      String statusLine = imgClient->readStringUntil('\n');
-      bool imgOk = statusLine.indexOf("200") >= 0;
-      while (imgClient->available()) {
-        String line = imgClient->readStringUntil('\n');
-        line.trim();
-        if (line.length() == 0) break;
-        yield();
-      }
-
-      if (imgOk) {
-        File coverFile = SD_MMC.open((gameDir + "/cover.png").c_str(), "w");
-        if (coverFile) {
-          while (imgClient->connected() || imgClient->available()) {
-            yield();
-            size_t avail = imgClient->available();
-            if (avail == 0) { delay(10); continue; }
-            size_t toRead = (avail > sizeof(buf)) ? sizeof(buf) : avail;
-            size_t n = imgClient->read(buf, toRead);
-            if (n > 0) coverFile.write(buf, n);
-          }
-          coverFile.close();
-        }
-      }
-    }
-    imgClient->stop();
-    delete imgClient;
-  }
-
-  // Rescan game list
-  file_list = listImages();
-  buildDisplayNames(file_list);
-  sortByDisplay();
-  buildGameList();
-
-  // Find the newly added game in file_list and load it into RAM
-  archive_download_status = "Loading into RAM...";
-  drawArchiveScreen();
-
-  int newGameIndex = -1;
-  for (int i = 0; i < (int)file_list.size(); i++) {
-    if (file_list[i].indexOf(entry.name) >= 0) {
-      newGameIndex = i;
-      break;
-    }
-  }
-
-  if (newGameIndex >= 0) {
-    selected_index = newGameIndex;
-    size_t loaded = loadFileToRam(newGameIndex);
-    if (loaded > 0) {
-      loaded_disk_index = newGameIndex;
-      cfg_lastfile = file_list[newGameIndex];
-      saveConfig();
-      // Switch to selection screen showing the loaded game
-      current_screen = SCR_SELECTION;
-      drawList();
-      return;
-    }
-  }
-
-  archive_download_status = "Done! " + String(extracted) + " disk(s)";
-  drawArchiveScreen();
-}
 
 // List layout constants (no header bar — full screen list)
 #define LIST_START_Y   4
@@ -2955,7 +2370,7 @@ int items_per_page() {
 // ============================================================================
 // ALPHABET BAR — A-Z slider on right edge of list screen
 // ============================================================================
-// ALPHA_BAR_W and ALPHA_BAR_X are defined earlier (before archive screen)
+// ALPHA_BAR_W and ALPHA_BAR_X are defined earlier
 
 // Active letters in the alphabet bar (only letters that have games)
 char active_letters[26];    // letters with games (e.g. "ABCDFGKLMPRST")
@@ -4060,44 +3475,6 @@ void loop() {
           }
         }
       }
-      // Archive screen: drag-scrolling
-      else if (touch_start_screen == SCR_ARCHIVE && px < ALPHA_BAR_X) {
-        if (!drag_scrolling && touch_max_dy > DRAG_THRESHOLD) {
-          drag_scrolling = true;
-          drag_last_y = py;
-          drag_scroll_accum = 0;
-        }
-        if (drag_scrolling) {
-          int16_t delta = (int16_t)drag_last_y - (int16_t)py;
-          drag_scroll_accum += delta;
-          drag_last_y = py;
-          int archItemH = 20;
-          bool scrollChanged = false;
-          while (abs(drag_scroll_accum) >= archItemH) {
-            if (drag_scroll_accum > 0) {
-              archive_scroll++;
-              drag_scroll_accum -= archItemH;
-            } else {
-              archive_scroll--;
-              drag_scroll_accum += archItemH;
-            }
-            scrollChanged = true;
-          }
-          if (scrollChanged) {
-            int totalFiltered = archiveFilteredCount();
-            int archMaxItems = (gH - 76 - 32) / archItemH;
-            int maxOff = totalFiltered - archMaxItems;
-            if (maxOff < 0) maxOff = 0;
-            if (archive_scroll > maxOff) archive_scroll = maxOff;
-            if (archive_scroll < 0) archive_scroll = 0;
-            static unsigned long lastArchDragRedraw = 0;
-            if (millis() - lastArchDragRedraw > 40) {
-              drawArchiveScreen();
-              lastArchDragRedraw = millis();
-            }
-          }
-        }
-      }
     }
   } else if (touch_active) {
     // Touch released — but might be a bounce (brief "no touch" glitch).
@@ -4138,13 +3515,9 @@ void loop() {
                           touch_start_x < ALPHA_BAR_X &&
                           touch_start_y >= LIST_START_Y &&
                           touch_start_y < LIST_BOTTOM);
-    bool wasInArchiveList = (touch_start_screen == SCR_ARCHIVE &&
-                             touch_start_x < ALPHA_BAR_X &&
-                             touch_start_y >= 32 &&
-                             touch_start_y < gH - 76 + 32);
     bool hadAnyMovement = (touch_max_dy > TAP_MAX_MOVE || touch_max_dx > TAP_MAX_MOVE);
 
-    if (drag_scrolling || ((wasInListArea || wasInArchiveList) && hadAnyMovement)) {
+    if (drag_scrolling || (wasInListArea && hadAnyMovement)) {
       // Was scrolling or finger moved during touch → never fire tap
       // Apply kinetic momentum based on final dy
       if (abs(dy) > 10) {
@@ -4395,9 +3768,9 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
-    // 4 buttons: BACK, THEME, ADF/DSK, ARCHIVE — dynamic width
+    // 3 buttons: BACK, THEME, ADF/DSK — dynamic width
     {
-      int ibtnW = (gW - 20 - 3 * 8) / 4;
+      int ibtnW = (gW - 20 - 2 * 8) / 3;
       int igap = 8, imx = 10, ibtnY = gH - 42;
 
       if (hitBtn(px, py, imx, ibtnY, ibtnW, 36)) {
@@ -4424,77 +3797,6 @@ void handleTap(uint16_t px, uint16_t py) {
         drawInfoScreen();
         return;
       }
-      if (hitBtn(px, py, imx + 3 * (ibtnW + igap), ibtnY, ibtnW, 36)) {
-        // ARCHIVE button
-        if (!archive_loaded) loadArchiveIndex();
-        archive_scroll = 0;
-        archive_download_status = "";
-        current_screen = SCR_ARCHIVE;
-        drawArchiveScreen();
-        return;
-      }
-    }
-  }
-
-  // ══════════════════════════════════════
-  // ARCHIVE SCREEN
-  // ══════════════════════════════════════
-  else if (current_screen == SCR_ARCHIVE) {
-    int listY = 32;
-    int listH = gH - 76;
-    int itemH = 20;
-    int maxItems = listH / itemH;
-    int totalFiltered = archiveFilteredCount();
-
-    // A-Z bar tap (right edge)
-    if (px >= ALPHA_BAR_X && archive_loaded && archive_list.size() > 0) {
-      int barY = listY;
-      int letterH = listH / 27;
-      if (letterH < 8) letterH = 8;
-
-      int tapIndex = (py - barY) / letterH;
-      if (tapIndex == 0) {
-        // "ALL" tap
-        archive_filter_letter = 0;
-      } else if (tapIndex >= 1 && tapIndex <= 26) {
-        archive_filter_letter = 'A' + (tapIndex - 1);
-      }
-      archive_scroll = 0;
-      archive_selected = -1;
-      drawArchiveScreen();
-      return;
-    }
-
-    // List item tap
-    if (py >= listY && py < listY + listH && px < ALPHA_BAR_X) {
-      int row = (py - listY) / itemH;
-      int idx = archive_scroll + row;
-      if (idx < totalFiltered) {
-        archive_selected = archiveFilteredIndex(idx);
-        drawArchiveScreen();
-      }
-      return;
-    }
-
-    // Bottom buttons: BACK, FETCH, DOWNLOAD (same layout as drawArchiveScreen)
-    int abtnW = 148, abtnH = 36, abtnY = gH - 42, agap = 8, amx = 10;
-
-    // BACK
-    if (hitBtn(px, py, amx, abtnY, abtnW, abtnH)) {
-      current_screen = SCR_INFO;
-      drawInfoScreen();
-      return;
-    }
-    // FETCH INDEX
-    if (wifi_sta_connected && hitBtn(px, py, amx + abtnW + agap, abtnY, abtnW, abtnH)) {
-      archiveFetchIndex();
-      return;
-    }
-    // DOWNLOAD
-    if (wifi_sta_connected && archive_selected >= 0 &&
-        hitBtn(px, py, amx + 2 * (abtnW + agap), abtnY, abtnW, abtnH)) {
-      archiveDownloadSelected();
-      return;
     }
   }
 }

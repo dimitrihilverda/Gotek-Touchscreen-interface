@@ -707,46 +707,6 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
-  // ── Archive API routes ──
-  if (req.path == "/api/archive/debug" && req.method == "GET") {
-    String archPage = "";
-    int pgIdx = req.query.indexOf("page=");
-    if (pgIdx >= 0) {
-      archPage = req.query.substring(pgIdx + 5);
-      int ampIdx = archPage.indexOf("&");
-      if (ampIdx >= 0) archPage = archPage.substring(0, ampIdx);
-    }
-    handleArchiveDebug(client, archPage);
-    return;
-  }
-  if (req.path == "/api/archive/index" && req.method == "GET") {
-    handleArchiveIndex(client);
-    return;
-  }
-  if (req.path == "/api/archive/proxy" && req.method == "GET") {
-    String archPage = "";
-    int pgIdx = req.query.indexOf("page=");
-    if (pgIdx >= 0) {
-      archPage = req.query.substring(pgIdx + 5);
-      int ampIdx = archPage.indexOf("&");
-      if (ampIdx >= 0) archPage = archPage.substring(0, ampIdx);
-    }
-    handleArchiveProxy(client, archPage);
-    return;
-  }
-  if (req.path == "/api/archive/fetch" && req.method == "POST") {
-    handleArchiveFetch(client);
-    return;
-  }
-  if (req.path == "/api/archive/download" && req.method == "POST") {
-    handleArchiveDownload(client, req.body);
-    return;
-  }
-  if (req.path == "/api/archive/save-index" && req.method == "POST") {
-    handleArchiveSaveIndex(client, req.body);
-    return;
-  }
-
   // ── 404 ──
   sendJSON(client, 404, "{\"error\":\"Not found\"}");
 }
