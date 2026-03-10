@@ -372,11 +372,39 @@ private:
       if (line.length() == 0) break;
       timeout = millis();
     }
-    _log("DAV: HTTP " + String(_httpStatus) + " contentLen=" + String(contentLength));
+    _log("DAV: HTTP " + String(_httpStatus) + " contentLen=" + String(contentLength) +
+         (chunked ? " chunked" : ""));
 
     // Read body
     timeout = millis();
-    if (contentLength > 0) {
+    if (chunked) {
+      // Chunked transfer encoding: each chunk starts with hex size + \r\n,
+      // followed by data, followed by \r\n. Final chunk is "0\r\n\r\n".
+      while (tcp->connected() && millis() - timeout < 15000) {
+        if (!tcp->available()) { delay(1); continue; }
+        // Read chunk size line
+        String sizeLine = tcp->readStringUntil('\n');
+        sizeLine.trim();
+        if (sizeLine.length() == 0) { timeout = millis(); continue; }
+        long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
+        if (chunkSize <= 0) break;  // Final chunk
+        // Read chunk data
+        long bytesRead = 0;
+        while (bytesRead < chunkSize && tcp->connected() && millis() - timeout < 15000) {
+          if (tcp->available()) {
+            body += (char)tcp->read();
+            bytesRead++;
+            timeout = millis();
+          } else {
+            delay(1);
+          }
+        }
+        // Read trailing \r\n after chunk data
+        if (tcp->available()) tcp->read();  // \r
+        if (tcp->available()) tcp->read();  // \n
+        timeout = millis();
+      }
+    } else if (contentLength > 0) {
       body.reserve(contentLength);
       while ((int)body.length() < contentLength && millis() - timeout < 15000) {
         if (tcp->available()) {
