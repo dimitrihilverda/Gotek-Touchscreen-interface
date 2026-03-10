@@ -3261,6 +3261,8 @@ void waitForRelease(unsigned long timeout_ms = 2000) {
 bool drag_scrolling = false;        // true once we've entered drag-scroll mode
 int  drag_scroll_accum = 0;         // accumulated pixels during drag
 int  drag_last_y = 0;               // last Y during drag for delta calculation
+int16_t touch_max_dy = 0;           // max vertical distance from start during this touch
+int16_t touch_max_dx = 0;           // max horizontal distance from start during this touch
 
 // Kinetic scroll state
 int kinetic_velocity = 0;           // items/tick remaining to scroll
@@ -3284,6 +3286,8 @@ void loop() {
       touch_active = true;
       drag_scrolling = false;
       drag_scroll_accum = 0;
+      touch_max_dy = 0;
+      touch_max_dx = 0;
       kinetic_velocity = 0;
       touch_start_x = px;
       touch_start_y = py;
@@ -3292,20 +3296,15 @@ void loop() {
       drag_last_y = py;
       touch_start_time = millis();
     } else {
-      // Touch HELD — track movement for drag-scrolling
-      // Small delay so touch controller reports updated coordinates
-      // (without this, loop() runs so fast that px/py haven't changed yet)
-      delay(5);
-
-      // Re-read touch to get freshest position after the delay
-      uint16_t fresh_x = px, fresh_y = py;
-      if (touchRead(&fresh_x, &fresh_y)) {
-        px = fresh_x;
-        py = fresh_y;
-      }
-
+      // Touch HELD — track maximum movement from start point
       touch_last_x = px;
       touch_last_y = py;
+
+      // Track the maximum distance the finger has moved from start
+      int16_t curDy = abs((int16_t)py - (int16_t)touch_start_y);
+      int16_t curDx = abs((int16_t)px - (int16_t)touch_start_x);
+      if (curDy > touch_max_dy) touch_max_dy = curDy;
+      if (curDx > touch_max_dx) touch_max_dx = curDx;
 
       // Alphabet bar: live drag always handled
       if (current_screen == SCR_SELECTION && px >= ALPHA_BAR_X &&
@@ -3323,8 +3322,8 @@ void loop() {
                touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM) {
         int16_t totalDy = (int16_t)py - (int16_t)touch_start_y;
 
-        if (!drag_scrolling && abs(totalDy) > DRAG_THRESHOLD) {
-          // Cross the drag threshold → enter drag-scroll mode
+        if (!drag_scrolling && touch_max_dy > DRAG_THRESHOLD) {
+          // Max movement from start crossed the threshold → enter drag-scroll mode
           drag_scrolling = true;
           drag_last_y = py;
           drag_scroll_accum = 0;
@@ -3378,18 +3377,21 @@ void loop() {
     int16_t dy = (int16_t)touch_last_y - (int16_t)touch_start_y;
     unsigned long touchDuration = now - touch_start_time;
 
-    // Determine if this was a vertical movement in the list area
+    // Use the MAXIMUM movement seen during the entire touch, not just
+    // the final position. This catches fast flicks where the finger
+    // may have moved a lot but touch_last is close to touch_start
+    // because the loop was too fast or touch release snapped back.
     bool wasInListArea = (current_screen == SCR_SELECTION &&
                           touch_start_x < ALPHA_BAR_X &&
                           touch_start_y >= LIST_START_Y &&
                           touch_start_y < LIST_BOTTOM);
-    bool hadVerticalMove = (abs(dy) > TAP_MAX_MOVE);
+    bool hadAnyMovement = (touch_max_dy > TAP_MAX_MOVE);
 
-    if (drag_scrolling || (wasInListArea && hadVerticalMove)) {
-      // Was scrolling (or a fast flick that didn't trigger drag mode)
-      // → apply kinetic momentum, never open detail page
-      if (abs(dy) > 20) {
-        int momentum = abs(dy) / 40;
+    if (drag_scrolling || (wasInListArea && hadAnyMovement)) {
+      // Was scrolling or finger moved during touch → never open detail page
+      // Apply kinetic momentum based on final dy
+      if (abs(dy) > 10) {
+        int momentum = abs(dy) / 30;
         if (momentum > 5) momentum = 5;
         if (momentum < 1) momentum = 1;
         kinetic_velocity = (dy > 0) ? -momentum : momentum;
@@ -3408,9 +3410,12 @@ void loop() {
           drawList();
         }
       }
+    } else if (wasInListArea && touchDuration >= TAP_MAX_DURATION) {
+      // Long press on list area — treat as intentional hold, not tap
+      // Do nothing (prevents accidental detail page open)
     } else {
-      // No vertical scroll movement — check for tap or horizontal swipe
-      bool isTap = (abs(dx) <= TAP_MAX_MOVE && abs(dy) <= TAP_MAX_MOVE) &&
+      // Short touch with minimal movement — check for tap or horizontal swipe
+      bool isTap = (touch_max_dx <= TAP_MAX_MOVE && touch_max_dy <= TAP_MAX_MOVE) &&
                    (touchDuration < TAP_MAX_DURATION);
       bool isHSwipe = (abs(dx) > SWIPE_THRESHOLD && abs(dx) > abs(dy));
 
