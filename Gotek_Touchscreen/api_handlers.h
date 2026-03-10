@@ -1317,7 +1317,10 @@ void handleDAVList(WiFiClient &client, const String &queryPath) {
     json += ",\"size\":" + String(entries[i].size);
     json += "}";
   }
-  json += "]}";
+  json += "]";
+  String dbg = davClient.lastDebug();
+  if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+  json += "}";
   sendJSON(client, 200, json);
 }
 

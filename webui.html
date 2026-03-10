@@ -1272,6 +1272,7 @@ async function davBrowse(path) {
 
   try {
     const data = await api('/api/dav/list?path=' + encodeURIComponent(path));
+    davShowDebug(data);
     let html = '';
     const entries = data.entries || [];
 

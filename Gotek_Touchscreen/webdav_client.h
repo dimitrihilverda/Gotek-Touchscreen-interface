@@ -156,6 +156,9 @@ public:
       return false;
     }
 
+    // Log first part of XML for debugging
+    _log("DAV: XML[0..500]: " + response.substring(0, 500));
+
     // Parse the multistatus XML response
     _parsePropfindResponse(response, fullPath, entries);
 
