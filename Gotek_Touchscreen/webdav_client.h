@@ -30,9 +30,10 @@ struct DAVFileEntry {
 
 class GotekDAV {
 public:
-  GotekDAV() : _connected(false), _lastError("") {}
+  GotekDAV() : _connected(false), _lastError(""), _debugLog("") {}
 
   String lastError() { return _lastError; }
+  String lastDebug() { return _debugLog; }
   bool isConnected() { return _connected; }
 
   // Connect to WebDAV server (just validate connectivity)
@@ -47,13 +48,13 @@ public:
       return false;
     }
 
-    Serial.println("DAV: testing connection to " + cfg_dav_host + ":" + String(cfg_dav_port));
+    _log("DAV: testing connection to " + cfg_dav_host + ":" + String(cfg_dav_port));
 
     // Test with a PROPFIND on the base path
     std::vector<DAVFileEntry> test;
     if (listDir("/", test)) {
       _connected = true;
-      Serial.println("DAV: connected OK (" + String(test.size()) + " entries in root)");
+      _log("DAV: connected OK (" + String(test.size()) + " entries in root)");
       return true;
     }
     // _lastError already set by listDir
@@ -62,7 +63,7 @@ public:
 
   void disconnect() {
     _connected = false;
-    Serial.println("DAV: disconnected");
+    _log("DAV: disconnected");
   }
 
   // List directory contents via PROPFIND
@@ -82,7 +83,7 @@ public:
     // URL-encode spaces in path but keep slashes
     String encodedPath = _urlEncodePath(fullPath);
 
-    Serial.println("DAV: PROPFIND " + encodedPath);
+    _log("DAV: PROPFIND " + encodedPath);
 
     // Create HTTPS or HTTP client on heap
     WiFiClient *tcp = nullptr;
@@ -112,6 +113,9 @@ public:
                   "<D:prop><D:resourcetype/><D:getcontentlength/><D:displayname/></D:prop>"
                   "</D:propfind>";
 
+    Serial.println("DAV: PROPFIND " + encodedPath + " Host: " + cfg_dav_host +
+                   " User: " + cfg_dav_user + " Port: " + String(cfg_dav_port));
+
     tcp->println("PROPFIND " + encodedPath + " HTTP/1.1");
     tcp->println("Host: " + cfg_dav_host);
     tcp->println("Authorization: Basic " + auth);
@@ -134,14 +138,21 @@ public:
 
     // Check for HTTP error in stored status
     if (_httpStatus >= 400) {
-      _lastError = "HTTP " + String(_httpStatus);
+      // Log response body for debugging
+      _log("DAV: error body: " + response.substring(0, 500));
+      // Include short excerpt in error for web UI
+      String excerpt = response.substring(0, 120);
+      excerpt.replace("\"", "'");
+      excerpt.replace("\n", " ");
+      excerpt.replace("\r", "");
+      _lastError = "HTTP " + String(_httpStatus) + ": " + excerpt;
       return false;
     }
 
     // Parse the multistatus XML response
     _parsePropfindResponse(response, fullPath, entries);
 
-    Serial.println("DAV: listed " + String(entries.size()) + " entries in " + fullPath);
+    _log("DAV: listed " + String(entries.size()) + " entries in " + fullPath);
     _connected = true;
     return true;
   }
@@ -166,7 +177,7 @@ public:
 
     String encodedPath = _urlEncodePath(fullRemote);
 
-    Serial.println("DAV: GET " + encodedPath);
+    _log("DAV: GET " + encodedPath);
 
     // Create HTTPS or HTTP client on heap
     WiFiClient *tcp = nullptr;
@@ -266,14 +277,23 @@ public:
       return -1;
     }
 
-    Serial.println("DAV: downloaded " + fullRemote + " -> " + localPath + " (" + String(totalBytes) + " bytes)");
+    _log("DAV: downloaded " + fullRemote + " -> " + localPath + " (" + String(totalBytes) + " bytes)");
     return totalBytes;
   }
 
 private:
   bool   _connected;
   String _lastError;
+  String _debugLog;
   int    _httpStatus;
+
+  void _log(const String &msg) {
+    _debugLog += msg + "\n";
+    // Keep last 2KB only
+    if (_debugLog.length() > 2048) {
+      _debugLog = _debugLog.substring(_debugLog.length() - 1500);
+    }
+  }
 
   // Base64 encode for HTTP Basic Auth
   String _basicAuth(const String &user, const String &pass) {
@@ -329,6 +349,8 @@ private:
       String line = tcp->readStringUntil('\n');
       line.trim();
 
+      _log("DAV hdr: " + line);
+
       if (line.startsWith("HTTP/")) {
         int sp = line.indexOf(' ');
         if (sp > 0) _httpStatus = line.substring(sp + 1, sp + 4).toInt();
@@ -340,6 +362,7 @@ private:
       if (line.length() == 0) break;
       timeout = millis();
     }
+    _log("DAV: HTTP " + String(_httpStatus) + " contentLen=" + String(contentLength));
 
     // Read body
     timeout = millis();

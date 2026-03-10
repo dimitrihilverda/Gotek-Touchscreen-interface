@@ -104,6 +104,10 @@ textarea{min-height:80px;resize:vertical}
 .ftp-status.connected{background:#c8e8c8;border:1px solid var(--green);color:#006600}
 .ftp-status.disconnected{background:#e8e0c0;border:1px solid var(--orange);color:#886600}
 .ftp-status.error{background:#ffe8e8;border:1px solid var(--red);color:var(--red)}
+.pass-wrap{position:relative;display:flex;align-items:center}
+.pass-wrap input{flex:1;padding-right:36px}
+.pass-toggle{position:absolute;right:6px;background:none;border:none;cursor:pointer;font-size:16px;color:#666;padding:4px}
+.pass-toggle:hover{color:#333}
 @media(max-width:600px){.tabs{flex-wrap:wrap}.tab{flex:1;text-align:center;padding:8px 10px;font-size:13px}.stat-grid{grid-template-columns:1fr 1fr}.content{padding:10px}}
 </style>
 </head>
@@ -186,7 +190,7 @@ textarea{min-height:80px;resize:vertical}
       <div class="wifi-list hidden" id="wifi-scan-list"></div>
 
       <label>Home Network Password</label>
-      <input type="password" name="WIFI_CLIENT_PASS" id="cfg-wifi-client-pass">
+      <div class="pass-wrap"><input type="password" name="WIFI_CLIENT_PASS" id="cfg-wifi-client-pass"><button type="button" class="pass-toggle" onclick="togglePass(this)">&#128065;</button></div>
 
       <div id="wifi-status-box" style="margin-top:10px;padding:8px;background:var(--light);border:1px inset #999;font-size:13px;display:none"></div>
 
@@ -210,7 +214,7 @@ textarea{min-height:80px;resize:vertical}
       <input type="text" name="FTP_USER" id="cfg-ftp-user" placeholder="anonymous">
 
       <label>FTP Password</label>
-      <input type="password" name="FTP_PASS" id="cfg-ftp-pass">
+      <div class="pass-wrap"><input type="password" name="FTP_PASS" id="cfg-ftp-pass"><button type="button" class="pass-toggle" onclick="togglePass(this)">&#128065;</button></div>
 
       <label>FTP Base Path</label>
       <input type="text" name="FTP_PATH" id="cfg-ftp-path" placeholder="/" value="/">
@@ -240,7 +244,7 @@ textarea{min-height:80px;resize:vertical}
       <input type="text" name="DAV_USER" id="cfg-dav-user" placeholder="username">
 
       <label>WebDAV Password</label>
-      <input type="password" name="DAV_PASS" id="cfg-dav-pass">
+      <div class="pass-wrap"><input type="password" name="DAV_PASS" id="cfg-dav-pass"><button type="button" class="pass-toggle" onclick="togglePass(this)">&#128065;</button></div>
 
       <label>WebDAV Base Path</label>
       <input type="text" name="DAV_PATH" id="cfg-dav-path" placeholder="/remote.php/webdav/" value="/remote.php/webdav/">
@@ -325,6 +329,10 @@ textarea{min-height:80px;resize:vertical}
     <div id="dav-breadcrumb" class="ftp-breadcrumb"></div>
     <div class="game-list" id="dav-list"></div>
     <div id="dav-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading...</div>
+    <details id="dav-debug-wrap" style="display:none;margin-top:12px">
+      <summary style="cursor:pointer;font-size:12px;color:#888">Debug Log</summary>
+      <pre id="dav-debug-log" style="font-size:11px;background:#1a1a2e;color:#0f0;padding:8px;border-radius:4px;max-height:200px;overflow:auto;white-space:pre-wrap;margin-top:4px"></pre>
+    </details>
   </div>
 </div>
 
@@ -402,6 +410,13 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.view === 'themes') loadThemes();
   });
 });
+
+// Password visibility toggle
+function togglePass(btn) {
+  const inp = btn.parentElement.querySelector('input');
+  if (inp.type === 'password') { inp.type = 'text'; btn.innerHTML = '&#128064;'; }
+  else { inp.type = 'password'; btn.innerHTML = '&#128065;'; }
+}
 
 // Toast notifications
 function toast(msg, type = 'success') {
@@ -1150,9 +1165,20 @@ async function ftpDownload(remotePath, btn) {
 let davCurrentPath = '/';
 let davConnected = false;
 
+function davShowDebug(data) {
+  const wrap = document.getElementById('dav-debug-wrap');
+  const log = document.getElementById('dav-debug-log');
+  if (data && data.debug) {
+    wrap.style.display = '';
+    log.textContent = data.debug;
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
 async function davLoadStatus() {
   try {
     const status = await api('/api/dav/status');
+    davShowDebug(status);
     davConnected = status.connected;
     const bar = document.getElementById('dav-status-bar');
     const noConfig = document.getElementById('dav-no-config');
@@ -1197,12 +1223,18 @@ async function davConnect() {
   document.getElementById('dav-loading').style.display = '';
 
   try {
-    await api('/api/dav/connect', { method: 'POST' });
-    davConnected = true;
-    toast('WebDAV connected!');
-    davCurrentPath = '/';
-    await davLoadStatus();
-    await davBrowse('/');
+    const res = await fetch(API + '/api/dav/connect', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    davShowDebug(data);
+    if (!res.ok) {
+      toast('WebDAV connection failed: ' + (data.error || 'HTTP ' + res.status), 'error');
+    } else {
+      davConnected = true;
+      toast('WebDAV connected!');
+      davCurrentPath = '/';
+      await davLoadStatus();
+      await davBrowse('/');
+    }
   } catch (e) {
     toast('WebDAV connection failed: ' + (e.message || 'Unknown error'), 'error');
   } finally {

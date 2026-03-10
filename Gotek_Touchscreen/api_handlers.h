@@ -1245,6 +1245,14 @@ void handleDAVStatus(WiFiClient &client) {
   json += ",\"https\":" + String(cfg_dav_https ? "true" : "false");
   json += ",\"connected\":" + String(davClient.isConnected() ? "true" : "false");
   json += ",\"wifi_connected\":" + String((WiFi.status() == WL_CONNECTED) ? "true" : "false");
+  String dbg = davClient.lastDebug();
+  if (dbg.length() > 0) {
+    json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+  }
+  String err = davClient.lastError();
+  if (err.length() > 0) {
+    json += ",\"error\":\"" + jsonEscape(err) + "\"";
+  }
   json += "}";
   sendJSON(client, 200, json);
 }
@@ -1260,9 +1268,17 @@ void handleDAVConnect(WiFiClient &client) {
     return;
   }
   if (davClient.connect()) {
-    sendJSON(client, 200, "{\"status\":\"connected\"}");
+    String json = "{\"status\":\"connected\"";
+    String dbg = davClient.lastDebug();
+    if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+    json += "}";
+    sendJSON(client, 200, json);
   } else {
-    sendJSON(client, 503, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
+    String json = "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"";
+    String dbg = davClient.lastDebug();
+    if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+    json += "}";
+    sendJSON(client, 503, json);
   }
 }
 
