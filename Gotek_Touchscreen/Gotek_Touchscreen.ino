@@ -3293,10 +3293,16 @@ void loop() {
       touch_start_time = millis();
     } else {
       // Touch HELD — check for live drag-scrolling
-      int16_t moveDy = abs((int16_t)py - (int16_t)touch_start_y);
-      if (current_screen == SCR_SELECTION && moveDy > 3) {
-        Serial.println("DRAG: start=" + String(touch_start_y) + " now=" + String(py) +
-                       " dy=" + String(moveDy) + " dragging=" + String(drag_scrolling));
+      // DEBUG: show touch tracking on screen (top-left corner)
+      if (current_screen == SCR_SELECTION) {
+        int16_t moveDy = (int16_t)py - (int16_t)touch_start_y;
+        gfx_fillRect(0, 0, 200, 10, TFT_BLACK);
+        gfx_setTextSize(1);
+        gfx_setTextColor(TFT_RED, TFT_BLACK);
+        gfx_setCursor(2, 1);
+        gfx_print("dy:" + String(moveDy) + " drag:" + String(drag_scrolling) +
+                   " y:" + String(py));
+        gfx_flush();
       }
       touch_last_x = px;
       touch_last_y = py;
