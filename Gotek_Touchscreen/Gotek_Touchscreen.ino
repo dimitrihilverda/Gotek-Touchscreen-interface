@@ -2976,70 +2976,6 @@ size_t loadFileToRam(int index) {
 }
 
 // ============================================================================
-// Load disk image from WebDAV directly into RAM (no SD write)
-// ============================================================================
-
-size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
-  // Show themed loading UI
-  drawThemedLoadingScreen(displayName);
-
-  // Rebuild FAT volume (empty)
-  build_volume_with_file();
-
-  // Disconnect USB before loading
-  tud_disconnect();
-  delay(50);
-
-  size_t maxData = RAM_DISK_SIZE - DATA_OFFSET;
-
-  // Stream directly from WebDAV into ram_disk
-  long totalRead = davClient.streamToBuffer(remotePath, &ram_disk[DATA_OFFSET], maxData);
-
-  if (totalRead <= 0) {
-    gfx_setTextColor(TFT_RED, TFT_BLACK);
-    gfx_setTextSize(2);
-    String errMsg = davClient.lastError();
-    if (errMsg.length() == 0) errMsg = "Download failed";
-    gfx_setCursor((gW - gfx_textWidth(errMsg)) / 2, 160);
-    gfx_print(errMsg);
-    gfx_flush();
-    delay(1000);
-    tud_connect();
-    return 0;
-  }
-
-  // Build FAT chain for loaded file
-  uint16_t clusters_needed = (totalRead + 511) / 512;
-  for (int c = 2; c < 2 + clusters_needed; c++) {
-    if (c < 2 + clusters_needed - 1) {
-      fat12_set(&ram_disk[FAT1_OFFSET], c, c + 1);
-      fat12_set(&ram_disk[FAT2_OFFSET], c, c + 1);
-    } else {
-      fat12_set(&ram_disk[FAT1_OFFSET], c, 0xFFF);
-      fat12_set(&ram_disk[FAT2_OFFSET], c, 0xFFF);
-    }
-  }
-  *(uint16_t *)&ram_disk[ROOTDIR_OFFSET + 26] = 2;
-  *(uint32_t *)&ram_disk[ROOTDIR_OFFSET + 28] = totalRead;
-
-  // Show success
-  drawThemedProgressBar(100);
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setTextSize(2);
-  String okMsg = "OK! " + String(totalRead / 1024) + " KB";
-  gfx_setCursor((gW - gfx_textWidth(okMsg)) / 2, 200);
-  gfx_print(okMsg);
-  gfx_flush();
-  delay(500);
-
-  // Reconnect USB with loaded disk
-  msc.mediaPresent(true);
-  tud_connect();
-
-  return totalRead;
-}
-
-// ============================================================================
 // REMOTE DONGLE FUNCTIONS — send disk images to WiFi Dongle via HTTP
 // ============================================================================
 
@@ -3292,6 +3228,71 @@ void doLoadSelected() {
 // ============================================================================
 #include "ftp_client.h"
 #include "webdav_client.h"
+
+// ============================================================================
+// Load disk image from WebDAV directly into RAM (no SD write)
+// ============================================================================
+
+size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
+  // Show themed loading UI
+  drawThemedLoadingScreen(displayName);
+
+  // Rebuild FAT volume (empty)
+  build_volume_with_file();
+
+  // Disconnect USB before loading
+  tud_disconnect();
+  delay(50);
+
+  size_t maxData = RAM_DISK_SIZE - DATA_OFFSET;
+
+  // Stream directly from WebDAV into ram_disk
+  long totalRead = davClient.streamToBuffer(remotePath, &ram_disk[DATA_OFFSET], maxData);
+
+  if (totalRead <= 0) {
+    gfx_setTextColor(TFT_RED, TFT_BLACK);
+    gfx_setTextSize(2);
+    String errMsg = davClient.lastError();
+    if (errMsg.length() == 0) errMsg = "Download failed";
+    gfx_setCursor((gW - gfx_textWidth(errMsg)) / 2, 160);
+    gfx_print(errMsg);
+    gfx_flush();
+    delay(1000);
+    tud_connect();
+    return 0;
+  }
+
+  // Build FAT chain for loaded file
+  uint16_t clusters_needed = (totalRead + 511) / 512;
+  for (int c = 2; c < 2 + clusters_needed; c++) {
+    if (c < 2 + clusters_needed - 1) {
+      fat12_set(&ram_disk[FAT1_OFFSET], c, c + 1);
+      fat12_set(&ram_disk[FAT2_OFFSET], c, c + 1);
+    } else {
+      fat12_set(&ram_disk[FAT1_OFFSET], c, 0xFFF);
+      fat12_set(&ram_disk[FAT2_OFFSET], c, 0xFFF);
+    }
+  }
+  *(uint16_t *)&ram_disk[ROOTDIR_OFFSET + 26] = 2;
+  *(uint32_t *)&ram_disk[ROOTDIR_OFFSET + 28] = totalRead;
+
+  // Show success
+  drawThemedProgressBar(100);
+  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+  gfx_setTextSize(2);
+  String okMsg = "OK! " + String(totalRead / 1024) + " KB";
+  gfx_setCursor((gW - gfx_textWidth(okMsg)) / 2, 200);
+  gfx_print(okMsg);
+  gfx_flush();
+  delay(500);
+
+  // Reconnect USB with loaded disk
+  msc.mediaPresent(true);
+  tud_connect();
+
+  return totalRead;
+}
+
 #include "webserver.h"
 
 void setup() {
