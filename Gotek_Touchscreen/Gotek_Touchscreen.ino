@@ -431,7 +431,7 @@ USBMSC msc;
 uint32_t msc_block_count;
 
 // UI state
-enum Screen { SCR_SELECTION = 0, SCR_DETAILS = 1, SCR_INFO = 2 };
+enum Screen { SCR_SELECTION = 0, SCR_DETAILS = 1, SCR_INFO = 2, SCR_WEBDAV = 3, SCR_WEBDAV_DETAIL = 4 };
 Screen current_screen = SCR_SELECTION;
 
 // File list
@@ -458,6 +458,17 @@ String detail_jpg_path = "";
 // Multi-disk support
 vector<int> disk_set;         // file_list indices for all disks of current game
 int loaded_disk_index = -1;   // file_list index of currently loaded disk (-1 = none)
+
+// WebDAV browsing state
+std::vector<DAVFileEntry> dav_entries;   // current directory listing
+String dav_current_path = "/";           // current browse path
+int dav_scroll_offset = 0;              // scroll offset for DAV list
+int dav_selected = -1;                  // selected entry index
+String dav_detail_name = "";            // name of selected disk image for detail view
+String dav_detail_path = "";            // full path of selected disk image
+String dav_detail_cover_path = "";      // cover file path (in same dir)
+String dav_detail_nfo_text = "";        // NFO text content
+bool dav_disk_loaded = false;           // true if a DAV disk is currently loaded
 
 // Touch state
 bool touch_available = false;
@@ -2217,6 +2228,242 @@ void drawToggle(int x, int y, bool state) {
   }
 }
 
+// ============================================================================
+// WebDAV browse screen
+// ============================================================================
+
+void davBrowsePath(const String &path) {
+  dav_current_path = path;
+  dav_scroll_offset = 0;
+  dav_selected = -1;
+  dav_entries.clear();
+
+  // Show loading message
+  gfx_fillScreen(TFT_BLACK);
+  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+  gfx_setTextSize(2);
+  gfx_setCursor(20, gH / 2 - 10);
+  gfx_print("Loading...");
+  gfx_flush();
+
+  // Connect if needed
+  if (!davClient.isConnected()) {
+    davClient.connect();
+  }
+
+  if (!davClient.isConnected()) {
+    gfx_fillScreen(TFT_BLACK);
+    gfx_setTextColor(TFT_RED, TFT_BLACK);
+    gfx_setTextSize(2);
+    gfx_setCursor(20, 80);
+    gfx_print("WebDAV not connected");
+    gfx_setTextSize(1);
+    gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+    gfx_setCursor(20, 120);
+    gfx_print("Configure WebDAV in web UI first");
+    drawThemedButton(10, gH - 42, 148, 36, "BTN_BACK", "BACK", TFT_CYAN);
+    gfx_flush();
+    return;
+  }
+
+  davClient.listDir(path, dav_entries);
+  drawDAVList();
+}
+
+void drawDAVList() {
+  gfx_fillScreen(TFT_BLACK);
+
+  // Title bar with path
+  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+  gfx_setTextSize(2);
+  gfx_setCursor(8, 4);
+  gfx_print("WEBDAV");
+  gfx_setTextSize(1);
+  gfx_setTextColor(0x7BEF, TFT_BLACK);
+  String shortPath = dav_current_path;
+  if (shortPath.length() > 30) shortPath = "..." + shortPath.substring(shortPath.length() - 27);
+  gfx_setCursor(90, 8);
+  gfx_print(shortPath);
+
+  int listTop = 24;
+  int listBottom = gH - 46;
+  int itemH = LIST_ITEM_H;
+  int perPage = (listBottom - listTop) / itemH;
+
+  // Clamp scroll
+  int maxOff = (int)dav_entries.size() - perPage;
+  if (maxOff < 0) maxOff = 0;
+  if (dav_scroll_offset > maxOff) dav_scroll_offset = maxOff;
+  if (dav_scroll_offset < 0) dav_scroll_offset = 0;
+
+  if (dav_entries.size() == 0) {
+    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_setTextSize(2);
+    gfx_setCursor(20, 80);
+    gfx_print("Empty folder");
+  }
+
+  for (int vi = 0; vi < perPage && (dav_scroll_offset + vi) < (int)dav_entries.size(); vi++) {
+    int i = dav_scroll_offset + vi;
+    const DAVFileEntry &e = dav_entries[i];
+    int y = listTop + vi * itemH;
+
+    // Background
+    gfx_fillRect(0, y, gW, itemH, TFT_BLACK);
+
+    // Icon area (left side)
+    int iconX = 8;
+    if (e.isDir) {
+      // Folder icon
+      gfx_fillRect(iconX, y + 8, LIST_THUMB_W, LIST_THUMB_H - 16, 0x4208);
+      gfx_setTextColor(TFT_YELLOW, 0x4208);
+      gfx_setTextSize(2);
+      gfx_setCursor(iconX + 12, y + 14);
+      gfx_print("D");
+    } else {
+      // Disk image icon
+      gfx_fillRect(iconX, y + 8, LIST_THUMB_W, LIST_THUMB_H - 16, 0x1082);
+      gfx_setTextColor(TFT_GREEN, 0x1082);
+      gfx_setTextSize(1);
+      String ext = e.name;
+      int dot = ext.lastIndexOf('.');
+      if (dot > 0) ext = ext.substring(dot + 1);
+      ext.toUpperCase();
+      gfx_setCursor(iconX + 6, y + 16);
+      gfx_print(ext);
+    }
+
+    // Name
+    int textX = iconX + LIST_THUMB_W + 8;
+    gfx_setTextColor(e.isDir ? TFT_YELLOW : TFT_WHITE, TFT_BLACK);
+    gfx_setTextSize(2);
+    String dispName = truncateToWidth(e.name, gW - textX - 10);
+    gfx_setCursor(textX, y + 8);
+    gfx_print(dispName);
+
+    // Size for files
+    if (!e.isDir && e.size > 0) {
+      gfx_setTextSize(1);
+      gfx_setTextColor(0x7BEF, TFT_BLACK);
+      gfx_setCursor(textX, y + 30);
+      if (e.size > 1048576) gfx_print(String(e.size / 1048576) + " MB");
+      else gfx_print(String(e.size / 1024) + " KB");
+    }
+
+    // Separator
+    gfx_fillRect(6, y + itemH - 1, gW - 12, 1, 0x2104);
+  }
+
+  // Bottom buttons: BACK + (UP if not root)
+  int btnW = 148, btnH = 36, btnY = gH - 42;
+  drawThemedButton(10, btnY, btnW, btnH, "BTN_BACK", "BACK", TFT_CYAN);
+
+  if (dav_current_path != "/" && dav_current_path.length() > 1) {
+    drawThemedButton(gW - 10 - btnW, btnY, btnW, btnH, "BTN_UP", "UP", TFT_YELLOW);
+  }
+
+  // Scroll indicator
+  if ((int)dav_entries.size() > perPage) {
+    int barH = listBottom - listTop;
+    int thumbH = max(10, barH * perPage / (int)dav_entries.size());
+    int thumbY = listTop + (barH - thumbH) * dav_scroll_offset / maxOff;
+    gfx_fillRect(gW - 4, listTop, 3, barH, 0x1082);
+    gfx_fillRect(gW - 4, thumbY, 3, thumbH, 0x7BEF);
+  }
+
+  gfx_flush();
+}
+
+void drawDAVDetail() {
+  gfx_fillScreen(TFT_BLACK);
+
+  // Title
+  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+  gfx_setTextSize(2);
+  String dispName = dav_detail_name;
+  int dotPos = dispName.lastIndexOf('.');
+  if (dotPos > 0) dispName = dispName.substring(0, dotPos);
+  gfx_setCursor(20, 8);
+  gfx_print(truncateToWidth(dispName, gW - 40));
+
+  // Cover image from WebDAV (download to PSRAM temp buffer and display)
+  int imgTop = 32;
+  int imgW = gW - 60;
+  int imgH = gH - 130;
+  bool coverDrawn = false;
+
+  if (dav_detail_cover_path.length() > 0) {
+    // Try to stream cover from WebDAV into PSRAM for rendering
+    size_t maxCover = 100 * 1024;
+    uint8_t *coverBuf = (uint8_t *)ps_malloc(maxCover);
+    if (coverBuf) {
+      long coverBytes = davClient.streamToBuffer(dav_detail_cover_path, coverBuf, maxCover);
+      if (coverBytes > 0) {
+        // Write to temp file on SD for jpg/png decoder
+        String tmpPath = "/tmp_dav_cover.jpg";
+        String lp = dav_detail_cover_path;
+        lp.toLowerCase();
+        if (lp.endsWith(".png")) tmpPath = "/tmp_dav_cover.png";
+
+        File tmpFile = SD_MMC.open(tmpPath.c_str(), "w");
+        if (tmpFile) {
+          tmpFile.write(coverBuf, coverBytes);
+          tmpFile.close();
+
+          if (tmpPath.endsWith(".png")) {
+            coverDrawn = drawPngFile(tmpPath.c_str(), (gW - imgW) / 2, imgTop);
+          } else {
+            gfx_drawJpgFile(SD_MMC, tmpPath.c_str(), (gW - imgW) / 2, imgTop, imgW, imgH);
+            coverDrawn = true;
+          }
+          SD_MMC.remove(tmpPath.c_str());
+        }
+      }
+      free(coverBuf);
+    }
+  }
+
+  if (!coverDrawn) {
+    gfx_drawRect((gW - imgW) / 2, imgTop, imgW, imgH, 0x4208);
+    gfx_setTextColor(0x4208, TFT_BLACK);
+    gfx_setTextSize(2);
+    gfx_setCursor(gW / 2 - 40, imgTop + imgH / 2 - 10);
+    gfx_print("No Cover");
+  }
+
+  // NFO text (first 2 lines)
+  if (dav_detail_nfo_text.length() > 0) {
+    String title = "", blurb = "";
+    parseNFO(dav_detail_nfo_text, title, blurb);
+    int textY = imgTop + imgH + 4;
+    if (title.length() > 0) {
+      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+      gfx_setTextSize(2);
+      gfx_setCursor(20, textY);
+      gfx_print(truncateToWidth(title, gW - 40));
+      textY += 18;
+    }
+    if (blurb.length() > 0) {
+      gfx_setTextSize(1);
+      gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+      gfx_setCursor(20, textY);
+      gfx_print(truncateToWidth(blurb, gW - 40));
+    }
+  }
+
+  // Bottom buttons: BACK + INSERT/EJECT
+  int btnW = 148, btnH = 36, btnY = gH - 42;
+  drawThemedButton(10, btnY, btnW, btnH, "BTN_BACK", "BACK", TFT_CYAN);
+
+  if (dav_disk_loaded && dav_detail_path == dav_detail_path) {
+    drawThemedButton(gW - 10 - btnW, btnY, btnW, btnH, "BTN_UNLOAD", "EJECT", TFT_RED);
+  } else {
+    drawThemedButton(gW - 10 - btnW, btnY, btnW, btnH, "BTN_LOAD", "INSERT", TFT_GREEN);
+  }
+
+  gfx_flush();
+}
+
 void drawInfoScreen() {
   gfx_fillScreen(TFT_BLACK);
 
@@ -2584,10 +2831,10 @@ void drawList() {
     drawAlphabetBar();
   }
 
-  // Bottom bar: "Now Playing" (clickable) left, INFO button right
+  // Bottom bar: "Now Playing" (clickable) left, buttons right
+  int bottomBtnsW = cfg_dav_enabled ? 92 : 44;  // 2 buttons or 1
   if (loaded_disk_index >= 0 && loaded_disk_index < (int)file_list.size()) {
-    // Dark green background for the now-playing bar (clickable area)
-    gfx_fillRect(0, gH - 46, gW - 48, 46, 0x0320);  // dark green
+    gfx_fillRect(0, gH - 46, gW - bottomBtnsW - 4, 46, 0x0320);
     gfx_setTextSize(1);
     gfx_setTextColor(TFT_GREEN, 0x0320);
     gfx_setCursor(8, gH - 43);
@@ -2596,7 +2843,7 @@ void drawList() {
     gfx_setTextColor(TFT_WHITE, 0x0320);
     String loadedName = getGameBaseName(file_list[loaded_disk_index]);
     gfx_setCursor(8, gH - 28);
-    gfx_print(truncateToWidth(loadedName, gW - 64));
+    gfx_print(truncateToWidth(loadedName, gW - bottomBtnsW - 16));
   } else {
     gfx_setTextSize(1);
     gfx_setTextColor(TFT_GREY, TFT_BLACK);
@@ -2604,9 +2851,11 @@ void drawList() {
     gfx_print(String((int)game_list.size()) + " games");
   }
 
-  // INFO button — same width as scroll chevrons, aligned right
-  int infoBtnX = gW - 44;
-  drawThemedButton(infoBtnX, gH - 42, 44, 36, "BTN_INFO", "i", TFT_YELLOW);
+  // DAV button (if WebDAV is enabled) + INFO button — aligned right
+  if (cfg_dav_enabled) {
+    drawThemedButton(gW - 92, gH - 42, 44, 36, "BTN_DAV", "DAV", TFT_CYAN);
+  }
+  drawThemedButton(gW - 44, gH - 42, 44, 36, "BTN_INFO", "i", TFT_YELLOW);
 
   gfx_flush();
 }
@@ -3290,10 +3539,7 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   msc.mediaPresent(true);
   tud_connect();
 
-  // Return to game list on touchscreen
-  current_screen = SCR_SELECTION;
-  drawList();
-
+  // Caller is responsible for screen transitions
   return totalRead;
 }
 
@@ -3580,6 +3826,45 @@ void loop() {
           }
         }
       }
+      // WebDAV list: live drag-scrolling (same logic, different offset/list)
+      else if (touch_start_screen == SCR_WEBDAV &&
+               touch_start_y >= 24 && touch_start_y < (gH - 46)) {
+        if (!drag_scrolling && touch_max_dy > DRAG_THRESHOLD) {
+          drag_scrolling = true;
+          drag_last_y = py;
+          drag_scroll_accum = 0;
+        }
+
+        if (drag_scrolling) {
+          int16_t delta = (int16_t)drag_last_y - (int16_t)py;
+          drag_scroll_accum += delta;
+          drag_last_y = py;
+
+          bool scrollChanged = false;
+          while (abs(drag_scroll_accum) >= LIST_ITEM_H) {
+            if (drag_scroll_accum > 0) {
+              dav_scroll_offset++;
+              drag_scroll_accum -= LIST_ITEM_H;
+            } else {
+              dav_scroll_offset--;
+              drag_scroll_accum += LIST_ITEM_H;
+            }
+            scrollChanged = true;
+          }
+          if (scrollChanged) {
+            int davPerPage = (gH - 46 - 24) / LIST_ITEM_H;
+            int maxOff = (int)dav_entries.size() - davPerPage;
+            if (maxOff < 0) maxOff = 0;
+            if (dav_scroll_offset > maxOff) dav_scroll_offset = maxOff;
+            if (dav_scroll_offset < 0) dav_scroll_offset = 0;
+            static unsigned long lastDavDragRedraw = 0;
+            if (millis() - lastDavDragRedraw > 40) {
+              drawDAVList();
+              lastDavDragRedraw = millis();
+            }
+          }
+        }
+      }
     }
   } else if (touch_active) {
     // Touch released — but might be a bounce (brief "no touch" glitch).
@@ -3620,9 +3905,12 @@ void loop() {
                           touch_start_x < ALPHA_BAR_X &&
                           touch_start_y >= LIST_START_Y &&
                           touch_start_y < LIST_BOTTOM);
+    bool wasInDAVListArea = (touch_start_screen == SCR_WEBDAV &&
+                             touch_start_y >= 24 &&
+                             touch_start_y < (gH - 46));
     bool hadAnyMovement = (touch_max_dy > TAP_MAX_MOVE || touch_max_dx > TAP_MAX_MOVE);
 
-    if (drag_scrolling || (wasInListArea && hadAnyMovement)) {
+    if (drag_scrolling || ((wasInListArea || wasInDAVListArea) && hadAnyMovement)) {
       // Was scrolling or finger moved during touch → never fire tap
       // Apply kinetic momentum based on final dy
       if (abs(dy) > 10) {
@@ -3635,13 +3923,24 @@ void loop() {
         if (!drag_scrolling) {
           int scrollItems = abs(dy) / LIST_ITEM_H;
           if (scrollItems < 1) scrollItems = 1;
-          if (dy > 0) scroll_offset -= scrollItems;
-          else        scroll_offset += scrollItems;
-          int maxOff = (int)game_list.size() - items_per_page();
-          if (maxOff < 0) maxOff = 0;
-          if (scroll_offset > maxOff) scroll_offset = maxOff;
-          if (scroll_offset < 0) scroll_offset = 0;
-          drawList();
+          if (wasInDAVListArea) {
+            if (dy > 0) dav_scroll_offset -= scrollItems;
+            else        dav_scroll_offset += scrollItems;
+            int davPerPage = (gH - 46 - 24) / LIST_ITEM_H;
+            int maxOff = (int)dav_entries.size() - davPerPage;
+            if (maxOff < 0) maxOff = 0;
+            if (dav_scroll_offset > maxOff) dav_scroll_offset = maxOff;
+            if (dav_scroll_offset < 0) dav_scroll_offset = 0;
+            drawDAVList();
+          } else {
+            if (dy > 0) scroll_offset -= scrollItems;
+            else        scroll_offset += scrollItems;
+            int maxOff = (int)game_list.size() - items_per_page();
+            if (maxOff < 0) maxOff = 0;
+            if (scroll_offset > maxOff) scroll_offset = maxOff;
+            if (scroll_offset < 0) scroll_offset = 0;
+            drawList();
+          }
         }
       }
     } else if (hadAnyMovement) {
@@ -3666,19 +3965,31 @@ void loop() {
   }
 
   // Kinetic scroll: coast after fast flick on list screen
-  if (kinetic_velocity != 0 && current_screen == SCR_SELECTION && !touch_active) {
+  if (kinetic_velocity != 0 && !touch_active) {
     if (millis() - kinetic_last >= 150) {
-      scroll_offset += (kinetic_velocity > 0) ? 1 : -1;
-      int maxOff = (int)game_list.size() - items_per_page();
-      if (maxOff < 0) maxOff = 0;
-      if (scroll_offset > maxOff) { scroll_offset = maxOff; kinetic_velocity = 0; }
-      if (scroll_offset < 0)      { scroll_offset = 0;      kinetic_velocity = 0; }
+      if (current_screen == SCR_SELECTION) {
+        scroll_offset += (kinetic_velocity > 0) ? 1 : -1;
+        int maxOff = (int)game_list.size() - items_per_page();
+        if (maxOff < 0) maxOff = 0;
+        if (scroll_offset > maxOff) { scroll_offset = maxOff; kinetic_velocity = 0; }
+        if (scroll_offset < 0)      { scroll_offset = 0;      kinetic_velocity = 0; }
+        drawList();
+      } else if (current_screen == SCR_WEBDAV) {
+        dav_scroll_offset += (kinetic_velocity > 0) ? 1 : -1;
+        int davPerPage = (gH - 46 - 24) / LIST_ITEM_H;
+        int maxOff = (int)dav_entries.size() - davPerPage;
+        if (maxOff < 0) maxOff = 0;
+        if (dav_scroll_offset > maxOff) { dav_scroll_offset = maxOff; kinetic_velocity = 0; }
+        if (dav_scroll_offset < 0)      { dav_scroll_offset = 0;      kinetic_velocity = 0; }
+        drawDAVList();
+      } else {
+        kinetic_velocity = 0;  // stop kinetic on other screens
+      }
 
       // Decay velocity
       if (kinetic_velocity > 0) kinetic_velocity--;
       else if (kinetic_velocity < 0) kinetic_velocity++;
 
-      drawList();
       kinetic_last = millis();
     }
   }
@@ -3726,7 +4037,14 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
-    // INFO button (bottom-right, 44px wide — same as chevrons)
+    // DAV button (if enabled, second from right)
+    if (cfg_dav_enabled && px >= gW - 92 && px < gW - 48 && py >= gH - 42) {
+      current_screen = SCR_WEBDAV;
+      davBrowsePath("/");
+      return;
+    }
+
+    // INFO button (bottom-right, 44px wide)
     if (px >= gW - 44 && py >= gH - 42) {
       current_screen = SCR_INFO;
       drawInfoScreen();
@@ -3902,6 +4220,118 @@ void handleTap(uint16_t px, uint16_t py) {
         drawInfoScreen();
         return;
       }
+    }
+  }
+
+  // ══════════════════════════════════════
+  // WEBDAV LIST SCREEN
+  // ══════════════════════════════════════
+  else if (current_screen == SCR_WEBDAV) {
+
+    // BACK button (bottom-left)
+    if (px >= 10 && px <= 158 && py >= gH - 42) {
+      current_screen = SCR_SELECTION;
+      drawList();
+      return;
+    }
+
+    // UP button (bottom-right, go to parent dir)
+    if (dav_current_path != "/" && dav_current_path.length() > 1 &&
+        px >= gW - 158 && px <= gW - 10 && py >= gH - 42) {
+      String parent = dav_current_path;
+      if (parent.endsWith("/")) parent = parent.substring(0, parent.length() - 1);
+      int ls = parent.lastIndexOf('/');
+      parent = (ls > 0) ? parent.substring(0, ls + 1) : "/";
+      davBrowsePath(parent);
+      return;
+    }
+
+    // Tap on list item
+    int davListTop = 24;
+    int davListBottom = gH - 46;
+    int davItemH = LIST_ITEM_H;
+
+    if (py >= davListTop && py < davListBottom) {
+      int idx = (py - davListTop) / davItemH + dav_scroll_offset;
+      if (idx >= 0 && idx < (int)dav_entries.size()) {
+        const DAVFileEntry &e = dav_entries[idx];
+        if (e.isDir) {
+          // Browse into directory
+          String newPath = dav_current_path;
+          if (!newPath.endsWith("/")) newPath += "/";
+          newPath += e.name;
+          davBrowsePath(newPath);
+        } else {
+          // Open detail view for disk image
+          dav_detail_name = e.name;
+          String dirPath = dav_current_path;
+          if (!dirPath.endsWith("/")) dirPath += "/";
+          dav_detail_path = dirPath + e.name;
+
+          // Find cover and NFO in same directory
+          dav_detail_cover_path = "";
+          dav_detail_nfo_text = "";
+          for (int j = 0; j < (int)dav_entries.size(); j++) {
+            if (dav_entries[j].coverFile.length() > 0 && dav_detail_cover_path.length() == 0)
+              dav_detail_cover_path = dirPath + dav_entries[j].coverFile;
+            if (dav_entries[j].nfoFile.length() > 0 && dav_detail_nfo_text.length() == 0) {
+              // Fetch NFO text
+              uint8_t nfoBuf[1024];
+              long nfoBytes = davClient.streamToBuffer(dirPath + dav_entries[j].nfoFile, nfoBuf, sizeof(nfoBuf) - 1);
+              if (nfoBytes > 0) {
+                nfoBuf[nfoBytes] = 0;
+                dav_detail_nfo_text = String((char *)nfoBuf);
+              }
+            }
+          }
+
+          current_screen = SCR_WEBDAV_DETAIL;
+          drawDAVDetail();
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════
+  // WEBDAV DETAIL SCREEN
+  // ══════════════════════════════════════
+  else if (current_screen == SCR_WEBDAV_DETAIL) {
+
+    // BACK button (bottom-left)
+    if (px >= 10 && px <= 158 && py >= gH - 42) {
+      current_screen = SCR_WEBDAV;
+      drawDAVList();
+      return;
+    }
+
+    // INSERT/EJECT button (bottom-right)
+    if (px >= gW - 158 && px <= gW - 10 && py >= gH - 42) {
+      if (dav_disk_loaded) {
+        // EJECT
+        showBusyIndicator("EJECTING...");
+        waitForRelease();
+        doUnload();
+        dav_disk_loaded = false;
+        loaded_disk_index = -1;
+        hideBusyIndicator();
+        drawDAVDetail();
+      } else {
+        // INSERT — load from WebDAV
+        showBusyIndicator("LOADING FROM WEBDAV...");
+        waitForRelease();
+        String dispName = dav_detail_name;
+        int dot = dispName.lastIndexOf('.');
+        if (dot > 0) dispName = dispName.substring(0, dot);
+        size_t loaded = loadFileFromDAV(dav_detail_path, dispName);
+        hideBusyIndicator();
+        if (loaded > 0) {
+          dav_disk_loaded = true;
+          loaded_disk_index = -2;  // -2 = DAV-loaded
+        }
+        current_screen = SCR_WEBDAV_DETAIL;
+        drawDAVDetail();
+      }
+      return;
     }
   }
 }
