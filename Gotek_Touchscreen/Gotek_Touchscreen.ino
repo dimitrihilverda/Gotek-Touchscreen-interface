@@ -3310,24 +3310,6 @@ void loop() {
       if (curDy > touch_max_dy) touch_max_dy = curDy;
       if (curDx > touch_max_dx) touch_max_dx = curDx;
 
-      // ── TOUCH DIAGNOSTIC (top of screen) ──
-      static unsigned long lastDiagDraw = 0;
-      if (millis() - lastDiagDraw > 100) {
-        gfx_fillRect(0, 0, gW, 36, TFT_BLACK);
-        gfx_setTextSize(1);
-        gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-        gfx_setCursor(2, 2);
-        gfx_print("X:" + String(px) + " Y:" + String(py) +
-                   " mDy:" + String(touch_max_dy) +
-                   " drg:" + String(drag_scrolling));
-        gfx_setCursor(2, 13);
-        // Show actual screen value: 0=SEL, 1=DET, 2=INFO
-        gfx_print("SCREEN=" + String((int)current_screen) +
-                   " (0=SEL 1=DET 2=INFO)");
-        gfx_flush();
-        lastDiagDraw = millis();
-      }
-
       // Alphabet bar: live drag always handled
       if (current_screen == SCR_SELECTION && px >= ALPHA_BAR_X &&
           touch_start_x >= ALPHA_BAR_X &&
@@ -3339,18 +3321,10 @@ void loop() {
         }
       }
       // Game list: live drag-scrolling (finger moves list in real-time)
-      // NOTE: checking current_screen at touch START time, not now
-      //       (screen might change during touch due to bugs)
-      else if (touch_start_x < ALPHA_BAR_X &&
+      else if (touch_start_screen == SCR_SELECTION &&
+               touch_start_x < ALPHA_BAR_X &&
                touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM) {
-        // Enter drag mode if ANY vertical movement detected
         if (!drag_scrolling && touch_max_dy > DRAG_THRESHOLD) {
-          // Force screen back to selection if we're dragging on the list
-          if (current_screen != SCR_SELECTION) {
-            current_screen = SCR_SELECTION;
-            drawList();
-          }
-          // Max movement from start crossed the threshold → enter drag-scroll mode
           drag_scrolling = true;
           drag_last_y = py;
           drag_scroll_accum = 0;
@@ -3379,9 +3353,9 @@ void loop() {
             if (maxOff < 0) maxOff = 0;
             if (scroll_offset > maxOff) scroll_offset = maxOff;
             if (scroll_offset < 0) scroll_offset = 0;
-            // Throttle redraws: max once per 60ms to reduce lag
+            // Throttle redraws: max once per 40ms (~25fps) during drag
             static unsigned long lastDragRedraw = 0;
-            if (millis() - lastDragRedraw > 60) {
+            if (millis() - lastDragRedraw > 40) {
               drawList();
               lastDragRedraw = millis();
             }
