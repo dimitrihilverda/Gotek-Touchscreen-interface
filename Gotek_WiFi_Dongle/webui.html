@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gotek WiFi Dongle</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#1a1a2e;--panel:#16213e;--accent:#0f3460;--blue:#00a8cc;--green:#00cc66;--red:#e94560;--orange:#ff8c00;--text:#eee;--dim:#888;--input-bg:#0d1b2a}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.header{background:linear-gradient(135deg,#0f3460,#00a8cc);padding:16px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.5)}
+.header h1{font-size:20px;font-weight:700;letter-spacing:2px}
+.header .sub{font-size:12px;opacity:.7;margin-top:2px;font-family:monospace}
+.tabs{display:flex;background:var(--accent);border-bottom:2px solid #2a2a4a}
+.tab{flex:1;padding:10px 0;text-align:center;cursor:pointer;font-size:13px;font-weight:600;color:var(--dim);transition:all .2s;border-bottom:2px solid transparent}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--blue);border-bottom-color:var(--blue)}
+.page{display:none;padding:12px;max-width:520px;margin:0 auto}
+.page.active{display:block}
+.card{background:var(--panel);border:1px solid #2a2a4a;border-radius:10px;padding:16px;margin-bottom:12px}
+.card h2{font-size:14px;color:var(--blue);margin-bottom:10px;text-transform:uppercase;letter-spacing:1px}
+.status{display:flex;align-items:center;gap:8px;padding:10px;background:var(--input-bg);border-radius:6px;margin-bottom:10px}
+.dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot.off{background:var(--red)}
+.status .info{flex:1}
+.status .name{font-weight:600;font-size:14px}
+.status .detail{font-size:11px;color:var(--dim);margin-top:2px}
+.drop-zone{border:2px dashed #3a3a6a;border-radius:10px;padding:30px 16px;text-align:center;cursor:pointer;transition:all .2s}
+.drop-zone:hover,.drop-zone.over{border-color:var(--blue);background:rgba(0,168,204,.08)}
+.drop-zone .icon{font-size:40px;margin-bottom:6px}
+.drop-zone p{font-size:13px;color:var(--dim)}
+.drop-zone input{display:none}
+.progress{display:none;margin-top:10px}
+.progress-bar{height:5px;background:#2a2a4a;border-radius:3px;overflow:hidden}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--blue),var(--green));width:0;transition:width .3s;border-radius:3px}
+.progress-text{font-size:11px;color:var(--dim);margin-top:3px;text-align:center}
+.btn{display:inline-block;padding:10px 16px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn:active{transform:scale(.98)}
+.btn-full{display:block;width:100%}
+.btn-eject{background:var(--red);color:#fff}
+.btn-eject:hover{background:#ff2255}
+.btn-eject:disabled{background:#444;color:#888;cursor:not-allowed}
+.btn-primary{background:var(--blue);color:#fff}
+.btn-primary:hover{background:#00bfdd}
+.btn-primary:disabled{background:#444;color:#888;cursor:not-allowed}
+.btn-danger{background:var(--red);color:#fff;font-size:11px;padding:4px 10px}
+.btn-success{background:var(--green);color:#fff;font-size:11px;padding:4px 10px}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.info-item{background:var(--input-bg);border-radius:5px;padding:8px}
+.info-item .label{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+.info-item .value{font-size:14px;font-weight:700;margin-top:1px}
+.msg{padding:8px;border-radius:5px;font-size:12px;margin-top:8px;display:none}
+.msg.ok{display:block;background:rgba(0,204,102,.15);color:var(--green);border:1px solid rgba(0,204,102,.3)}
+.msg.err{display:block;background:rgba(233,69,96,.15);color:var(--red);border:1px solid rgba(233,69,96,.3)}
+.form-group{margin-bottom:10px}
+.form-group label{display:block;font-size:12px;color:var(--dim);margin-bottom:3px}
+.form-group input,.form-group select{width:100%;padding:8px 10px;background:var(--input-bg);border:1px solid #2a2a4a;border-radius:5px;color:var(--text);font-size:13px}
+.form-group input:focus{border-color:var(--blue);outline:none}
+.form-row{display:flex;gap:8px}
+.form-row .form-group{flex:1}
+.toggle{display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:10px}
+.toggle input{display:none}
+.toggle .slider{width:40px;height:22px;background:#444;border-radius:11px;position:relative;transition:.2s}
+.toggle .slider::after{content:'';width:18px;height:18px;background:#fff;border-radius:50%;position:absolute;top:2px;left:2px;transition:.2s}
+.toggle input:checked+.slider{background:var(--green)}
+.toggle input:checked+.slider::after{left:20px}
+.pwd-wrap{position:relative}
+.pwd-wrap input{padding-right:36px}
+.pwd-toggle{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--dim);cursor:pointer;font-size:16px;padding:2px}
+.ftp-status{padding:8px 12px;border-radius:6px;font-size:12px;margin-bottom:8px}
+.ftp-status.disconnected{background:rgba(233,69,96,.1);border:1px solid rgba(233,69,96,.2);color:var(--red)}
+.ftp-status.connected{background:rgba(0,204,102,.1);border:1px solid rgba(0,204,102,.2);color:var(--green)}
+.active-indicator{display:inline-block;width:8px;height:8px;background:var(--green);border-radius:50%;margin-right:6px;box-shadow:0 0 6px var(--green)}
+.browse-path{font-size:12px;color:var(--dim);margin-bottom:8px;font-family:monospace;word-break:break-all}
+.file-list{max-height:400px;overflow-y:auto}
+.game-item{display:flex;align-items:center;padding:8px;background:var(--input-bg);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:background .15s}
+.game-item:hover{background:#1a2a4a}
+.game-item .icon{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:4px;margin-right:10px;flex-shrink:0;font-size:14px;font-weight:700}
+.game-item .icon.folder{background:#3a3000;color:var(--orange)}
+.game-item .icon.disk{background:#002a1a;color:var(--green)}
+.game-item .icon.cover{border-radius:4px}
+.game-item .icon.cover img{width:36px;height:36px;object-fit:cover;border-radius:4px}
+.game-item .meta{flex:1;min-width:0}
+.game-item .meta .name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.game-item .meta .size{font-size:10px;color:var(--dim)}
+.game-item .actions{display:flex;gap:4px;flex-shrink:0}
+.section-title{font-size:12px;color:var(--blue);text-transform:uppercase;letter-spacing:1px;margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid #2a2a4a}
+details summary{cursor:pointer;font-size:11px;color:var(--dim)}
+details pre{font-size:10px;color:var(--dim);background:var(--input-bg);padding:6px;border-radius:4px;margin-top:4px;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:8px;font-size:13px;z-index:999;opacity:0;transition:opacity .3s;pointer-events:none}
+.toast.show{opacity:1}
+.toast.ok{background:var(--green);color:#000}
+.toast.error{background:var(--red);color:#fff}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>GOTEK WiFi DONGLE</h1>
+  <div class="sub" id="headerIp">connecting...</div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showPage('home')">Home</div>
+  <div class="tab" onclick="showPage('ftp')">FTP</div>
+  <div class="tab" onclick="showPage('dav')">WebDAV</div>
+  <div class="tab" onclick="showPage('cfg')">Settings</div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<!-- HOME TAB -->
+<!-- ══════════════════════════════════════ -->
+<div class="page active" id="page-home">
+  <div class="card">
+    <h2>Current Disk</h2>
+    <div class="status">
+      <div class="dot" id="statusDot"></div>
+      <div class="info">
+        <div class="name" id="statusName">No disk loaded</div>
+        <div class="detail" id="statusDetail">Upload a disk image to begin</div>
+      </div>
+    </div>
+    <button class="btn btn-eject btn-full" id="btnEject" disabled onclick="ejectDisk()">EJECT</button>
+  </div>
+
+  <div class="card">
+    <h2>Upload Disk Image</h2>
+    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+      <div class="icon">💾</div>
+      <p>Tap to select or drag & drop<br>ADF / DSK / IMG (max 1.44 MB)</p>
+      <input type="file" id="fileInput" accept=".adf,.dsk,.img">
+    </div>
+    <div class="progress" id="progress">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-text" id="progressText">Uploading...</div>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>System</h2>
+    <div class="info-grid">
+      <div class="info-item"><div class="label">Firmware</div><div class="value" id="infoFw">-</div></div>
+      <div class="info-item"><div class="label">Free RAM</div><div class="value" id="infoRam">-</div></div>
+      <div class="info-item"><div class="label">AP IP</div><div class="value" id="infoApIp">-</div></div>
+      <div class="info-item"><div class="label">Network IP</div><div class="value" id="infoStaIp">-</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<!-- FTP TAB -->
+<!-- ══════════════════════════════════════ -->
+<div class="page" id="page-ftp">
+  <div class="card">
+    <h2>FTP Server</h2>
+    <div class="ftp-status disconnected" id="ftp-status-bar">Not connected</div>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-primary" style="flex:1" onclick="ftpConnect()">Connect</button>
+      <button class="btn btn-danger" style="padding:10px 16px" onclick="ftpDisconnect()">Disconnect</button>
+    </div>
+  </div>
+  <div class="card" id="ftp-browse" style="display:none">
+    <h2>Browse</h2>
+    <div class="browse-path" id="ftp-path">/</div>
+    <div class="file-list" id="ftp-list"></div>
+    <button class="btn btn-primary btn-full" style="margin-top:8px" onclick="ftpUp()">Up</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<!-- WEBDAV TAB -->
+<!-- ══════════════════════════════════════ -->
+<div class="page" id="page-dav">
+  <div class="card">
+    <h2>WebDAV Server</h2>
+    <div class="ftp-status disconnected" id="dav-status-bar">Not connected</div>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-primary" style="flex:1" onclick="davConnect()">Connect</button>
+      <button class="btn btn-danger" style="padding:10px 16px" onclick="davDisconnect()">Disconnect</button>
+    </div>
+    <details id="dav-debug-wrap" style="margin-top:6px;display:none">
+      <summary>Debug Log</summary>
+      <pre id="dav-debug"></pre>
+    </details>
+  </div>
+  <div class="card" id="dav-browse" style="display:none">
+    <h2>Browse</h2>
+    <div class="browse-path" id="dav-path">/</div>
+    <div class="file-list" id="dav-list"></div>
+    <button class="btn btn-primary btn-full" style="margin-top:8px" onclick="davUp()">Up</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<!-- SETTINGS TAB -->
+<!-- ══════════════════════════════════════ -->
+<div class="page" id="page-cfg">
+  <div class="card">
+    <h2>WiFi Access Point</h2>
+    <div class="form-group"><label>SSID</label><input id="cfg-ap-ssid"></div>
+    <div class="form-group"><label>Password</label>
+      <div class="pwd-wrap"><input type="password" id="cfg-ap-pass"><button class="pwd-toggle" onclick="togglePwd(this)">👁</button></div>
+    </div>
+    <div class="form-group"><label>Channel</label><input type="number" id="cfg-ap-chan" min="1" max="13"></div>
+  </div>
+
+  <div class="card">
+    <h2>WiFi Client (connect to network)</h2>
+    <label class="toggle"><input type="checkbox" id="cfg-sta-en"><span class="slider"></span><span>Enable WiFi Client</span></label>
+    <div class="form-group"><label>SSID</label><input id="cfg-sta-ssid"></div>
+    <div class="form-group"><label>Password</label>
+      <div class="pwd-wrap"><input type="password" id="cfg-sta-pass"><button class="pwd-toggle" onclick="togglePwd(this)">👁</button></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>FTP Server</h2>
+    <label class="toggle"><input type="checkbox" id="cfg-ftp-en"><span class="slider"></span><span>Enable FTP</span></label>
+    <div class="form-row">
+      <div class="form-group"><label>Host</label><input id="cfg-ftp-host"></div>
+      <div class="form-group" style="max-width:80px"><label>Port</label><input type="number" id="cfg-ftp-port"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Username</label><input id="cfg-ftp-user"></div>
+      <div class="form-group"><label>Password</label>
+        <div class="pwd-wrap"><input type="password" id="cfg-ftp-pass"><button class="pwd-toggle" onclick="togglePwd(this)">👁</button></div>
+      </div>
+    </div>
+    <div class="form-group"><label>Base Path</label><input id="cfg-ftp-path"></div>
+  </div>
+
+  <div class="card">
+    <h2>WebDAV Server</h2>
+    <label class="toggle"><input type="checkbox" id="cfg-dav-en"><span class="slider"></span><span>Enable WebDAV</span></label>
+    <div class="form-row">
+      <div class="form-group"><label>Host</label><input id="cfg-dav-host"></div>
+      <div class="form-group" style="max-width:80px"><label>Port</label><input type="number" id="cfg-dav-port"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Username</label><input id="cfg-dav-user"></div>
+      <div class="form-group"><label>Password</label>
+        <div class="pwd-wrap"><input type="password" id="cfg-dav-pass"><button class="pwd-toggle" onclick="togglePwd(this)">👁</button></div>
+      </div>
+    </div>
+    <div class="form-group"><label>Base Path</label><input id="cfg-dav-path"></div>
+    <label class="toggle"><input type="checkbox" id="cfg-dav-https"><span class="slider"></span><span>Use HTTPS</span></label>
+  </div>
+
+  <button class="btn btn-primary btn-full" onclick="saveSettings()">Save Settings</button>
+  <div class="msg" id="cfg-msg" style="margin-bottom:20px"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const API = location.origin;
+let ftpCurrentPath = '/';
+let davCurrentPath = '/';
+let davLoadedFile = '';
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  $('page-' + id).classList.add('active');
+  const tabs = document.querySelectorAll('.tab');
+  const names = ['home','ftp','dav','cfg'];
+  tabs[names.indexOf(id)].classList.add('active');
+  if (id === 'ftp') ftpLoadStatus();
+  if (id === 'dav') davLoadStatus();
+  if (id === 'cfg') loadSettings();
+}
+
+function toast(msg, type) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (type || 'ok');
+  setTimeout(() => t.className = 'toast', 3000);
+}
+
+function togglePwd(btn) {
+  const inp = btn.parentElement.querySelector('input');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+async function api(url, opts) {
+  const r = await fetch(API + url, opts);
+  return r.json().catch(() => ({}));
+}
+
+function isDiskImage(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  return ['adf','dsk','img','adz'].includes(ext);
+}
+
+function formatSize(s) {
+  return s > 1048576 ? (s/1048576).toFixed(1)+' MB' : (s/1024).toFixed(0)+' KB';
+}
+
+// ══════════════════════════════════════
+// HOME / STATUS
+// ══════════════════════════════════════
+async function updateStatus() {
+  try {
+    const d = await api('/api/status');
+    $('statusDot').className = 'dot ' + (d.loaded ? 'on' : 'off');
+    $('statusName').textContent = d.loaded ? d.filename : 'No disk loaded';
+    $('statusDetail').textContent = d.loaded ? formatSize(d.size)+' — USB active' : 'Upload a disk image to begin';
+    $('btnEject').disabled = !d.loaded;
+    $('infoFw').textContent = d.firmware;
+    $('infoRam').textContent = formatSize(d.free_psram);
+    $('infoApIp').textContent = d.wifi_ap_ip || '-';
+    $('infoStaIp').textContent = d.wifi_sta_connected ? d.wifi_sta_ip : 'Not connected';
+    $('headerIp').textContent = d.wifi_sta_connected ? d.wifi_sta_ip : d.wifi_ap_ip;
+  } catch(e) {}
+}
+
+async function uploadFile(file) {
+  if (file.size > 1474560) { toast('File too large! Max 1.44 MB', 'error'); return; }
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['adf','dsk','img'].includes(ext)) { toast('Use .adf, .dsk, or .img', 'error'); return; }
+
+  $('progress').style.display = 'block';
+  $('progressFill').style.width = '0%';
+  $('progressText').textContent = 'Uploading ' + file.name + '...';
+  $('msg').style.display = 'none';
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/load');
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) {
+      const pct = (e.loaded/e.total*100).toFixed(0);
+      $('progressFill').style.width = pct + '%';
+      $('progressText').textContent = 'Uploading... ' + pct + '%';
+    }
+  };
+  xhr.onload = () => {
+    $('progress').style.display = 'none';
+    try {
+      const d = JSON.parse(xhr.responseText);
+      if (d.status === 'ok') {
+        $('msg').textContent = 'Loaded: ' + d.filename + ' (' + formatSize(d.size) + ')';
+        $('msg').className = 'msg ok';
+      } else {
+        $('msg').textContent = d.error || 'Upload failed';
+        $('msg').className = 'msg err';
+      }
+    } catch(e) { $('msg').textContent = 'Upload failed'; $('msg').className = 'msg err'; }
+    updateStatus();
+  };
+  xhr.onerror = () => { $('progress').style.display = 'none'; toast('Connection error', 'error'); };
+  xhr.setRequestHeader('X-Filename', file.name);
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.send(file);
+}
+
+async function ejectDisk() {
+  try { await api('/api/eject', {method:'POST'}); toast('Disk ejected'); updateStatus(); }
+  catch(e) { toast('Eject failed', 'error'); }
+}
+
+// Drag & drop
+const dz = $('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]); });
+$('fileInput').addEventListener('change', e => { if (e.target.files.length) uploadFile(e.target.files[0]); e.target.value = ''; });
+
+// ══════════════════════════════════════
+// FTP
+// ══════════════════════════════════════
+async function ftpLoadStatus() {
+  try {
+    const s = await api('/api/ftp/status');
+    const bar = $('ftp-status-bar');
+    if (s.connected) {
+      bar.className = 'ftp-status connected';
+      bar.innerHTML = '<span class="active-indicator"></span>Connected to ' + esc(s.host);
+      $('ftp-browse').style.display = '';
+      ftpBrowse(ftpCurrentPath);
+    } else {
+      bar.className = 'ftp-status disconnected';
+      bar.textContent = s.wifi_connected ? 'Not connected — tap Connect' : 'WiFi client not connected (enable in Settings)';
+      $('ftp-browse').style.display = 'none';
+    }
+  } catch(e) {}
+}
+
+async function ftpConnect() {
+  try {
+    const bar = $('ftp-status-bar');
+    bar.textContent = 'Connecting...';
+    const r = await api('/api/ftp/connect', {method:'POST'});
+    if (r.error) { toast('FTP: ' + r.error, 'error'); }
+    ftpLoadStatus();
+  } catch(e) { toast('Connection failed', 'error'); }
+}
+
+async function ftpDisconnect() {
+  await api('/api/ftp/disconnect', {method:'POST'});
+  ftpLoadStatus();
+}
+
+async function ftpBrowse(path) {
+  ftpCurrentPath = path;
+  $('ftp-path').textContent = path;
+  $('ftp-list').innerHTML = '<div style="text-align:center;color:var(--dim);padding:20px">Loading...</div>';
+  try {
+    const d = await api('/api/ftp/list?path=' + encodeURIComponent(path));
+    if (d.error) { $('ftp-list').innerHTML = '<div class="msg err" style="display:block">' + esc(d.error) + '</div>'; return; }
+    let html = '';
+    (d.entries || []).forEach(e => {
+      const isDisk = isDiskImage(e.name);
+      html += '<div class="game-item" onclick="' + (e.dir ? "ftpBrowse('" + esc(path + (path.endsWith('/') ? '' : '/') + e.name).replace(/'/g,"\\'") + "')" : '') + '">';
+      html += '<div class="icon ' + (e.dir ? 'folder' : 'disk') + '">' + (e.dir ? 'DIR' : e.name.split('.').pop().toUpperCase().slice(0,3)) + '</div>';
+      html += '<div class="meta"><div class="name">' + esc(e.name) + '</div>';
+      if (!e.dir && e.size > 0) html += '<div class="size">' + formatSize(e.size) + '</div>';
+      html += '</div>';
+      if (isDisk) html += '<div class="actions"><button class="btn btn-success" onclick="event.stopPropagation();ftpInsert(\'' + esc(path + (path.endsWith('/') ? '' : '/') + e.name).replace(/'/g,"\\'") + '\',this)">Insert</button></div>';
+      html += '</div>';
+    });
+    if (!html) html = '<div style="text-align:center;color:var(--dim);padding:20px">Empty folder</div>';
+    $('ftp-list').innerHTML = html;
+  } catch(e) { $('ftp-list').innerHTML = '<div class="msg err" style="display:block">Load failed</div>'; }
+}
+
+function ftpUp() {
+  let p = ftpCurrentPath;
+  if (p.endsWith('/') && p.length > 1) p = p.slice(0, -1);
+  const ls = p.lastIndexOf('/');
+  ftpBrowse(ls > 0 ? p.substring(0, ls + 1) : '/');
+}
+
+async function ftpInsert(remotePath, btn) {
+  btn.disabled = true; btn.textContent = 'Loading...';
+  try {
+    const r = await fetch(API + '/api/ftp/load', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'path='+encodeURIComponent(remotePath)});
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+    btn.textContent = 'Playing!'; btn.style.background = 'var(--green)';
+    toast(d.name + ' loaded! (' + formatSize(d.bytes) + ')');
+    updateStatus();
+  } catch(e) { btn.textContent = 'Insert'; btn.disabled = false; toast('Load failed: ' + e.message, 'error'); }
+}
+
+// ══════════════════════════════════════
+// WEBDAV
+// ══════════════════════════════════════
+function davShowDebug(data) {
+  if (data && data.debug) {
+    $('dav-debug-wrap').style.display = '';
+    $('dav-debug').textContent = data.debug;
+  }
+}
+
+async function davLoadStatus() {
+  try {
+    const s = await api('/api/dav/status');
+    davShowDebug(s);
+    const bar = $('dav-status-bar');
+    if (s.connected) {
+      bar.className = 'ftp-status connected';
+      bar.innerHTML = '<span class="active-indicator"></span>Connected to ' + esc(s.host);
+      $('dav-browse').style.display = '';
+      davBrowse(davCurrentPath);
+    } else {
+      bar.className = 'ftp-status disconnected';
+      bar.textContent = s.wifi_connected ? 'Not connected — tap Connect' : 'WiFi client not connected (enable in Settings)';
+      $('dav-browse').style.display = 'none';
+    }
+  } catch(e) {}
+}
+
+async function davConnect() {
+  try {
+    const bar = $('dav-status-bar');
+    bar.textContent = 'Connecting...';
+    const res = await fetch(API + '/api/dav/connect', {method:'POST'});
+    const d = await res.json().catch(()=>({}));
+    davShowDebug(d);
+    if (!res.ok) toast('WebDAV: ' + (d.error || 'Failed'), 'error');
+    davLoadStatus();
+  } catch(e) { toast('Connection failed', 'error'); }
+}
+
+async function davDisconnect() {
+  await api('/api/dav/disconnect', {method:'POST'});
+  davLoadStatus();
+}
+
+async function davBrowse(path) {
+  davCurrentPath = path;
+  $('dav-path').textContent = path;
+  $('dav-list').innerHTML = '<div style="text-align:center;color:var(--dim);padding:20px">Loading...</div>';
+  try {
+    const d = await api('/api/dav/list?path=' + encodeURIComponent(path));
+    davShowDebug(d);
+    if (d.error) { $('dav-list').innerHTML = '<div class="msg err" style="display:block">' + esc(d.error) + '</div>'; return; }
+
+    const dirCover = d.cover || '';
+    let html = '';
+    (d.entries || []).forEach(e => {
+      const isDisk = isDiskImage(e.name);
+      const fullPath = path + (path.endsWith('/') ? '' : '/') + e.name;
+      const coverUrl = (!e.dir && dirCover) ? (API + '/api/dav/cover?path=' + encodeURIComponent(path + (path.endsWith('/') ? '' : '/') + dirCover)) : '';
+
+      html += '<div class="game-item" onclick="' + (e.dir ? "davBrowse('" + esc(fullPath).replace(/'/g,"\\'") + "')" : '') + '">';
+      if (coverUrl && isDisk) {
+        html += '<div class="icon cover"><img src="' + coverUrl + '" onerror="this.parentElement.className=\'icon disk\';this.parentElement.innerHTML=\'' + e.name.split('.').pop().toUpperCase().slice(0,3) + '\'"></div>';
+      } else {
+        html += '<div class="icon ' + (e.dir ? 'folder' : 'disk') + '">' + (e.dir ? 'DIR' : e.name.split('.').pop().toUpperCase().slice(0,3)) + '</div>';
+      }
+      html += '<div class="meta"><div class="name">' + esc(e.name) + '</div>';
+      if (!e.dir && e.size > 0) html += '<div class="size">' + formatSize(e.size) + '</div>';
+      html += '</div>';
+      if (isDisk) html += '<div class="actions"><button class="btn btn-success" onclick="event.stopPropagation();davInsert(\'' + esc(fullPath).replace(/'/g,"\\'") + '\',\'' + esc(e.name).replace(/'/g,"\\'") + '\',this)">Insert</button></div>';
+      html += '</div>';
+    });
+    if (!html) html = '<div style="text-align:center;color:var(--dim);padding:20px">Empty folder</div>';
+    $('dav-list').innerHTML = html;
+  } catch(e) { $('dav-list').innerHTML = '<div class="msg err" style="display:block">Load failed</div>'; }
+}
+
+function davUp() {
+  let p = davCurrentPath;
+  if (p.endsWith('/') && p.length > 1) p = p.slice(0, -1);
+  const ls = p.lastIndexOf('/');
+  davBrowse(ls > 0 ? p.substring(0, ls + 1) : '/');
+}
+
+async function davInsert(remotePath, displayName, btn) {
+  btn.disabled = true; btn.textContent = 'Loading...';
+  try {
+    const res = await fetch(API + '/api/dav/load', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'path='+encodeURIComponent(remotePath)});
+    const d = await res.json().catch(()=>({}));
+    davShowDebug(d);
+    if (!res.ok) throw new Error(d.error || 'HTTP ' + res.status);
+    davLoadedFile = remotePath;
+    btn.textContent = 'Playing!'; btn.style.background = 'var(--green)';
+    toast(d.name + ' loaded! (' + formatSize(d.bytes) + ')');
+    updateStatus();
+  } catch(e) { btn.textContent = 'Insert'; btn.disabled = false; toast('Load failed: ' + e.message, 'error'); }
+}
+
+// ══════════════════════════════════════
+// SETTINGS
+// ══════════════════════════════════════
+async function loadSettings() {
+  try {
+    const c = await api('/api/config');
+    $('cfg-ap-ssid').value = c.WIFI_SSID || '';
+    $('cfg-ap-pass').value = c.WIFI_PASS || '';
+    $('cfg-ap-chan').value = c.WIFI_CHANNEL || '6';
+    $('cfg-sta-en').checked = c.WIFI_CLIENT_ENABLED === '1';
+    $('cfg-sta-ssid').value = c.WIFI_CLIENT_SSID || '';
+    $('cfg-sta-pass').value = c.WIFI_CLIENT_PASS || '';
+    $('cfg-ftp-en').checked = c.FTP_ENABLED === '1';
+    $('cfg-ftp-host').value = c.FTP_HOST || '';
+    $('cfg-ftp-port').value = c.FTP_PORT || '21';
+    $('cfg-ftp-user').value = c.FTP_USER || '';
+    $('cfg-ftp-pass').value = c.FTP_PASS || '';
+    $('cfg-ftp-path').value = c.FTP_PATH || '/';
+    $('cfg-dav-en').checked = c.DAV_ENABLED === '1';
+    $('cfg-dav-host').value = c.DAV_HOST || '';
+    $('cfg-dav-port').value = c.DAV_PORT || '443';
+    $('cfg-dav-user').value = c.DAV_USER || '';
+    $('cfg-dav-pass').value = c.DAV_PASS || '';
+    $('cfg-dav-path').value = c.DAV_PATH || '/';
+    $('cfg-dav-https').checked = c.DAV_HTTPS === '1';
+  } catch(e) {}
+}
+
+async function saveSettings() {
+  const params = new URLSearchParams({
+    WIFI_SSID: $('cfg-ap-ssid').value,
+    WIFI_PASS: $('cfg-ap-pass').value,
+    WIFI_CHANNEL: $('cfg-ap-chan').value,
+    WIFI_CLIENT_ENABLED: $('cfg-sta-en').checked ? '1' : '0',
+    WIFI_CLIENT_SSID: $('cfg-sta-ssid').value,
+    WIFI_CLIENT_PASS: $('cfg-sta-pass').value,
+    FTP_ENABLED: $('cfg-ftp-en').checked ? '1' : '0',
+    FTP_HOST: $('cfg-ftp-host').value,
+    FTP_PORT: $('cfg-ftp-port').value,
+    FTP_USER: $('cfg-ftp-user').value,
+    FTP_PASS: $('cfg-ftp-pass').value,
+    FTP_PATH: $('cfg-ftp-path').value,
+    DAV_ENABLED: $('cfg-dav-en').checked ? '1' : '0',
+    DAV_HOST: $('cfg-dav-host').value,
+    DAV_PORT: $('cfg-dav-port').value,
+    DAV_USER: $('cfg-dav-user').value,
+    DAV_PASS: $('cfg-dav-pass').value,
+    DAV_PATH: $('cfg-dav-path').value,
+    DAV_HTTPS: $('cfg-dav-https').checked ? '1' : '0'
+  });
+
+  try {
+    await fetch(API + '/api/config', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:params});
+    const m = $('cfg-msg');
+    m.textContent = 'Settings saved! Reboot to apply WiFi changes.';
+    m.className = 'msg ok';
+    toast('Settings saved!');
+  } catch(e) {
+    const m = $('cfg-msg');
+    m.textContent = 'Save failed';
+    m.className = 'msg err';
+  }
+}
+
+// Init
+updateStatus();
+setInterval(updateStatus, 3000);
+</script>
+</body>
+</html>
