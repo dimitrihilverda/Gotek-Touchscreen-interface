@@ -3249,7 +3249,9 @@ void waitForRelease(unsigned long timeout_ms = 2000) {
 //   - waitForRelease() after heavy operations to prevent phantom taps
 //   - Simple 200ms debounce
 
-#define SWIPE_THRESHOLD 15
+#define SWIPE_THRESHOLD 20
+#define TAP_MAX_DURATION 250   // ms — longer touch = scroll attempt, not tap
+#define TAP_MAX_MOVE     8     // px — any movement beyond this = not a tap
 
 // Kinetic scroll state
 int kinetic_velocity = 0;        // items/tick remaining to scroll
@@ -3302,12 +3304,22 @@ void loop() {
 
     int16_t dx = (int16_t)touch_last_x - (int16_t)touch_start_x;
     int16_t dy = (int16_t)touch_last_y - (int16_t)touch_start_y;
+    unsigned long touchDuration = now - touch_start_time;
 
-    if (abs(dx) > SWIPE_THRESHOLD || abs(dy) > SWIPE_THRESHOLD) {
+    bool isSwipe = (abs(dx) > SWIPE_THRESHOLD || abs(dy) > SWIPE_THRESHOLD);
+
+    // A slow drag that didn't reach swipe threshold is still NOT a tap
+    // (e.g., finger moved 10px over 400ms = scroll attempt, not a game select)
+    bool isTap = !isSwipe &&
+                 (abs(dx) <= TAP_MAX_MOVE && abs(dy) <= TAP_MAX_MOVE) &&
+                 (touchDuration < TAP_MAX_DURATION);
+
+    if (isSwipe) {
       handleSwipe(dx, dy, touch_start_x, touch_start_y);
-    } else {
+    } else if (isTap) {
       handleTap(touch_start_x, touch_start_y);
     }
+    // else: small drag / slow movement — ignore (not a tap, not a swipe)
     last_touch_time = millis();
   }
 
