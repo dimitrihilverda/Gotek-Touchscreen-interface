@@ -27,7 +27,6 @@
 #include <USB.h>
 #include <USBMSC.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
 // ============================================================================
@@ -2576,282 +2575,19 @@ void drawArchiveScreen() {
   gfx_flush();
 }
 
-// Fetch archive index from amiga500archive.com (uses HTTPS, may take a while)
+// Stub: archiveFetchIndex — calls the web API handler internally
+// The actual HTTPS scraping is done through the web API (/api/archive/fetch)
+// On the touchscreen, show a message to use the web UI
 void archiveFetchIndex() {
-  if (!wifi_sta_connected) return;
-
-  archive_download_status = "Fetching index...";
-  drawArchiveScreen();
-
-  // Call the same handler as the web API but directly
-  WiFiClientSecure httpsClient;
-  httpsClient.setInsecure();
-  httpsClient.setTimeout(15000);
-
-  // Fetch the main A-Z pages
-  SD_MMC.mkdir("/CACHE");
-  File cacheFile = SD_MMC.open("/CACHE/archive_index.txt", "w");
-  if (!cacheFile) {
-    archive_download_status = "Error: can't write cache";
-    drawArchiveScreen();
-    return;
-  }
-
-  int totalGames = 0;
-  const char* ARCHIVE_HOST_TS = "amiga500archive.com";
-
-  // Fetch letter pages A-Z
-  for (char letter = 'A'; letter <= 'Z'; letter++) {
-    archive_download_status = String("Fetching ") + letter + "...";
-    drawArchiveScreen();
-
-    if (!httpsClient.connect(ARCHIVE_HOST_TS, 443)) {
-      Serial.println("Archive: can't connect for letter " + String(letter));
-      continue;
-    }
-
-    String path = "/search?q=" + String(letter) + "&type=starts_with";
-    httpsClient.println("GET " + path + " HTTP/1.1");
-    httpsClient.println("Host: " + String(ARCHIVE_HOST_TS));
-    httpsClient.println("Connection: close");
-    httpsClient.println("User-Agent: Gotek-Touchscreen/1.0");
-    httpsClient.println();
-
-    // Wait for response
-    unsigned long timeout = millis();
-    while (!httpsClient.available() && millis() - timeout < 10000) { delay(50); }
-
-    // Skip headers
-    while (httpsClient.available()) {
-      String line = httpsClient.readStringUntil('\n');
-      line.trim();
-      if (line.length() == 0) break;
-    }
-
-    // Read body and parse game links
-    String body = "";
-    timeout = millis();
-    while ((httpsClient.connected() || httpsClient.available()) && millis() - timeout < 15000) {
-      while (httpsClient.available()) {
-        body += (char)httpsClient.read();
-        timeout = millis();
-      }
-      delay(1);
-    }
-    httpsClient.stop();
-
-    // Parse: look for href="/game/slug" patterns
-    int searchPos = 0;
-    while (true) {
-      int linkIdx = body.indexOf("href=\"/game/", searchPos);
-      if (linkIdx < 0) break;
-      int slugStart = linkIdx + 12;
-      int slugEnd = body.indexOf("\"", slugStart);
-      if (slugEnd < 0) break;
-      String slug = body.substring(slugStart, slugEnd);
-
-      // Try to find the game title nearby (usually in a link or heading after)
-      String gameName = slug;
-      gameName.replace("-", " ");
-      // Capitalize first letters
-      bool capNext = true;
-      for (int i = 0; i < (int)gameName.length(); i++) {
-        if (capNext && gameName.charAt(i) >= 'a' && gameName.charAt(i) <= 'z') {
-          gameName.setCharAt(i, gameName.charAt(i) - 32);
-        }
-        capNext = (gameName.charAt(i) == ' ');
-      }
-
-      // Write to cache: name|slug|year|publisher
-      cacheFile.println(gameName + "|" + slug + "||");
-      totalGames++;
-
-      searchPos = slugEnd + 1;
-    }
-
-    delay(100);  // be nice to the server
-  }
-
-  cacheFile.close();
-  Serial.println("Archive: fetched " + String(totalGames) + " games");
-
-  // Reload archive index
-  loadArchiveIndex();
-  archive_scroll = 0;
-  archive_filter_letter = 0;
-  archive_download_status = "Fetched " + String(totalGames) + " games!";
+  archive_download_status = "Use web UI to fetch index";
   drawArchiveScreen();
 }
 
-// Download selected archive game to SD
+// Stub: archiveDownloadSelected — calls the web API handler internally
+// The actual download is done through the web API (/api/archive/download)
 void archiveDownloadSelected() {
-  if (archive_selected < 0 || archive_selected >= (int)archive_list.size()) return;
-  if (!wifi_sta_connected) return;
-
-  String gameSlug = archive_list[archive_selected].slug;
-  String gameName = archive_list[archive_selected].name;
-
-  archive_download_status = "Downloading " + gameName + "...";
+  archive_download_status = "Use web UI to download";
   drawArchiveScreen();
-
-  WiFiClientSecure httpsClient;
-  httpsClient.setInsecure();
-  httpsClient.setTimeout(15000);
-
-  const char* ARCHIVE_HOST_DL = "amiga500archive.com";
-
-  // Step 1: fetch game page to find download link
-  if (!httpsClient.connect(ARCHIVE_HOST_DL, 443)) {
-    archive_download_status = "Error: can't connect";
-    drawArchiveScreen();
-    return;
-  }
-
-  httpsClient.println("GET /game/" + gameSlug + " HTTP/1.1");
-  httpsClient.println("Host: " + String(ARCHIVE_HOST_DL));
-  httpsClient.println("Connection: close");
-  httpsClient.println("User-Agent: Gotek-Touchscreen/1.0");
-  httpsClient.println();
-
-  unsigned long timeout = millis();
-  while (!httpsClient.available() && millis() - timeout < 10000) { delay(50); }
-
-  // Skip headers
-  while (httpsClient.available()) {
-    String line = httpsClient.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) break;
-  }
-
-  // Read body
-  String body = "";
-  timeout = millis();
-  while ((httpsClient.connected() || httpsClient.available()) && millis() - timeout < 15000) {
-    while (httpsClient.available()) {
-      body += (char)httpsClient.read();
-      timeout = millis();
-    }
-    delay(1);
-  }
-  httpsClient.stop();
-
-  // Find .adf download link
-  String downloadUrl = "";
-  String filename = gameSlug + ".adf";
-  int adfIdx = body.indexOf(".adf");
-  if (adfIdx < 0) adfIdx = body.indexOf(".ADF");
-  if (adfIdx >= 0) {
-    // Find the href= before this
-    int hrefStart = body.lastIndexOf("href=\"", adfIdx);
-    if (hrefStart >= 0) {
-      hrefStart += 6;
-      int hrefEnd = body.indexOf("\"", hrefStart);
-      if (hrefEnd > hrefStart) {
-        downloadUrl = body.substring(hrefStart, hrefEnd);
-        // Extract filename
-        int fnSlash = downloadUrl.lastIndexOf('/');
-        if (fnSlash >= 0) filename = downloadUrl.substring(fnSlash + 1);
-      }
-    }
-  }
-
-  if (downloadUrl.length() == 0) {
-    archive_download_status = "Error: no ADF link found";
-    drawArchiveScreen();
-    return;
-  }
-
-  // Step 2: Download the ADF file
-  archive_download_status = "Downloading " + filename + "...";
-  drawArchiveScreen();
-
-  // Parse download URL
-  String dlHost = ARCHIVE_HOST_DL;
-  String dlPath = downloadUrl;
-  int dlPort = 443;
-
-  if (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://")) {
-    // Full URL — parse host/path
-    int protoEnd = downloadUrl.indexOf("://") + 3;
-    int pathStart = downloadUrl.indexOf("/", protoEnd);
-    if (pathStart > 0) {
-      dlHost = downloadUrl.substring(protoEnd, pathStart);
-      dlPath = downloadUrl.substring(pathStart);
-    }
-  }
-
-  WiFiClientSecure dlClient;
-  dlClient.setInsecure();
-  if (!dlClient.connect(dlHost.c_str(), dlPort)) {
-    archive_download_status = "Error: download connect failed";
-    drawArchiveScreen();
-    return;
-  }
-
-  dlClient.println("GET " + dlPath + " HTTP/1.1");
-  dlClient.println("Host: " + dlHost);
-  dlClient.println("Connection: close");
-  dlClient.println("User-Agent: Gotek-Touchscreen/1.0");
-  dlClient.println();
-
-  timeout = millis();
-  while (!dlClient.available() && millis() - timeout < 15000) { delay(50); }
-
-  // Skip headers
-  while (dlClient.available()) {
-    String line = dlClient.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) break;
-  }
-
-  // Save to SD
-  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
-  String gameDir = modeDir + "/" + gameName;
-  SD_MMC.mkdir(gameDir.c_str());
-  String localPath = gameDir + "/" + filename;
-
-  File outFile = SD_MMC.open(localPath.c_str(), "w");
-  if (!outFile) {
-    dlClient.stop();
-    archive_download_status = "Error: can't create file";
-    drawArchiveScreen();
-    return;
-  }
-
-  size_t totalBytes = 0;
-  uint8_t buf[4096];
-  timeout = millis();
-  while ((dlClient.connected() || dlClient.available()) && millis() - timeout < 30000) {
-    size_t avail = dlClient.available();
-    if (avail == 0) { delay(5); continue; }
-    size_t toRead = (avail > sizeof(buf)) ? sizeof(buf) : avail;
-    size_t bytesRead = dlClient.read(buf, toRead);
-    if (bytesRead > 0) {
-      outFile.write(buf, bytesRead);
-      totalBytes += bytesRead;
-      timeout = millis();
-    }
-  }
-
-  outFile.close();
-  dlClient.stop();
-
-  if (totalBytes == 0) {
-    SD_MMC.remove(localPath.c_str());
-    archive_download_status = "Error: 0 bytes received";
-    drawArchiveScreen();
-    return;
-  }
-
-  // Rescan game list
-  file_list = listImages();
-  buildDisplayNames(file_list);
-  sortByDisplay();
-  buildGameList();
-
-  archive_download_status = gameName + " (" + String(totalBytes / 1024) + " KB) saved!";
-  drawArchiveScreen();
-  Serial.println("Archive: downloaded " + localPath + " (" + String(totalBytes) + " bytes)");
 }
 
 // List layout constants (no header bar — full screen list)
@@ -3780,6 +3516,8 @@ void setup() {
     }
   }
 
+  Serial.println("Free heap before USB: " + String(ESP.getFreeHeap()) + " bytes");
+  Serial.println("Free PSRAM: " + String(ESP.getFreePsram()) + " bytes");
   drawBootProgress("Starting USB...", 90);
 
   msc.vendorID("Gotek");
@@ -3789,8 +3527,9 @@ void setup() {
   msc.onWrite(onWrite);
   msc.mediaPresent(autoloaded);
   msc.begin(msc_block_count, 512);
+  Serial.println("USB.begin()...");
   USB.begin();
-  Serial.println("USB MSC initialized");
+  Serial.println("USB MSC initialized, heap: " + String(ESP.getFreeHeap()));
 
   drawBootProgress("Ready!", 100);
   delay(300);
