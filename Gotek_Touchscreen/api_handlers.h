@@ -1164,7 +1164,13 @@ void handleArchiveDebug(WiFiClient &client, const String &page) {
   httpsClient->setInsecure();
   httpsClient->setTimeout(10000);
 
-  String pagePath = "/games/" + (page.length() > 0 ? page : String("a"));
+  // page can be a full path like "/" or "/browse" or just a letter for "/games/a"
+  String pagePath;
+  if (page.startsWith("/")) {
+    pagePath = page;
+  } else {
+    pagePath = "/games/" + (page.length() > 0 ? page : String("a"));
+  }
   Serial.println("Archive debug: " + pagePath);
 
   if (!httpsClient->connect(ARCHIVE_HOST, 443)) {
