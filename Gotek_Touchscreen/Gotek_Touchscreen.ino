@@ -2247,6 +2247,9 @@ void drawInfoScreen() {
     } else if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
       gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
       gfx_print("Connecting...");
+    } else if (cfg_wifi_client_ssid.length() == 0) {
+      gfx_setTextColor(0x7BEF, TFT_BLACK);
+      gfx_print("No SSID (use web UI)");
     } else {
       gfx_setTextColor(0x7BEF, TFT_BLACK);
       gfx_print("Off");
@@ -3532,6 +3535,17 @@ void handleTap(uint16_t px, uint16_t py) {
         }
       } else {
         // Toggle WiFi client (internet)
+        if (!cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() == 0) {
+          // No SSID configured — can't enable, show message
+          gfx_setTextColor(TFT_RED, TFT_BLACK);
+          gfx_setTextSize(1);
+          gfx_setCursor(20, gH - 60);
+          gfx_print("Set WIFI_CLIENT_SSID in config first!");
+          gfx_flush();
+          delay(1500);
+          drawInfoScreen();
+          return;
+        }
         cfg_wifi_client_enabled = !cfg_wifi_client_enabled;
         if (!cfg_wifi_client_enabled) {
           WiFi.disconnect();
