@@ -3293,6 +3293,11 @@ void loop() {
       touch_start_time = millis();
     } else {
       // Touch HELD — check for live drag-scrolling
+      int16_t moveDy = abs((int16_t)py - (int16_t)touch_start_y);
+      if (current_screen == SCR_SELECTION && moveDy > 3) {
+        Serial.println("DRAG: start=" + String(touch_start_y) + " now=" + String(py) +
+                       " dy=" + String(moveDy) + " dragging=" + String(drag_scrolling));
+      }
       touch_last_x = px;
       touch_last_y = py;
 
