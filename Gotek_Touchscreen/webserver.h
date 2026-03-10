@@ -740,6 +740,20 @@ void handleHttpRequest(WiFiClient &client) {
     handleDAVLoad(client, req.body);
     return;
   }
+  if (req.path.startsWith("/api/dav/cover") && req.method == "GET") {
+    String coverPath = "";
+    int qm = req.path.indexOf("path=");
+    if (qm >= 0) coverPath = urlDecode(req.path.substring(qm + 5));
+    handleDAVCover(client, coverPath);
+    return;
+  }
+  if (req.path.startsWith("/api/dav/nfo") && req.method == "GET") {
+    String nfoPath = "";
+    int qm = req.path.indexOf("path=");
+    if (qm >= 0) nfoPath = urlDecode(req.path.substring(qm + 5));
+    handleDAVNfo(client, nfoPath);
+    return;
+  }
 
   // ── 404 ──
   sendJSON(client, 404, "{\"error\":\"Not found\"}");

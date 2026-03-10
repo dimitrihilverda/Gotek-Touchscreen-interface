@@ -3290,6 +3290,10 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   msc.mediaPresent(true);
   tud_connect();
 
+  // Return to game list on touchscreen
+  current_screen = SCR_SELECTION;
+  drawList();
+
   return totalRead;
 }
 

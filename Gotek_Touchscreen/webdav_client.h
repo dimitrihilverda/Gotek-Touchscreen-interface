@@ -22,6 +22,10 @@ struct DAVFileEntry {
   String name;
   bool   isDir;
   size_t size;
+  bool   hasCover;   // true if folder contains a .jpg/.png
+  bool   hasNfo;     // true if folder contains a .nfo
+  String coverFile;  // name of cover file (e.g. "cover.jpg")
+  String nfoFile;    // name of nfo file
 };
 
 // ============================================================================
@@ -632,16 +636,27 @@ private:
       entry.name = displayName;
       entry.isDir = isDir;
       entry.size = fileSize;
+      entry.hasCover = false;
+      entry.hasNfo = false;
 
-      // Filter: only show directories and disk image files
+      // Categorize files
       if (!entry.isDir) {
         String lname = displayName;
         lname.toLowerCase();
-        if (!lname.endsWith(".adf") && !lname.endsWith(".dsk") && !lname.endsWith(".adz") &&
-            !lname.endsWith(".img") && !lname.endsWith(".zip")) {
+        bool isDiskImage = lname.endsWith(".adf") || lname.endsWith(".dsk") ||
+                           lname.endsWith(".adz") || lname.endsWith(".img") ||
+                           lname.endsWith(".zip");
+        bool isCover = lname.endsWith(".jpg") || lname.endsWith(".jpeg") || lname.endsWith(".png");
+        bool isNfo = lname.endsWith(".nfo");
+
+        // Skip files that aren't disk images, covers, or nfo
+        if (!isDiskImage && !isCover && !isNfo) {
           pos = respEnd + 1;
           continue;
         }
+        // Mark cover/nfo files specially (they'll be used as metadata)
+        if (isCover) { entry.coverFile = displayName; }
+        if (isNfo)   { entry.nfoFile = displayName; }
       }
 
       entries.push_back(entry);

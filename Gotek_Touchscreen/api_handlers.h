@@ -1308,10 +1308,27 @@ void handleDAVList(WiFiClient &client, const String &queryPath) {
     return;
   }
 
-  // Build JSON response (same format as FTP)
-  String json = "{\"path\":\"" + jsonEscape(path) + "\",\"entries\":[";
+  // Separate cover/nfo metadata from browsable entries
+  // Cover/nfo files in a directory are metadata for sibling disk images
+  String coverFile = "", nfoFile = "";
   for (int i = 0; i < (int)entries.size(); i++) {
-    if (i > 0) json += ",";
+    if (entries[i].coverFile.length() > 0 && coverFile.length() == 0)
+      coverFile = entries[i].coverFile;
+    if (entries[i].nfoFile.length() > 0 && nfoFile.length() == 0)
+      nfoFile = entries[i].nfoFile;
+  }
+
+  // Build JSON response — skip cover/nfo files from browsable list
+  String json = "{\"path\":\"" + jsonEscape(path) + "\"";
+  if (coverFile.length() > 0) json += ",\"cover\":\"" + jsonEscape(coverFile) + "\"";
+  if (nfoFile.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(nfoFile) + "\"";
+  json += ",\"entries\":[";
+  bool first = true;
+  for (int i = 0; i < (int)entries.size(); i++) {
+    // Skip cover/nfo files from the browsable list
+    if (entries[i].coverFile.length() > 0 || entries[i].nfoFile.length() > 0) continue;
+    if (!first) json += ",";
+    first = false;
     json += "{\"name\":\"" + jsonEscape(entries[i].name) + "\"";
     json += ",\"dir\":" + String(entries[i].isDir ? "true" : "false");
     json += ",\"size\":" + String(entries[i].size);
@@ -1441,6 +1458,81 @@ void handleDAVLoad(WiFiClient &client, const String &body) {
     json += "}";
     sendJSON(client, 500, json);
   }
+}
+
+// ============================================================================
+// GET /api/dav/cover?path=/folder/cover.jpg — Proxy cover image from WebDAV
+// ============================================================================
+
+void handleDAVCover(WiFiClient &client, const String &queryPath) {
+  if (!cfg_dav_enabled || queryPath.length() == 0) {
+    sendJSON(client, 400, "{\"error\":\"Invalid request\"}");
+    return;
+  }
+
+  // Allocate buffer in PSRAM for cover image (max 150KB)
+  size_t maxCover = 150 * 1024;
+  uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
+  if (!buf) {
+    sendJSON(client, 500, "{\"error\":\"Out of PSRAM\"}");
+    return;
+  }
+
+  long bytes = davClient.streamToBuffer(queryPath, buf, maxCover);
+  if (bytes <= 0) {
+    free(buf);
+    sendJSON(client, 404, "{\"error\":\"Cover not found\"}");
+    return;
+  }
+
+  // Detect content type
+  String lp = queryPath;
+  lp.toLowerCase();
+  String ct = "image/jpeg";
+  if (lp.endsWith(".png")) ct = "image/png";
+
+  // Send raw image response
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: " + ct);
+  client.println("Content-Length: " + String(bytes));
+  client.println("Cache-Control: max-age=3600");
+  client.println("Connection: close");
+  client.println();
+
+  // Send in chunks to avoid watchdog timeout
+  size_t sent = 0;
+  while (sent < (size_t)bytes) {
+    size_t chunk = bytes - sent;
+    if (chunk > 4096) chunk = 4096;
+    client.write(&buf[sent], chunk);
+    sent += chunk;
+    yield();
+  }
+
+  free(buf);
+}
+
+// ============================================================================
+// GET /api/dav/nfo?path=/folder/game.nfo — Proxy NFO text from WebDAV
+// ============================================================================
+
+void handleDAVNfo(WiFiClient &client, const String &queryPath) {
+  if (!cfg_dav_enabled || queryPath.length() == 0) {
+    sendJSON(client, 400, "{\"error\":\"Invalid request\"}");
+    return;
+  }
+
+  // Small buffer for NFO text (max 2KB)
+  uint8_t buf[2048];
+  long bytes = davClient.streamToBuffer(queryPath, buf, sizeof(buf) - 1);
+  if (bytes <= 0) {
+    sendJSON(client, 404, "{\"error\":\"NFO not found\"}");
+    return;
+  }
+  buf[bytes] = 0;  // null-terminate
+
+  String nfoText = String((char *)buf);
+  sendJSON(client, 200, "{\"nfo\":\"" + jsonEscape(nfoText) + "\"}");
 }
 
 #endif // API_HANDLERS_H

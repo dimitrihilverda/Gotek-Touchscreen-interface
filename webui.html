@@ -1287,6 +1287,11 @@ async function davBrowse(path) {
         '</div>';
     }
 
+    // Cover and NFO from this directory level (returned by API)
+    const dirCover = data.cover || '';
+    const dirNfo = data.nfo || '';
+    const coverUrl = dirCover ? (API + '/api/dav/cover?path=' + encodeURIComponent(path + dirCover)) : '';
+
     for (const entry of entries) {
       let fullPath = path.endsWith('/') ? path + entry.name : path + '/' + entry.name;
       if (entry.dir) {
@@ -1302,13 +1307,17 @@ async function davBrowse(path) {
                       entry.size > 1024 ? (entry.size / 1024).toFixed(0) + ' KB' : entry.size + ' B';
         let ext = entry.name.split('.').pop().toUpperCase();
         let isDisk = ['ADF','DSK','ADZ','IMG'].includes(ext);
+        let coverHtml = coverUrl
+          ? '<img class="game-cover" src="' + coverUrl + '" loading="lazy" onerror="this.outerHTML=\'<div class=game-cover>&#128190;</div>\'">'
+          : '<div class="game-cover empty">&#128190;</div>';
         html += '<div class="game-item" style="cursor:default">' +
-          '<div class="game-cover empty">&#128190;</div>' +
+          coverHtml +
           '<div class="game-info">' +
             '<div class="game-name">' + esc(entry.name) + '</div>' +
             '<div class="game-meta">' +
               '<span class="badge" style="background:var(--blue);color:#fff">' + ext + '</span> ' +
               '<span style="font-size:12px;color:#888">' + sizeStr + '</span>' +
+              (dirNfo ? ' <span class="badge badge-nfo">NFO</span>' : '') +
             '</div>' +
             '<div style="margin-top:6px;display:flex;gap:6px">' +
               (isDisk ? '<button class="btn btn-primary" style="font-size:12px;padding:4px 12px" onclick="event.stopPropagation();davInsert(\'' + fullPath.replace(/'/g, "\\'") + '\',\'' + esc(entry.name).replace(/'/g, "\\'") + '\',this)">Insert</button>' : '') +
