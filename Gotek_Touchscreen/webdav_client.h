@@ -48,7 +48,15 @@ public:
       return false;
     }
 
-    _log("DAV: testing connection to " + cfg_dav_host + ":" + String(cfg_dav_port));
+    // Sanitize host: strip protocol prefix and trailing path/slash
+    if (cfg_dav_host.startsWith("https://")) cfg_dav_host = cfg_dav_host.substring(8);
+    if (cfg_dav_host.startsWith("http://"))  cfg_dav_host = cfg_dav_host.substring(7);
+    int slashPos = cfg_dav_host.indexOf('/');
+    if (slashPos > 0) cfg_dav_host = cfg_dav_host.substring(0, slashPos);
+    cfg_dav_host.trim();
+
+    _log("DAV: testing connection to " + String(cfg_dav_https ? "https://" : "http://") +
+         cfg_dav_host + ":" + String(cfg_dav_port));
 
     // Test with a PROPFIND on the base path
     std::vector<DAVFileEntry> test;
@@ -113,8 +121,7 @@ public:
                   "<D:prop><D:resourcetype/><D:getcontentlength/><D:displayname/></D:prop>"
                   "</D:propfind>";
 
-    Serial.println("DAV: PROPFIND " + encodedPath + " Host: " + cfg_dav_host +
-                   " User: " + cfg_dav_user + " Port: " + String(cfg_dav_port));
+    _log("DAV: -> PROPFIND " + encodedPath + " Host: " + cfg_dav_host);
 
     tcp->println("PROPFIND " + encodedPath + " HTTP/1.1");
     tcp->println("Host: " + cfg_dav_host);
