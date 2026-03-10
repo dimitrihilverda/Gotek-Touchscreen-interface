@@ -27,6 +27,7 @@
 #include <USB.h>
 #include <USBMSC.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
 // ============================================================================
@@ -421,7 +422,7 @@ USBMSC msc;
 uint32_t msc_block_count;
 
 // UI state
-enum Screen { SCR_SELECTION = 0, SCR_DETAILS = 1, SCR_INFO = 2 };
+enum Screen { SCR_SELECTION = 0, SCR_DETAILS = 1, SCR_INFO = 2, SCR_ARCHIVE = 3 };
 Screen current_screen = SCR_SELECTION;
 
 // File list
@@ -448,6 +449,20 @@ String detail_jpg_path = "";
 // Multi-disk support
 vector<int> disk_set;         // file_list indices for all disks of current game
 int loaded_disk_index = -1;   // file_list index of currently loaded disk (-1 = none)
+
+// Archive screen state
+struct ArchiveEntry {
+  String name;
+  String slug;       // URL slug / game ID
+  String year;
+  String publisher;
+};
+vector<ArchiveEntry> archive_list;  // loaded from cache file
+int archive_scroll = 0;
+int archive_selected = -1;
+bool archive_loaded = false;
+char archive_filter_letter = 0;  // 0 = show all
+String archive_download_status = "";
 
 // Touch state
 bool touch_available = false;
@@ -2334,19 +2349,509 @@ void drawInfoScreen() {
     gfx_setTextSize(2);  // restore after drawToggle
   }
 
-  // Bottom buttons: BACK + THEME + ADF/DSK — evenly spaced, uniform 148x36
-  int btnW = 148, btnH = 36, btnY = gH - 42, gap = 8, marginX = 10;
-  drawThemedButton(marginX,              btnY, btnW, btnH, "BTN_BACK",  "BACK",  TFT_CYAN);
-  drawThemedButton(marginX + btnW + gap, btnY, btnW, btnH, "BTN_THEME", "THEME", WB_ORANGE);
-  // ADF/DSK toggle (third button)
-  int modeBtnX = marginX + 2 * (btnW + gap);
+  // Bottom buttons: BACK + THEME + ADF/DSK + ARCHIVE — 4 buttons evenly spaced
+  int btnW = (gW - 20 - 3 * 8) / 4;  // 4 buttons, 3 gaps, 10px margin each side
+  int btnH = 36, btnY = gH - 42, gap = 8, marginX = 10;
+  drawThemedButton(marginX,                        btnY, btnW, btnH, "BTN_BACK",    "BACK",    TFT_CYAN);
+  drawThemedButton(marginX + (btnW + gap),         btnY, btnW, btnH, "BTN_THEME",   "THEME",   WB_ORANGE);
+  // ADF/DSK toggle
   if (g_mode == MODE_ADF) {
-    drawThemedButton(modeBtnX, btnY, btnW, btnH, "BTN_ADF", "ADF", TFT_CYAN);
+    drawThemedButton(marginX + 2 * (btnW + gap),   btnY, btnW, btnH, "BTN_ADF",     "ADF",     TFT_CYAN);
   } else {
-    drawThemedButton(modeBtnX, btnY, btnW, btnH, "BTN_DSK", "DSK", TFT_CYAN);
+    drawThemedButton(marginX + 2 * (btnW + gap),   btnY, btnW, btnH, "BTN_DSK",     "DSK",     TFT_CYAN);
+  }
+  drawThemedButton(marginX + 3 * (btnW + gap),     btnY, btnW, btnH, "BTN_ARCHIVE", "ARCHIVE", TFT_GREEN);
+
+  gfx_flush();
+}
+
+// ============================================================================
+// ALPHABET BAR constants (shared between game list and archive screen)
+// ============================================================================
+#define ALPHA_BAR_W  16       // width of the alphabet strip
+#define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
+
+// ============================================================================
+// ARCHIVE SCREEN — browse amiga500archive.com cached index
+// ============================================================================
+
+// Load archive index from SD cache file
+void loadArchiveIndex() {
+  archive_list.clear();
+  archive_loaded = false;
+
+  File f = SD_MMC.open("/CACHE/archive_index.txt", "r");
+  if (!f) {
+    Serial.println("Archive: no cache file found");
+    return;
+  }
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+
+    // Format: name|slug|year|publisher
+    ArchiveEntry entry;
+    int p1 = line.indexOf('|');
+    if (p1 < 0) continue;
+    entry.name = line.substring(0, p1);
+
+    int p2 = line.indexOf('|', p1 + 1);
+    if (p2 < 0) { entry.slug = line.substring(p1 + 1); }
+    else {
+      entry.slug = line.substring(p1 + 1, p2);
+      int p3 = line.indexOf('|', p2 + 1);
+      if (p3 < 0) { entry.year = line.substring(p2 + 1); }
+      else {
+        entry.year = line.substring(p2 + 1, p3);
+        entry.publisher = line.substring(p3 + 1);
+      }
+    }
+
+    archive_list.push_back(entry);
+  }
+  f.close();
+  archive_loaded = true;
+  Serial.println("Archive: loaded " + String(archive_list.size()) + " entries from cache");
+}
+
+// Get filtered archive list indices for current filter letter
+int archiveFilteredCount() {
+  if (archive_filter_letter == 0) return archive_list.size();
+  int count = 0;
+  for (int i = 0; i < (int)archive_list.size(); i++) {
+    if (archive_list[i].name.length() > 0 &&
+        toupper(archive_list[i].name.charAt(0)) == archive_filter_letter) {
+      count++;
+    }
+  }
+  return count;
+}
+
+// Get the n-th filtered archive entry index
+int archiveFilteredIndex(int n) {
+  if (archive_filter_letter == 0) return n;
+  int count = 0;
+  for (int i = 0; i < (int)archive_list.size(); i++) {
+    if (archive_list[i].name.length() > 0 &&
+        toupper(archive_list[i].name.charAt(0)) == archive_filter_letter) {
+      if (count == n) return i;
+      count++;
+    }
+  }
+  return -1;
+}
+
+// Draw the archive screen
+void drawArchiveScreen() {
+  gfx_fillScreen(TFT_BLACK);
+
+  // Title bar
+  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+  gfx_setTextSize(2);
+  gfx_setCursor(10, 6);
+  gfx_print("ARCHIVE");
+
+  // Status
+  gfx_setTextColor(0x7BEF, TFT_BLACK);
+  gfx_setTextSize(1);
+  if (!wifi_sta_connected) {
+    gfx_setCursor(100, 10);
+    gfx_print("(no internet)");
+  } else if (!archive_loaded || archive_list.size() == 0) {
+    gfx_setCursor(100, 10);
+    gfx_print("(fetch from web UI first)");
+  } else {
+    gfx_setCursor(100, 10);
+    int fc = archiveFilteredCount();
+    gfx_print(String(fc) + " games");
+    if (archive_filter_letter != 0) {
+      gfx_print(" [");
+      gfx_print(String(archive_filter_letter));
+      gfx_print("]");
+    }
+  }
+
+  // Download status message
+  if (archive_download_status.length() > 0) {
+    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+    gfx_setTextSize(1);
+    gfx_setCursor(10, 22);
+    gfx_print(archive_download_status);
+  }
+
+  // List area
+  int listY = 32;
+  int listH = gH - 76;  // leave room for bottom buttons
+  int itemH = 20;
+  int maxItems = listH / itemH;
+  int totalFiltered = archiveFilteredCount();
+
+  if (!archive_loaded || archive_list.size() == 0) {
+    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_setTextSize(2);
+    gfx_setCursor(20, gH / 2 - 20);
+    gfx_print("No archive data cached.");
+    gfx_setTextSize(1);
+    gfx_setCursor(20, gH / 2 + 10);
+    gfx_print("Use the web interface Archive tab");
+    gfx_setCursor(20, gH / 2 + 22);
+    gfx_print("to fetch the index first.");
+  } else {
+    gfx_setTextSize(1);
+    for (int row = 0; row < maxItems && (archive_scroll + row) < totalFiltered; row++) {
+      int realIdx = archiveFilteredIndex(archive_scroll + row);
+      if (realIdx < 0) break;
+
+      int y = listY + row * itemH;
+      bool selected = (realIdx == archive_selected);
+
+      if (selected) {
+        gfx_fillRect(0, y, gW - ALPHA_BAR_W, itemH, 0x1082);  // dark blue highlight
+      }
+
+      // Game name
+      gfx_setTextColor(selected ? TFT_YELLOW : TFT_WHITE, selected ? 0x1082 : TFT_BLACK);
+      gfx_setCursor(4, y + 3);
+      String displayName = archive_list[realIdx].name;
+      // Truncate if too long
+      int maxChars = (gW - ALPHA_BAR_W - 8) / 6;  // 6px per char at textSize 1
+      if ((int)displayName.length() > maxChars) {
+        displayName = displayName.substring(0, maxChars - 2) + "..";
+      }
+      gfx_print(displayName);
+
+      // Year/publisher on right (if room)
+      if (archive_list[realIdx].year.length() > 0) {
+        String meta = archive_list[realIdx].year;
+        gfx_setTextColor(0x7BEF, selected ? 0x1082 : TFT_BLACK);
+        int metaX = gW - ALPHA_BAR_W - (meta.length() * 6) - 4;
+        if (metaX > (int)(displayName.length() * 6 + 10)) {
+          gfx_setCursor(metaX, y + 3);
+          gfx_print(meta);
+        }
+      }
+    }
+  }
+
+  // A-Z bar on right edge (same style as game list)
+  if (archive_loaded && archive_list.size() > 0) {
+    int barY = listY;
+    int barH = listH;
+    int letterH = barH / 27;  // 26 letters + ALL
+    if (letterH < 8) letterH = 8;
+
+    // "ALL" at top
+    bool allActive = (archive_filter_letter == 0);
+    gfx_fillRect(ALPHA_BAR_X, barY, ALPHA_BAR_W, letterH, allActive ? WB_ORANGE : 0x2104);
+    gfx_setTextColor(allActive ? TFT_BLACK : TFT_WHITE, allActive ? WB_ORANGE : 0x2104);
+    gfx_setTextSize(1);
+    gfx_setCursor(ALPHA_BAR_X + 2, barY + (letterH - 8) / 2);
+    gfx_print("*");
+
+    for (int i = 0; i < 26 && barY + (i + 1) * letterH < barY + barH; i++) {
+      char c = 'A' + i;
+      int y = barY + (i + 1) * letterH;
+      bool active = (archive_filter_letter == c);
+      gfx_fillRect(ALPHA_BAR_X, y, ALPHA_BAR_W, letterH, active ? WB_ORANGE : 0x2104);
+      gfx_setTextColor(active ? TFT_BLACK : TFT_WHITE, active ? WB_ORANGE : 0x2104);
+      gfx_setCursor(ALPHA_BAR_X + 5, y + (letterH - 8) / 2);
+      char buf[2] = {c, 0};
+      gfx_print(buf);
+    }
+  }
+
+  // Bottom buttons: BACK, FETCH, DOWNLOAD
+  int btnW = 148, btnH = 36, btnY = gH - 42, gap = 8, marginX = 10;
+  drawThemedButton(marginX, btnY, btnW, btnH, "BTN_BACK", "BACK", TFT_CYAN);
+
+  if (wifi_sta_connected) {
+    drawThemedButton(marginX + btnW + gap, btnY, btnW, btnH, "BTN_FETCH", "FETCH INDEX", WB_ORANGE);
+    if (archive_selected >= 0) {
+      drawThemedButton(marginX + 2 * (btnW + gap), btnY, btnW, btnH, "BTN_DOWNLOAD", "DOWNLOAD", TFT_GREEN);
+    }
   }
 
   gfx_flush();
+}
+
+// Fetch archive index from amiga500archive.com (uses HTTPS, may take a while)
+void archiveFetchIndex() {
+  if (!wifi_sta_connected) return;
+
+  archive_download_status = "Fetching index...";
+  drawArchiveScreen();
+
+  // Call the same handler as the web API but directly
+  WiFiClientSecure httpsClient;
+  httpsClient.setInsecure();
+  httpsClient.setTimeout(15000);
+
+  // Fetch the main A-Z pages
+  SD_MMC.mkdir("/CACHE");
+  File cacheFile = SD_MMC.open("/CACHE/archive_index.txt", "w");
+  if (!cacheFile) {
+    archive_download_status = "Error: can't write cache";
+    drawArchiveScreen();
+    return;
+  }
+
+  int totalGames = 0;
+  const char* ARCHIVE_HOST_TS = "amiga500archive.com";
+
+  // Fetch letter pages A-Z
+  for (char letter = 'A'; letter <= 'Z'; letter++) {
+    archive_download_status = String("Fetching ") + letter + "...";
+    drawArchiveScreen();
+
+    if (!httpsClient.connect(ARCHIVE_HOST_TS, 443)) {
+      Serial.println("Archive: can't connect for letter " + String(letter));
+      continue;
+    }
+
+    String path = "/search?q=" + String(letter) + "&type=starts_with";
+    httpsClient.println("GET " + path + " HTTP/1.1");
+    httpsClient.println("Host: " + String(ARCHIVE_HOST_TS));
+    httpsClient.println("Connection: close");
+    httpsClient.println("User-Agent: Gotek-Touchscreen/1.0");
+    httpsClient.println();
+
+    // Wait for response
+    unsigned long timeout = millis();
+    while (!httpsClient.available() && millis() - timeout < 10000) { delay(50); }
+
+    // Skip headers
+    while (httpsClient.available()) {
+      String line = httpsClient.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) break;
+    }
+
+    // Read body and parse game links
+    String body = "";
+    timeout = millis();
+    while ((httpsClient.connected() || httpsClient.available()) && millis() - timeout < 15000) {
+      while (httpsClient.available()) {
+        body += (char)httpsClient.read();
+        timeout = millis();
+      }
+      delay(1);
+    }
+    httpsClient.stop();
+
+    // Parse: look for href="/game/slug" patterns
+    int searchPos = 0;
+    while (true) {
+      int linkIdx = body.indexOf("href=\"/game/", searchPos);
+      if (linkIdx < 0) break;
+      int slugStart = linkIdx + 12;
+      int slugEnd = body.indexOf("\"", slugStart);
+      if (slugEnd < 0) break;
+      String slug = body.substring(slugStart, slugEnd);
+
+      // Try to find the game title nearby (usually in a link or heading after)
+      String gameName = slug;
+      gameName.replace("-", " ");
+      // Capitalize first letters
+      bool capNext = true;
+      for (int i = 0; i < (int)gameName.length(); i++) {
+        if (capNext && gameName.charAt(i) >= 'a' && gameName.charAt(i) <= 'z') {
+          gameName.setCharAt(i, gameName.charAt(i) - 32);
+        }
+        capNext = (gameName.charAt(i) == ' ');
+      }
+
+      // Write to cache: name|slug|year|publisher
+      cacheFile.println(gameName + "|" + slug + "||");
+      totalGames++;
+
+      searchPos = slugEnd + 1;
+    }
+
+    delay(100);  // be nice to the server
+  }
+
+  cacheFile.close();
+  Serial.println("Archive: fetched " + String(totalGames) + " games");
+
+  // Reload archive index
+  loadArchiveIndex();
+  archive_scroll = 0;
+  archive_filter_letter = 0;
+  archive_download_status = "Fetched " + String(totalGames) + " games!";
+  drawArchiveScreen();
+}
+
+// Download selected archive game to SD
+void archiveDownloadSelected() {
+  if (archive_selected < 0 || archive_selected >= (int)archive_list.size()) return;
+  if (!wifi_sta_connected) return;
+
+  String gameSlug = archive_list[archive_selected].slug;
+  String gameName = archive_list[archive_selected].name;
+
+  archive_download_status = "Downloading " + gameName + "...";
+  drawArchiveScreen();
+
+  WiFiClientSecure httpsClient;
+  httpsClient.setInsecure();
+  httpsClient.setTimeout(15000);
+
+  const char* ARCHIVE_HOST_DL = "amiga500archive.com";
+
+  // Step 1: fetch game page to find download link
+  if (!httpsClient.connect(ARCHIVE_HOST_DL, 443)) {
+    archive_download_status = "Error: can't connect";
+    drawArchiveScreen();
+    return;
+  }
+
+  httpsClient.println("GET /game/" + gameSlug + " HTTP/1.1");
+  httpsClient.println("Host: " + String(ARCHIVE_HOST_DL));
+  httpsClient.println("Connection: close");
+  httpsClient.println("User-Agent: Gotek-Touchscreen/1.0");
+  httpsClient.println();
+
+  unsigned long timeout = millis();
+  while (!httpsClient.available() && millis() - timeout < 10000) { delay(50); }
+
+  // Skip headers
+  while (httpsClient.available()) {
+    String line = httpsClient.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) break;
+  }
+
+  // Read body
+  String body = "";
+  timeout = millis();
+  while ((httpsClient.connected() || httpsClient.available()) && millis() - timeout < 15000) {
+    while (httpsClient.available()) {
+      body += (char)httpsClient.read();
+      timeout = millis();
+    }
+    delay(1);
+  }
+  httpsClient.stop();
+
+  // Find .adf download link
+  String downloadUrl = "";
+  String filename = gameSlug + ".adf";
+  int adfIdx = body.indexOf(".adf");
+  if (adfIdx < 0) adfIdx = body.indexOf(".ADF");
+  if (adfIdx >= 0) {
+    // Find the href= before this
+    int hrefStart = body.lastIndexOf("href=\"", adfIdx);
+    if (hrefStart >= 0) {
+      hrefStart += 6;
+      int hrefEnd = body.indexOf("\"", hrefStart);
+      if (hrefEnd > hrefStart) {
+        downloadUrl = body.substring(hrefStart, hrefEnd);
+        // Extract filename
+        int fnSlash = downloadUrl.lastIndexOf('/');
+        if (fnSlash >= 0) filename = downloadUrl.substring(fnSlash + 1);
+      }
+    }
+  }
+
+  if (downloadUrl.length() == 0) {
+    archive_download_status = "Error: no ADF link found";
+    drawArchiveScreen();
+    return;
+  }
+
+  // Step 2: Download the ADF file
+  archive_download_status = "Downloading " + filename + "...";
+  drawArchiveScreen();
+
+  // Parse download URL
+  String dlHost = ARCHIVE_HOST_DL;
+  String dlPath = downloadUrl;
+  int dlPort = 443;
+
+  if (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://")) {
+    // Full URL — parse host/path
+    int protoEnd = downloadUrl.indexOf("://") + 3;
+    int pathStart = downloadUrl.indexOf("/", protoEnd);
+    if (pathStart > 0) {
+      dlHost = downloadUrl.substring(protoEnd, pathStart);
+      dlPath = downloadUrl.substring(pathStart);
+    }
+  }
+
+  WiFiClientSecure dlClient;
+  dlClient.setInsecure();
+  if (!dlClient.connect(dlHost.c_str(), dlPort)) {
+    archive_download_status = "Error: download connect failed";
+    drawArchiveScreen();
+    return;
+  }
+
+  dlClient.println("GET " + dlPath + " HTTP/1.1");
+  dlClient.println("Host: " + dlHost);
+  dlClient.println("Connection: close");
+  dlClient.println("User-Agent: Gotek-Touchscreen/1.0");
+  dlClient.println();
+
+  timeout = millis();
+  while (!dlClient.available() && millis() - timeout < 15000) { delay(50); }
+
+  // Skip headers
+  while (dlClient.available()) {
+    String line = dlClient.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) break;
+  }
+
+  // Save to SD
+  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
+  String gameDir = modeDir + "/" + gameName;
+  SD_MMC.mkdir(gameDir.c_str());
+  String localPath = gameDir + "/" + filename;
+
+  File outFile = SD_MMC.open(localPath.c_str(), "w");
+  if (!outFile) {
+    dlClient.stop();
+    archive_download_status = "Error: can't create file";
+    drawArchiveScreen();
+    return;
+  }
+
+  size_t totalBytes = 0;
+  uint8_t buf[4096];
+  timeout = millis();
+  while ((dlClient.connected() || dlClient.available()) && millis() - timeout < 30000) {
+    size_t avail = dlClient.available();
+    if (avail == 0) { delay(5); continue; }
+    size_t toRead = (avail > sizeof(buf)) ? sizeof(buf) : avail;
+    size_t bytesRead = dlClient.read(buf, toRead);
+    if (bytesRead > 0) {
+      outFile.write(buf, bytesRead);
+      totalBytes += bytesRead;
+      timeout = millis();
+    }
+  }
+
+  outFile.close();
+  dlClient.stop();
+
+  if (totalBytes == 0) {
+    SD_MMC.remove(localPath.c_str());
+    archive_download_status = "Error: 0 bytes received";
+    drawArchiveScreen();
+    return;
+  }
+
+  // Rescan game list
+  file_list = listImages();
+  buildDisplayNames(file_list);
+  sortByDisplay();
+  buildGameList();
+
+  archive_download_status = gameName + " (" + String(totalBytes / 1024) + " KB) saved!";
+  drawArchiveScreen();
+  Serial.println("Archive: downloaded " + localPath + " (" + String(totalBytes) + " bytes)");
 }
 
 // List layout constants (no header bar — full screen list)
@@ -2363,8 +2868,7 @@ int items_per_page() {
 // ============================================================================
 // ALPHABET BAR — A-Z slider on right edge of list screen
 // ============================================================================
-#define ALPHA_BAR_W  16       // width of the alphabet strip
-#define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
+// ALPHA_BAR_W and ALPHA_BAR_X are defined earlier (before archive screen)
 
 // Active letters in the alphabet bar (only letters that have games)
 char active_letters[26];    // letters with games (e.g. "ABCDFGKLMPRST")
@@ -3466,6 +3970,44 @@ void loop() {
           }
         }
       }
+      // Archive screen: drag-scrolling
+      else if (touch_start_screen == SCR_ARCHIVE && px < ALPHA_BAR_X) {
+        if (!drag_scrolling && touch_max_dy > DRAG_THRESHOLD) {
+          drag_scrolling = true;
+          drag_last_y = py;
+          drag_scroll_accum = 0;
+        }
+        if (drag_scrolling) {
+          int16_t delta = (int16_t)drag_last_y - (int16_t)py;
+          drag_scroll_accum += delta;
+          drag_last_y = py;
+          int archItemH = 20;
+          bool scrollChanged = false;
+          while (abs(drag_scroll_accum) >= archItemH) {
+            if (drag_scroll_accum > 0) {
+              archive_scroll++;
+              drag_scroll_accum -= archItemH;
+            } else {
+              archive_scroll--;
+              drag_scroll_accum += archItemH;
+            }
+            scrollChanged = true;
+          }
+          if (scrollChanged) {
+            int totalFiltered = archiveFilteredCount();
+            int archMaxItems = (gH - 76 - 32) / archItemH;
+            int maxOff = totalFiltered - archMaxItems;
+            if (maxOff < 0) maxOff = 0;
+            if (archive_scroll > maxOff) archive_scroll = maxOff;
+            if (archive_scroll < 0) archive_scroll = 0;
+            static unsigned long lastArchDragRedraw = 0;
+            if (millis() - lastArchDragRedraw > 40) {
+              drawArchiveScreen();
+              lastArchDragRedraw = millis();
+            }
+          }
+        }
+      }
     }
   } else if (touch_active) {
     // Touch released — but might be a bounce (brief "no touch" glitch).
@@ -3506,9 +4048,13 @@ void loop() {
                           touch_start_x < ALPHA_BAR_X &&
                           touch_start_y >= LIST_START_Y &&
                           touch_start_y < LIST_BOTTOM);
+    bool wasInArchiveList = (touch_start_screen == SCR_ARCHIVE &&
+                             touch_start_x < ALPHA_BAR_X &&
+                             touch_start_y >= 32 &&
+                             touch_start_y < gH - 76 + 32);
     bool hadAnyMovement = (touch_max_dy > TAP_MAX_MOVE || touch_max_dx > TAP_MAX_MOVE);
 
-    if (drag_scrolling || (wasInListArea && hadAnyMovement)) {
+    if (drag_scrolling || ((wasInListArea || wasInArchiveList) && hadAnyMovement)) {
       // Was scrolling or finger moved during touch → never fire tap
       // Apply kinetic momentum based on final dy
       if (abs(dy) > 10) {
@@ -3759,30 +4305,105 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
-    // Uniform buttons: 148px wide, gap=8, margin=10
-    // BACK: 10..158, THEME: 166..314, ADF/DSK: 322..470
-    if (px >= 10 && px <= 158 && py >= gH - 42) {
-      current_screen = SCR_SELECTION;
-      drawList();
+    // 4 buttons: BACK, THEME, ADF/DSK, ARCHIVE — dynamic width
+    {
+      int ibtnW = (gW - 20 - 3 * 8) / 4;
+      int igap = 8, imx = 10, ibtnY = gH - 42;
+
+      if (hitBtn(px, py, imx, ibtnY, ibtnW, 36)) {
+        current_screen = SCR_SELECTION;
+        drawList();
+        return;
+      }
+      if (hitBtn(px, py, imx + (ibtnW + igap), ibtnY, ibtnW, 36)) {
+        cycleTheme();
+        drawInfoScreen();
+        return;
+      }
+      if (hitBtn(px, py, imx + 2 * (ibtnW + igap), ibtnY, ibtnW, 36)) {
+        showBusyIndicator("SCANNING...");
+        g_mode = (g_mode == MODE_ADF) ? MODE_DSK : MODE_ADF;
+        file_list = listImages();
+        buildDisplayNames(file_list);
+        sortByDisplay();
+        buildGameList();
+        selected_index = 0;
+        game_selected = 0;
+        scroll_offset = 0;
+        hideBusyIndicator();
+        drawInfoScreen();
+        return;
+      }
+      if (hitBtn(px, py, imx + 3 * (ibtnW + igap), ibtnY, ibtnW, 36)) {
+        // ARCHIVE button
+        if (!archive_loaded) loadArchiveIndex();
+        archive_scroll = 0;
+        archive_download_status = "";
+        current_screen = SCR_ARCHIVE;
+        drawArchiveScreen();
+        return;
+      }
+    }
+  }
+
+  // ══════════════════════════════════════
+  // ARCHIVE SCREEN
+  // ══════════════════════════════════════
+  else if (current_screen == SCR_ARCHIVE) {
+    int listY = 32;
+    int listH = gH - 76;
+    int itemH = 20;
+    int maxItems = listH / itemH;
+    int totalFiltered = archiveFilteredCount();
+
+    // A-Z bar tap (right edge)
+    if (px >= ALPHA_BAR_X && archive_loaded && archive_list.size() > 0) {
+      int barY = listY;
+      int letterH = listH / 27;
+      if (letterH < 8) letterH = 8;
+
+      int tapIndex = (py - barY) / letterH;
+      if (tapIndex == 0) {
+        // "ALL" tap
+        archive_filter_letter = 0;
+      } else if (tapIndex >= 1 && tapIndex <= 26) {
+        archive_filter_letter = 'A' + (tapIndex - 1);
+      }
+      archive_scroll = 0;
+      archive_selected = -1;
+      drawArchiveScreen();
       return;
     }
-    if (px >= 166 && px <= 314 && py >= gH - 42) {
-      cycleTheme();
+
+    // List item tap
+    if (py >= listY && py < listY + listH && px < ALPHA_BAR_X) {
+      int row = (py - listY) / itemH;
+      int idx = archive_scroll + row;
+      if (idx < totalFiltered) {
+        archive_selected = archiveFilteredIndex(idx);
+        drawArchiveScreen();
+      }
+      return;
+    }
+
+    // Bottom buttons: BACK, FETCH, DOWNLOAD (same layout as drawArchiveScreen)
+    int abtnW = 148, abtnH = 36, abtnY = gH - 42, agap = 8, amx = 10;
+
+    // BACK
+    if (hitBtn(px, py, amx, abtnY, abtnW, abtnH)) {
+      current_screen = SCR_INFO;
       drawInfoScreen();
       return;
     }
-    if (px >= 322 && px <= 470 && py >= gH - 42) {
-      showBusyIndicator("SCANNING...");
-      g_mode = (g_mode == MODE_ADF) ? MODE_DSK : MODE_ADF;
-      file_list = listImages();
-      buildDisplayNames(file_list);
-      sortByDisplay();
-      buildGameList();
-      selected_index = 0;
-      game_selected = 0;
-      scroll_offset = 0;
-      hideBusyIndicator();
-      drawInfoScreen();
+    // FETCH INDEX
+    if (wifi_sta_connected && hitBtn(px, py, amx + abtnW + agap, abtnY, abtnW, abtnH)) {
+      archiveFetchIndex();
+      return;
+    }
+    // DOWNLOAD
+    if (wifi_sta_connected && archive_selected >= 0 &&
+        hitBtn(px, py, amx + 2 * (abtnW + agap), abtnY, abtnW, abtnH)) {
+      archiveDownloadSelected();
       return;
     }
   }
