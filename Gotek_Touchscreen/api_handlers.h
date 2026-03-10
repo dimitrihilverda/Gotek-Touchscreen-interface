@@ -1443,9 +1443,11 @@ void handleDAVLoad(WiFiClient &client, const String &body) {
 
   size_t loaded = loadFileFromDAV(remotePath, displayName);
   if (loaded > 0) {
-    // Mark as loaded (use -2 to indicate DAV-loaded, not from file_list)
+    // Mark as loaded from WebDAV (not from SD file_list)
     loaded_disk_index = -2;
-    current_screen = SCR_DETAILS;
+    // Don't change current_screen — the web UI manages its own state
+    // and setting SCR_DETAILS would cause the touchscreen to show SD
+    // game details and remount an SD game on top of the DAV stream.
 
     sendJSON(client, 200,
       "{\"status\":\"ok\",\"file\":\"" + jsonEscape(remotePath) +
