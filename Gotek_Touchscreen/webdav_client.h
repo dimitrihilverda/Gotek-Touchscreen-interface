@@ -510,13 +510,19 @@ private:
   }
 
   // Find a tag case-insensitively (handles D:tag, d:tag, tag variants)
-  int _findTagCI(const String &xml, const String &tagName, int startPos) {
-    // Try common namespace prefixes: D:, d:, no prefix
-    String variants[] = { "D:" + tagName, "d:" + tagName, tagName };
+  // For closing tags, pass tagName without the slash (isClose=true)
+  int _findTagCI(const String &xml, const String &tagName, int startPos, bool isClose = false) {
+    String actualTag = tagName;
+    // Legacy support: strip leading slash, treat as close tag
+    if (actualTag.startsWith("/")) {
+      actualTag = actualTag.substring(1);
+      isClose = true;
+    }
+    String prefix = isClose ? "</" : "<";
+    String variants[] = { prefix + "D:" + actualTag, prefix + "d:" + actualTag, prefix + actualTag };
     int earliest = -1;
     for (int v = 0; v < 3; v++) {
-      String search = "<" + variants[v];
-      int found = xml.indexOf(search, startPos);
+      int found = xml.indexOf(variants[v], startPos);
       if (found >= 0 && (earliest < 0 || found < earliest)) {
         earliest = found;
       }
