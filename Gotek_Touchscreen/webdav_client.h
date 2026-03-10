@@ -156,8 +156,12 @@ public:
       return false;
     }
 
-    // Log first part of XML for debugging
-    _log("DAV: XML[0..500]: " + response.substring(0, 500));
+    // Log XML size and first/last part for debugging
+    _log("DAV: body length=" + String(response.length()) + " bytes");
+    _log("DAV: XML[0..400]: " + response.substring(0, 400));
+    if (response.length() > 400) {
+      _log("DAV: XML[last 200]: " + response.substring(response.length() - 200));
+    }
 
     // Parse the multistatus XML response
     _parsePropfindResponse(response, fullPath, entries);
@@ -380,6 +384,7 @@ private:
     if (chunked) {
       // Chunked transfer encoding: each chunk starts with hex size + \r\n,
       // followed by data, followed by \r\n. Final chunk is "0\r\n\r\n".
+      int chunkCount = 0;
       while (tcp->connected() && millis() - timeout < 15000) {
         if (!tcp->available()) { delay(1); continue; }
         // Read chunk size line
@@ -388,6 +393,8 @@ private:
         if (sizeLine.length() == 0) { timeout = millis(); continue; }
         long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
         if (chunkSize <= 0) break;  // Final chunk
+        chunkCount++;
+        _log("DAV: chunk #" + String(chunkCount) + " size=" + String(chunkSize));
         // Read chunk data
         long bytesRead = 0;
         while (bytesRead < chunkSize && tcp->connected() && millis() - timeout < 15000) {
