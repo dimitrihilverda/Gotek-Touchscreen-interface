@@ -1151,6 +1151,68 @@ void handleArchiveSaveIndex(WiFiClient &client, const String &body) {
   sendJSON(client, 200, "{\"status\":\"ok\",\"saved\":" + String(count) + "}");
 }
 
+// Debug: return raw HTML from an archive page (first 4KB)
+// GET /api/archive/debug?page=a
+void handleArchiveDebug(WiFiClient &client, const String &page) {
+  if (!wifi_sta_connected) {
+    sendJSON(client, 503, "{\"error\":\"No internet\"}");
+    return;
+  }
+
+  WiFiClientSecure *httpsClient = new WiFiClientSecure();
+  if (!httpsClient) { sendJSON(client, 500, "{\"error\":\"OOM\"}"); return; }
+  httpsClient->setInsecure();
+  httpsClient->setTimeout(10000);
+
+  String pagePath = "/games/" + (page.length() > 0 ? page : String("a"));
+  Serial.println("Archive debug: " + pagePath);
+
+  if (!httpsClient->connect(ARCHIVE_HOST, 443)) {
+    delete httpsClient;
+    sendJSON(client, 502, "{\"error\":\"Cannot connect\"}");
+    return;
+  }
+
+  httpsClient->println("GET " + pagePath + " HTTP/1.1");
+  httpsClient->println("Host: " + String(ARCHIVE_HOST));
+  httpsClient->println("Connection: close");
+  httpsClient->println("User-Agent: Mozilla/5.0");
+  httpsClient->println();
+
+  unsigned long timeout = millis();
+  while (!httpsClient->available() && millis() - timeout < 8000) {
+    delay(50);
+    yield();
+  }
+
+  // Read ALL headers and include them in output
+  String headers = "";
+  while (httpsClient->available()) {
+    String line = httpsClient->readStringUntil('\n');
+    headers += line + "\n";
+    if (line == "\r" || line.length() == 0) break;
+    yield();
+  }
+
+  // Read first 4KB of body
+  String body = "";
+  body.reserve(4096);
+  int bytesRead = 0;
+  while ((httpsClient->available() || httpsClient->connected()) && bytesRead < 4000) {
+    yield();
+    if (!httpsClient->available()) { delay(10); continue; }
+    char c = httpsClient->read();
+    body += c;
+    bytesRead++;
+  }
+
+  httpsClient->stop();
+  delete httpsClient;
+
+  String json = "{\"headers\":\"" + jsonEscape(headers) + "\",\"body_length\":" + String(bytesRead) + ",\"body\":\"" + jsonEscape(body) + "\"}";
+  sendJSON(client, 200, json);
+}
+
 // Proxy a single archive page: GET /api/archive/proxy?page=a
 // Fetches one page from amiga500archive.com, parses game links,
 // returns JSON array. Browser drives the A-Z iteration.

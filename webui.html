@@ -274,6 +274,10 @@ textarea{min-height:80px;resize:vertical}
     <div id="archive-alpha" style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:2px"></div>
     <div class="game-list" id="archive-list"></div>
     <div id="archive-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading archive index...</div>
+    <div style="margin-top:12px;padding:8px;background:#eee;border:1px solid #ccc;border-radius:2px">
+      <button class="btn btn-sm" onclick="debugArchive()">Debug: test proxy</button>
+      <pre id="archive-debug" style="max-height:300px;overflow:auto;font-size:11px;margin-top:8px;display:none;white-space:pre-wrap;word-break:break-all"></pre>
+    </div>
   </div>
 </div>
 
@@ -1015,6 +1019,19 @@ async function fetchArchiveIndex() {
   buildArchiveAlpha(games);
   renderArchiveList(games);
   toast('Archive index loaded: ' + games.length + ' games');
+}
+
+async function debugArchive() {
+  const pre = document.getElementById('archive-debug');
+  pre.style.display = 'block';
+  pre.textContent = 'Fetching debug data...';
+  try {
+    const resp = await fetch(API + '/api/archive/debug?page=a');
+    const data = await resp.json();
+    pre.textContent = 'HEADERS:\n' + data.headers + '\n\nBODY (' + data.body_length + ' bytes):\n' + data.body;
+  } catch (e) {
+    pre.textContent = 'Error: ' + e.message;
+  }
 }
 
 async function searchArchive() {
