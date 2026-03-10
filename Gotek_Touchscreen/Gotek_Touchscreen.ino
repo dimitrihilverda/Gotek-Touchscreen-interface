@@ -3293,17 +3293,6 @@ void loop() {
       touch_start_time = millis();
     } else {
       // Touch HELD — check for live drag-scrolling
-      // DEBUG: show touch tracking on screen (top-left corner)
-      if (current_screen == SCR_SELECTION) {
-        int16_t moveDy = (int16_t)py - (int16_t)touch_start_y;
-        gfx_fillRect(0, 0, 200, 10, TFT_BLACK);
-        gfx_setTextSize(1);
-        gfx_setTextColor(TFT_RED, TFT_BLACK);
-        gfx_setCursor(2, 1);
-        gfx_print("dy:" + String(moveDy) + " drag:" + String(drag_scrolling) +
-                   " y:" + String(py));
-        gfx_flush();
-      }
       touch_last_x = px;
       touch_last_y = py;
 
@@ -3337,6 +3326,7 @@ void loop() {
           drag_last_y = py;
 
           // Scroll one item per LIST_ITEM_H pixels dragged
+          bool scrollChanged = false;
           while (abs(drag_scroll_accum) >= LIST_ITEM_H) {
             if (drag_scroll_accum > 0) {
               scroll_offset++;
@@ -3345,11 +3335,19 @@ void loop() {
               scroll_offset--;
               drag_scroll_accum += LIST_ITEM_H;
             }
+            scrollChanged = true;
+          }
+          if (scrollChanged) {
             int maxOff = (int)game_list.size() - items_per_page();
             if (maxOff < 0) maxOff = 0;
             if (scroll_offset > maxOff) scroll_offset = maxOff;
             if (scroll_offset < 0) scroll_offset = 0;
-            drawList();
+            // Throttle redraws: max once per 60ms to reduce lag
+            static unsigned long lastDragRedraw = 0;
+            if (millis() - lastDragRedraw > 60) {
+              drawList();
+              lastDragRedraw = millis();
+            }
           }
         }
       }
@@ -3369,18 +3367,38 @@ void loop() {
     int16_t dy = (int16_t)touch_last_y - (int16_t)touch_start_y;
     unsigned long touchDuration = now - touch_start_time;
 
-    if (drag_scrolling) {
-      // Was drag-scrolling → apply kinetic momentum on release
-      if (touchDuration < 400 && abs(dy) > 40) {
-        int momentum = abs(dy) / 60;
-        if (momentum > 3) momentum = 3;
+    // Determine if this was a vertical movement in the list area
+    bool wasInListArea = (current_screen == SCR_SELECTION &&
+                          touch_start_x < ALPHA_BAR_X &&
+                          touch_start_y >= LIST_START_Y &&
+                          touch_start_y < LIST_BOTTOM);
+    bool hadVerticalMove = (abs(dy) > TAP_MAX_MOVE);
+
+    if (drag_scrolling || (wasInListArea && hadVerticalMove)) {
+      // Was scrolling (or a fast flick that didn't trigger drag mode)
+      // → apply kinetic momentum, never open detail page
+      if (abs(dy) > 20) {
+        int momentum = abs(dy) / 40;
+        if (momentum > 5) momentum = 5;
         if (momentum < 1) momentum = 1;
         kinetic_velocity = (dy > 0) ? -momentum : momentum;
         kinetic_last = millis();
+
+        // If drag_scrolling didn't activate (fast flick), do an immediate scroll too
+        if (!drag_scrolling) {
+          int scrollItems = abs(dy) / LIST_ITEM_H;
+          if (scrollItems < 1) scrollItems = 1;
+          if (dy > 0) scroll_offset -= scrollItems;
+          else        scroll_offset += scrollItems;
+          int maxOff = (int)game_list.size() - items_per_page();
+          if (maxOff < 0) maxOff = 0;
+          if (scroll_offset > maxOff) scroll_offset = maxOff;
+          if (scroll_offset < 0) scroll_offset = 0;
+          drawList();
+        }
       }
-      // Don't fire tap or swipe — drag already handled
     } else {
-      // Was NOT drag-scrolling — check for tap or horizontal swipe
+      // No vertical scroll movement — check for tap or horizontal swipe
       bool isTap = (abs(dx) <= TAP_MAX_MOVE && abs(dy) <= TAP_MAX_MOVE) &&
                    (touchDuration < TAP_MAX_DURATION);
       bool isHSwipe = (abs(dx) > SWIPE_THRESHOLD && abs(dx) > abs(dy));
