@@ -2206,6 +2206,7 @@ void drawInfoScreen() {
   }
   // Toggle button at right edge
   drawToggle(gW - 52, y, cfg_wifi_enabled);
+  gfx_setTextSize(2);  // restore after drawToggle sets textSize(1)
   y += lineH;
 
   // --- Remote dongle / WiFi Client status + toggle ---
@@ -2224,6 +2225,7 @@ void drawInfoScreen() {
       gfx_print("Connecting...");
     }
     drawToggle(gW - 52, y, cfg_remote_enabled);
+    gfx_setTextSize(2);  // restore after drawToggle
     y += lineH;
 
     // Show what's loaded on the dongle
@@ -2256,6 +2258,7 @@ void drawInfoScreen() {
       gfx_print("Off");
     }
     drawToggle(gW - 52, y, cfg_wifi_client_enabled);
+    gfx_setTextSize(2);  // restore after drawToggle
   }
 
   // Bottom buttons: BACK + THEME + ADF/DSK — evenly spaced, uniform 148x36
