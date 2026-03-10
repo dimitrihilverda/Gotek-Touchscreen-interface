@@ -674,6 +674,29 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
+  // ── Archive API routes ──
+  if (req.path == "/api/archive/index" && req.method == "GET") {
+    handleArchiveIndex(client);
+    return;
+  }
+  if (req.path == "/api/archive/fetch" && req.method == "POST") {
+    handleArchiveFetch(client);
+    return;
+  }
+  if (req.path == "/api/archive/download" && req.method == "POST") {
+    String gameId = "";
+    // Parse 'id' from POST body
+    int idIdx = req.body.indexOf("id=");
+    if (idIdx >= 0) {
+      gameId = req.body.substring(idIdx + 3);
+      int ampIdx = gameId.indexOf("&");
+      if (ampIdx >= 0) gameId = gameId.substring(0, ampIdx);
+      gameId = urlDecode(gameId);
+    }
+    handleArchiveDownload(client, gameId);
+    return;
+  }
+
   // ── 404 ──
   sendJSON(client, 404, "{\"error\":\"Not found\"}");
 }
