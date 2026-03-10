@@ -3264,6 +3264,7 @@ int  drag_scroll_accum = 0;         // accumulated pixels during drag
 int  drag_last_y = 0;               // last Y during drag for delta calculation
 int16_t touch_max_dy = 0;           // max vertical distance from start during this touch
 int16_t touch_max_dx = 0;           // max horizontal distance from start during this touch
+uint8_t no_touch_count = 0;         // consecutive "no touch" reads (for bounce filtering)
 
 // Kinetic scroll state
 int kinetic_velocity = 0;           // items/tick remaining to scroll
@@ -3282,6 +3283,7 @@ void loop() {
   }
 
   if (haveTouch) {
+    no_touch_count = 0;  // Reset bounce counter — finger is on screen
     if (!touch_active) {
       // Touch DOWN — start tracking, cancel kinetic scroll
       touch_active = true;
@@ -3388,48 +3390,48 @@ void loop() {
       }
     }
   } else if (touch_active) {
-    // Touch might be released — but first check for bounce/glitch.
-    // Capacitive touch controllers can briefly report "no touch" during
-    // a continuous press. Re-read after a short delay to confirm.
-    delay(15);
-    uint16_t recheck_x, recheck_y;
-    if (touchRead(&recheck_x, &recheck_y)) {
-      // Still touching! It was just a bounce — update position and continue
-      touch_last_x = recheck_x;
-      touch_last_y = recheck_y;
-      int16_t curDy = abs((int16_t)recheck_y - (int16_t)touch_start_y);
-      int16_t curDx = abs((int16_t)recheck_x - (int16_t)touch_start_x);
-      if (curDy > touch_max_dy) touch_max_dy = curDy;
-      if (curDx > touch_max_dx) touch_max_dx = curDx;
-      return;  // Not a real release — keep touch_active true
-    }
+    // Touch released — but might be a bounce (brief "no touch" glitch).
+    // Instead of blocking with a delay, use a counter: require multiple
+    // consecutive "no touch" reads before accepting the release.
+    no_touch_count++;
 
-    // Confirmed: touch is really released
+    if (no_touch_count < 3) {
+      // Not enough consecutive "no touch" reads — might be a bounce
+      // Do a small delay and let the next loop() iteration check again
+      delay(3);
+      return;  // Keep touch_active true, check again next iteration
+    }
+    no_touch_count = 0;  // Reset for next touch
+
+    // Confirmed: touch is really released (3+ consecutive no-touch reads)
     touch_active = false;
     unsigned long now = millis();
 
-    // Debounce: ignore very quick phantom touches
-    if (now - last_touch_time < 200) {
-      delay(10);
+    // Debounce: ignore very quick phantom touches (< 30ms is noise)
+    unsigned long touchDuration = now - touch_start_time;
+    if (touchDuration < 30) {
+      last_touch_time = millis();
+      return;
+    }
+
+    // Also debounce rapid successive touches
+    if (now - last_touch_time < 100) {
+      last_touch_time = millis();
       return;
     }
 
     int16_t dx = (int16_t)touch_last_x - (int16_t)touch_start_x;
     int16_t dy = (int16_t)touch_last_y - (int16_t)touch_start_y;
-    unsigned long touchDuration = now - touch_start_time;
 
-    // Use the MAXIMUM movement seen during the entire touch, not just
-    // the final position. This catches fast flicks where the finger
-    // may have moved a lot but touch_last is close to touch_start
-    // because the loop was too fast or touch release snapped back.
+    // Use the MAXIMUM movement seen during the entire touch
     bool wasInListArea = (touch_start_screen == SCR_SELECTION &&
                           touch_start_x < ALPHA_BAR_X &&
                           touch_start_y >= LIST_START_Y &&
                           touch_start_y < LIST_BOTTOM);
-    bool hadAnyMovement = (touch_max_dy > TAP_MAX_MOVE);
+    bool hadAnyMovement = (touch_max_dy > TAP_MAX_MOVE || touch_max_dx > TAP_MAX_MOVE);
 
     if (drag_scrolling || (wasInListArea && hadAnyMovement)) {
-      // Was scrolling or finger moved during touch → never open detail page
+      // Was scrolling or finger moved during touch → never fire tap
       // Apply kinetic momentum based on final dy
       if (abs(dy) > 10) {
         int momentum = abs(dy) / 30;
@@ -3438,7 +3440,6 @@ void loop() {
         kinetic_velocity = (dy > 0) ? -momentum : momentum;
         kinetic_last = millis();
 
-        // If drag_scrolling didn't activate (fast flick), do an immediate scroll too
         if (!drag_scrolling) {
           int scrollItems = abs(dy) / LIST_ITEM_H;
           if (scrollItems < 1) scrollItems = 1;
@@ -3451,19 +3452,19 @@ void loop() {
           drawList();
         }
       }
-    } else if (wasInListArea && touchDuration >= TAP_MAX_DURATION) {
-      // Long press on list area — treat as intentional hold, not tap
-      // Do nothing (prevents accidental detail page open)
+    } else if (hadAnyMovement) {
+      // Finger moved significantly but NOT in list area → ignore
+      // This prevents accidental taps when sliding across buttons
     } else {
-      // Short touch with minimal movement — check for tap or horizontal swipe
+      // Minimal movement — check for tap or horizontal swipe
+      // Use touch_start position for tap (where finger first touched)
       bool isTap = (touch_max_dx <= TAP_MAX_MOVE && touch_max_dy <= TAP_MAX_MOVE) &&
-                   (touchDuration < TAP_MAX_DURATION);
+                   (touchDuration >= 30 && touchDuration < 500);
       bool isHSwipe = (abs(dx) > SWIPE_THRESHOLD && abs(dx) > abs(dy));
 
       if (isTap) {
         handleTap(touch_start_x, touch_start_y);
       } else if (isHSwipe) {
-        // Horizontal swipe (detail screen: prev/next game)
         handleSwipe(dx, dy, touch_start_x, touch_start_y);
       }
     }
