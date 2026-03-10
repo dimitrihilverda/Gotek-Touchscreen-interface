@@ -1253,6 +1253,7 @@ void handleArchiveDebug(WiFiClient &client, const String &page) {
 // Proxy a single archive page: GET /api/archive/proxy?page=a
 // Fetches one page from amiga500archive.com, parses game links,
 // returns JSON array. Browser drives the A-Z iteration.
+// page = page number (1-68) for /items.php?category=games&page=N
 void handleArchiveProxy(WiFiClient &client, const String &page) {
   if (page.length() == 0) {
     sendJSON(client, 400, "{\"error\":\"Missing page parameter\"}");
@@ -1271,7 +1272,8 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
   httpsClient->setInsecure();
   httpsClient->setTimeout(10000);
 
-  String pagePath = "/games/" + page;
+  // New URL: /items.php?category=games&page=N
+  String pagePath = "/items.php?category=games&page=" + page;
   Serial.println("Archive proxy: " + pagePath + " (heap: " + String(ESP.getFreeHeap()) + ")");
 
   if (!httpsClient->connect(ARCHIVE_HOST, 443)) {
@@ -1283,7 +1285,7 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
   httpsClient->println("GET " + pagePath + " HTTP/1.1");
   httpsClient->println("Host: " + String(ARCHIVE_HOST));
   httpsClient->println("Connection: close");
-  httpsClient->println("User-Agent: Gotek-Touchscreen/1.0");
+  httpsClient->println("User-Agent: Mozilla/5.0");
   httpsClient->println();
 
   unsigned long timeout = millis();
@@ -1292,7 +1294,7 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
     yield();
   }
 
-  // Skip headers
+  // Skip HTTP headers
   bool headersEnded = false;
   while (httpsClient->available()) {
     String line = httpsClient->readStringUntil('\n');
@@ -1307,53 +1309,75 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
     return;
   }
 
-  // Parse game links from body, stream into JSON response
+  // Parse HTML line by line looking for game entries.
+  // Pattern per game:
+  //   <div class="title">GAME NAME</div>
+  //   <a href="items.php?search=PUBLISHER">PUBLISHER</a>
+  //   <a href="dl.php?id=XXXXX" class="item-dllink">Download</a>
   String json = "{\"games\":[";
   bool first = true;
-  String buffer = "";
-  buffer.reserve(2048);
   int count = 0;
+  String curTitle = "";
+  String curPublisher = "";
+  String curId = "";
 
   while (httpsClient->available() || httpsClient->connected()) {
     yield();
     if (!httpsClient->available()) { delay(10); continue; }
 
-    char c = httpsClient->read();
-    buffer += c;
+    String line = httpsClient->readStringUntil('\n');
 
-    if (c == '\n' || buffer.length() > 1500) {
-      int searchFrom = 0;
-      while (true) {
-        int hrefIdx = buffer.indexOf("/game/", searchFrom);
-        if (hrefIdx < 0) break;
+    // Look for game title: <div class="title">NAME</div>
+    int titleIdx = line.indexOf("class=\"title\">");
+    if (titleIdx >= 0) {
+      int tStart = titleIdx + 14;  // length of 'class="title">'
+      int tEnd = line.indexOf("</div>", tStart);
+      if (tEnd > tStart) {
+        curTitle = line.substring(tStart, tEnd);
+        curTitle.trim();
+      }
+    }
 
-        int slugStart = hrefIdx + 6;
-        int slugEnd = buffer.indexOf("\"", slugStart);
-        if (slugEnd < 0) { searchFrom = slugStart; break; }
-
-        String slug = buffer.substring(slugStart, slugEnd);
-        if (slug.indexOf('/') >= 0 || slug.length() < 2) {
-          searchFrom = slugEnd;
-          continue;
+    // Look for publisher: <a href="items.php?search=PUB">PUB</a>
+    // Only grab first publisher per game (reset when we emit)
+    if (curPublisher.length() == 0) {
+      int pubIdx = line.indexOf("items.php?search=");
+      if (pubIdx >= 0) {
+        int pubTextStart = line.indexOf(">", pubIdx);
+        if (pubTextStart >= 0) {
+          pubTextStart++;
+          int pubTextEnd = line.indexOf("<", pubTextStart);
+          if (pubTextEnd > pubTextStart) {
+            curPublisher = line.substring(pubTextStart, pubTextEnd);
+            curPublisher.trim();
+          }
         }
+      }
+    }
 
-        int textStart = buffer.indexOf(">", slugEnd);
-        if (textStart < 0) { searchFrom = slugEnd; break; }
-        textStart++;
-        int textEnd = buffer.indexOf("<", textStart);
-        if (textEnd < 0) { searchFrom = slugEnd; break; }
+    // Look for download link: <a href="dl.php?id=XXXXX"
+    int dlIdx = line.indexOf("dl.php?id=");
+    if (dlIdx >= 0) {
+      int idStart = dlIdx + 10;  // length of 'dl.php?id='
+      int idEnd = line.indexOf("\"", idStart);
+      if (idEnd > idStart) {
+        curId = line.substring(idStart, idEnd);
+      }
 
-        String title = buffer.substring(textStart, textEnd);
-        title.trim();
-        if (title.length() == 0) { searchFrom = textEnd; continue; }
-
+      // We have a complete game entry — emit it
+      if (curTitle.length() > 0 && curId.length() > 0) {
         if (!first) json += ",";
         first = false;
-        json += "{\"name\":\"" + jsonEscape(title) + "\",\"id\":\"" + jsonEscape(slug) + "\"}";
+        json += "{\"name\":\"" + jsonEscape(curTitle) + "\"";
+        json += ",\"id\":\"" + jsonEscape(curId) + "\"";
+        if (curPublisher.length() > 0) json += ",\"pub\":\"" + jsonEscape(curPublisher) + "\"";
+        json += "}";
         count++;
-        searchFrom = textEnd;
       }
-      buffer = "";
+      // Reset for next game
+      curTitle = "";
+      curPublisher = "";
+      curId = "";
     }
   }
 
@@ -1362,7 +1386,7 @@ void handleArchiveProxy(WiFiClient &client, const String &page) {
 
   json += "],\"count\":" + String(count) + "}";
   sendJSON(client, 200, json);
-  Serial.println("Archive proxy: " + page + " -> " + String(count) + " games");
+  Serial.println("Archive proxy: page " + page + " -> " + String(count) + " games");
 }
 
 // Fetch archive index from amiga500archive.com (ESP32 fallback)
@@ -1504,214 +1528,126 @@ void handleArchiveFetch(WiFiClient &client) {
 }
 
 // Download a game from the archive by slug/id
-void handleArchiveDownload(WiFiClient &client, const String &gameId) {
+// Download a game from the archive.
+// POST body: id=IELEEKKGHE&name=1000+Miglia
+// Uses dl.php?id=XXXXX which returns a ZIP directly
+void handleArchiveDownload(WiFiClient &client, const String &body) {
+  String gameId = "";
+  String gameName = "";
+
+  // Parse id= and name= from POST body
+  int idIdx = body.indexOf("id=");
+  if (idIdx >= 0) {
+    int start = idIdx + 3;
+    int end = body.indexOf("&", start);
+    gameId = (end >= 0) ? body.substring(start, end) : body.substring(start);
+    gameId = urlDecode(gameId);
+  }
+  int nameIdx = body.indexOf("name=");
+  if (nameIdx >= 0) {
+    int start = nameIdx + 5;
+    int end = body.indexOf("&", start);
+    gameName = (end >= 0) ? body.substring(start, end) : body.substring(start);
+    gameName = urlDecode(gameName);
+  }
+
   if (gameId.length() == 0) {
     sendJSON(client, 400, "{\"error\":\"Missing game id\"}");
     return;
   }
+  if (gameName.length() == 0) gameName = gameId;
   if (!wifi_sta_connected) {
     sendJSON(client, 503, "{\"error\":\"No internet connection\"}");
     return;
   }
 
-  Serial.println("Archive download: " + gameId + " (heap: " + String(ESP.getFreeHeap()) + ")");
+  Serial.println("Archive download: " + gameName + " id=" + gameId + " (heap: " + String(ESP.getFreeHeap()) + ")");
 
-  // Allocate HTTPS client on heap (WiFiClientSecure is ~40KB on stack!)
-  WiFiClientSecure *httpsClient = new WiFiClientSecure();
-  if (!httpsClient) {
-    sendJSON(client, 500, "{\"error\":\"Out of memory\"}");
-    return;
-  }
-  httpsClient->setInsecure();
-  httpsClient->setTimeout(10000);
-
-  if (!httpsClient->connect(ARCHIVE_HOST, 443)) {
-    delete httpsClient;
-    sendJSON(client, 503, "{\"error\":\"Cannot connect to archive\"}");
-    return;
-  }
-
-  String gamePath = "/game/" + gameId;
-  httpsClient->println("GET " + gamePath + " HTTP/1.1");
-  httpsClient->println("Host: " + String(ARCHIVE_HOST));
-  httpsClient->println("Connection: close");
-  httpsClient->println("User-Agent: Gotek-Touchscreen/1.0");
-  httpsClient->println();
-
-  unsigned long timeout = millis();
-  while (!httpsClient->available() && millis() - timeout < 8000) {
-    delay(50);
-    yield();
-  }
-
-  // Skip headers
-  while (httpsClient->available()) {
-    String line = httpsClient->readStringUntil('\n');
-    if (line == "\r" || line.length() == 0) break;
-  }
-
-  // Read body line-by-line to find download link (don't buffer entire page!)
-  String downloadUrl = "";
-  String gameTitle = gameId;
-  String buffer = "";
-  buffer.reserve(1024);
-  bool foundTitle = false;
-
-  while (httpsClient->available() || httpsClient->connected()) {
-    yield();
-    if (!httpsClient->available()) { delay(10); continue; }
-
-    char c = httpsClient->read();
-    buffer += c;
-
-    if (c == '\n' || buffer.length() > 1000) {
-      // Look for game title in <h1>
-      if (!foundTitle) {
-        int h1Start = buffer.indexOf("<h1");
-        if (h1Start >= 0) {
-          int h1Content = buffer.indexOf(">", h1Start) + 1;
-          int h1End = buffer.indexOf("</h1>", h1Content);
-          if (h1End > h1Content) {
-            gameTitle = buffer.substring(h1Content, h1End);
-            gameTitle.trim();
-            // Strip HTML tags
-            while (gameTitle.indexOf('<') >= 0) {
-              int ts = gameTitle.indexOf('<');
-              int te = gameTitle.indexOf('>', ts);
-              if (te >= 0) gameTitle = gameTitle.substring(0, ts) + gameTitle.substring(te + 1);
-              else break;
-            }
-            gameTitle.trim();
-            foundTitle = true;
-          }
-        }
-      }
-
-      // Look for .adf download link
-      if (downloadUrl.length() == 0) {
-        int adfIdx = buffer.indexOf(".adf");
-        if (adfIdx < 0) adfIdx = buffer.indexOf(".ADF");
-        if (adfIdx >= 0) {
-          int hrefStart = buffer.lastIndexOf("href=\"", adfIdx);
-          if (hrefStart >= 0 && adfIdx - hrefStart < 300) {
-            hrefStart += 6;
-            int hrefClose = buffer.indexOf("\"", hrefStart);
-            if (hrefClose >= 0) {
-              downloadUrl = buffer.substring(hrefStart, hrefClose);
-            }
-          }
-        }
-        // Also try /download/ links
-        if (downloadUrl.length() == 0) {
-          int dlIdx = buffer.indexOf("/download/");
-          if (dlIdx >= 0) {
-            int dlEnd = buffer.indexOf("\"", dlIdx);
-            if (dlEnd >= 0) downloadUrl = buffer.substring(dlIdx, dlEnd);
-          }
-        }
-      }
-
-      buffer = "";
-      // Stop early if we found what we need
-      if (foundTitle && downloadUrl.length() > 0) break;
-    }
-  }
-  httpsClient->stop();
-  delete httpsClient;
-  httpsClient = nullptr;
-
-  if (downloadUrl.length() == 0) {
-    sendJSON(client, 404, "{\"error\":\"No download link found for this game\"}");
-    return;
-  }
-
-  // Make relative URLs absolute
-  if (downloadUrl.startsWith("/")) {
-    downloadUrl = "https://" + String(ARCHIVE_HOST) + downloadUrl;
-  }
-
-  Serial.println("Archive: downloading " + downloadUrl);
-
-  // Create game folder
-  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
-  String gameDir = modeDir + "/" + gameTitle;
-  if (!SD_MMC.exists(gameDir.c_str())) {
-    SD_MMC.mkdir(gameDir.c_str());
-  }
-
-  // Download the ADF file (allocate new HTTPS client on heap)
+  // Fetch dl.php?id=XXXXX — this returns a ZIP file directly
   WiFiClientSecure *dlClient = new WiFiClientSecure();
   if (!dlClient) {
-    sendJSON(client, 500, "{\"error\":\"Out of memory for download\"}");
+    sendJSON(client, 500, "{\"error\":\"Out of memory\"}");
     return;
   }
   dlClient->setInsecure();
   dlClient->setTimeout(30000);
 
-  // Parse URL for host/path
-  String dlHost = ARCHIVE_HOST;
-  String dlPath = downloadUrl;
-  if (downloadUrl.startsWith("https://")) {
-    dlPath = downloadUrl.substring(8);
-    int slashIdx = dlPath.indexOf('/');
-    if (slashIdx > 0) {
-      dlHost = dlPath.substring(0, slashIdx);
-      dlPath = dlPath.substring(slashIdx);
-    }
-  } else if (downloadUrl.startsWith("http://")) {
-    dlPath = downloadUrl.substring(7);
-    int slashIdx = dlPath.indexOf('/');
-    if (slashIdx > 0) {
-      dlHost = dlPath.substring(0, slashIdx);
-      dlPath = dlPath.substring(slashIdx);
-    }
-  }
-
-  if (!dlClient->connect(dlHost.c_str(), 443)) {
+  if (!dlClient->connect(ARCHIVE_HOST, 443)) {
     delete dlClient;
-    sendJSON(client, 503, "{\"error\":\"Cannot connect to download server\"}");
+    sendJSON(client, 503, "{\"error\":\"Cannot connect to archive\"}");
     return;
   }
 
+  String dlPath = "/dl.php?id=" + gameId;
   dlClient->println("GET " + dlPath + " HTTP/1.1");
-  dlClient->println("Host: " + dlHost);
+  dlClient->println("Host: " + String(ARCHIVE_HOST));
   dlClient->println("Connection: close");
-  dlClient->println("User-Agent: Gotek-Touchscreen/1.0");
+  dlClient->println("User-Agent: Mozilla/5.0");
   dlClient->println();
 
-  timeout = millis();
+  unsigned long timeout = millis();
   while (!dlClient->available() && millis() - timeout < 15000) {
     delay(50);
     yield();
   }
 
-  // Read headers
+  // Read headers — check for redirect, content-disposition, content-length
   int contentLength = -1;
-  String filename = gameTitle + ".adf";
+  String filename = gameName + ".zip";
+  String contentType = "";
   while (dlClient->available()) {
     String line = dlClient->readStringUntil('\n');
     line.trim();
     if (line.length() == 0) break;
-    if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
+
+    String lower = line;
+    lower.toLowerCase();
+
+    if (lower.startsWith("content-length:")) {
       contentLength = line.substring(16).toInt();
     }
-    if (line.startsWith("Location:") || line.startsWith("location:")) {
+    if (lower.startsWith("content-type:")) {
+      contentType = line.substring(14);
+      contentType.trim();
+    }
+    // Extract filename from Content-Disposition header
+    if (lower.startsWith("content-disposition:")) {
+      int fnIdx = lower.indexOf("filename=");
+      if (fnIdx >= 0) {
+        filename = line.substring(fnIdx + 9 + (line.length() - lower.length()));
+        // Actually re-extract from original case
+        fnIdx = line.indexOf("filename=");
+        if (fnIdx >= 0) filename = line.substring(fnIdx + 9);
+        filename.replace("\"", "");
+        filename.trim();
+      }
+    }
+    // Handle redirect
+    if (lower.startsWith("location:")) {
       String redirectUrl = line.substring(10);
       redirectUrl.trim();
       dlClient->stop();
       delete dlClient;
-      sendJSON(client, 302, "{\"error\":\"Download requires redirect to: " + jsonEscape(redirectUrl) + "\"}");
+      sendJSON(client, 302, "{\"redirect\":\"" + jsonEscape(redirectUrl) + "\"}");
       return;
     }
+    yield();
   }
 
-  // Save to file
+  // Create game folder
+  String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
+  String gameDir = modeDir + "/" + gameName;
+  if (!SD_MMC.exists(gameDir.c_str())) {
+    SD_MMC.mkdir(gameDir.c_str());
+  }
+
+  // Save downloaded file to SD
   String filePath = gameDir + "/" + filename;
   File outFile = SD_MMC.open(filePath.c_str(), "w");
   if (!outFile) {
     dlClient->stop();
     delete dlClient;
-    sendJSON(client, 500, "{\"error\":\"Cannot create file on SD card\"}");
+    sendJSON(client, 500, "{\"error\":\"Cannot create file on SD\"}");
     return;
   }
 
@@ -1741,7 +1677,7 @@ void handleArchiveDownload(WiFiClient &client, const String &gameId) {
   sortByDisplay();
   buildGameList();
 
-  sendJSON(client, 200, "{\"status\":\"ok\",\"name\":\"" + jsonEscape(gameTitle) + "\",\"file\":\"" + jsonEscape(filename) + "\",\"bytes\":" + String(totalBytes) + "}");
+  sendJSON(client, 200, "{\"status\":\"ok\",\"name\":\"" + jsonEscape(gameName) + "\",\"file\":\"" + jsonEscape(filename) + "\",\"bytes\":" + String(totalBytes) + "}");
 }
 
 // ============================================================================

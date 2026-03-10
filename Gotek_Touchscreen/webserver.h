@@ -739,16 +739,7 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
   if (req.path == "/api/archive/download" && req.method == "POST") {
-    String gameId = "";
-    // Parse 'id' from POST body
-    int idIdx = req.body.indexOf("id=");
-    if (idIdx >= 0) {
-      gameId = req.body.substring(idIdx + 3);
-      int ampIdx = gameId.indexOf("&");
-      if (ampIdx >= 0) gameId = gameId.substring(0, ampIdx);
-      gameId = urlDecode(gameId);
-    }
-    handleArchiveDownload(client, gameId);
+    handleArchiveDownload(client, req.body);
     return;
   }
   if (req.path == "/api/archive/save-index" && req.method == "POST") {

@@ -978,24 +978,29 @@ async function fetchArchiveIndex() {
     return;
   }
 
-  const pages = 'abcdefghijklmnopqrstuvwxyz'.split('').concat(['0-9']);
+  // Site has 68 pages: /items.php?category=games&page=1..68
+  const totalPages = 68;
   const games = [];
   const seen = new Set();
   let errors = 0;
+  let emptyPages = 0;
 
-  for (let i = 0; i < pages.length; i++) {
-    loading.textContent = 'Fetching ' + pages[i].toUpperCase() + '... (' + (i+1) + '/' + pages.length + ', ' + games.length + ' games found)';
+  for (let pg = 1; pg <= totalPages; pg++) {
+    loading.textContent = 'Fetching page ' + pg + '/' + totalPages + '... (' + games.length + ' games found)';
 
     try {
-      // Use ESP32 as proxy — one page at a time to avoid crashes
-      const data = await fetch(API + '/api/archive/proxy?page=' + pages[i]).then(r => r.json());
-      if (data.games) {
+      const data = await fetch(API + '/api/archive/proxy?page=' + pg).then(r => r.json());
+      if (data.games && data.games.length > 0) {
         for (const g of data.games) {
           if (!seen.has(g.id)) {
             seen.add(g.id);
-            games.push({ name: g.name, id: g.id, cached: false });
+            games.push({ name: g.name, id: g.id, pub: g.pub || '', cached: false });
           }
         }
+        emptyPages = 0;
+      } else {
+        emptyPages++;
+        if (emptyPages >= 3) break;  // stop if 3 empty pages in a row (end of list)
       }
     } catch (e) {
       errors++;
@@ -1016,7 +1021,7 @@ async function fetchArchiveIndex() {
     await api('/api/archive/save-index', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ games: games.map(g => g.name + '|' + g.id + '||').join('\n') })
+      body: JSON.stringify({ games: games.map(g => g.name + '|' + g.id + '|' + (g.pub || '') + '|').join('\n') })
     });
   } catch (e) { /* ignore save errors */ }
 
@@ -1110,16 +1115,16 @@ function renderArchiveList(games) {
     <div class="archive-item">
       <div class="game-info">
         <div class="game-name">${esc(g.name)}</div>
-        <div class="game-meta">${g.year ? g.year + ' · ' : ''}${g.publisher ? esc(g.publisher) : ''} ${g.cached ? '<span class="badge badge-cover">Cached</span>' : ''}</div>
+        <div class="game-meta">${g.pub ? esc(g.pub) : (g.publisher ? esc(g.publisher) : '')} ${g.cached ? '<span class="badge badge-cover">Downloaded</span>' : ''}</div>
       </div>
-      <button class="archive-dl-btn" onclick="downloadArchiveGame('${esc(g.id || g.name)}')" ${g.cached ? 'disabled' : ''}>
+      <button class="archive-dl-btn" onclick="downloadArchiveGame('${esc(g.id)}','${esc(g.name)}')" ${g.cached ? 'disabled' : ''}>
         ${g.cached ? 'Downloaded' : 'Download'}
       </button>
     </div>
   `).join('') + more;
 }
 
-async function downloadArchiveGame(gameId) {
+async function downloadArchiveGame(gameId, gameName) {
   const btn = event.target;
   btn.disabled = true;
   btn.textContent = 'Downloading...';
@@ -1128,7 +1133,7 @@ async function downloadArchiveGame(gameId) {
     const result = await api('/api/archive/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'id=' + encodeURIComponent(gameId)
+      body: 'id=' + encodeURIComponent(gameId) + '&name=' + encodeURIComponent(gameName || gameId)
     });
     btn.textContent = 'Downloaded';
     toast(result.name + ' downloaded to SD!');
