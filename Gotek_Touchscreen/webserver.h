@@ -554,7 +554,7 @@ void handleHttpRequest(WiFiClient &client) {
 
   // ── Serve SPA ──
   if (req.path == "/" || req.path == "/index.html") {
-    sendGzipResponse(client, "text/html", webui_html_gz, webui_html_gz_len);
+    sendGzipResponse(client, "text/html", webui_gz, webui_gz_len);
     return;
   }
 

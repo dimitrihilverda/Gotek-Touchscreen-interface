@@ -459,6 +459,10 @@ String detail_jpg_path = "";
 vector<int> disk_set;         // file_list indices for all disks of current game
 int loaded_disk_index = -1;   // file_list index of currently loaded disk (-1 = none)
 
+// FTP and WebDAV clients (included here so types are available for state vars below)
+#include "ftp_client.h"
+#include "webdav_client.h"
+
 // WebDAV browsing state
 std::vector<DAVFileEntry> dav_entries;   // current directory listing
 String dav_current_path = "/";           // current browse path
@@ -2228,6 +2232,15 @@ void drawToggle(int x, int y, bool state) {
   }
 }
 
+// List layout constants (needed by both WebDAV and game list screens)
+#ifndef LIST_ITEM_H
+#define LIST_ITEM_H    52
+#define LIST_THUMB_W   46
+#define LIST_THUMB_H   46
+#define LIST_START_Y   4
+#define LIST_BOTTOM    (gH - 48)
+#endif
+
 // ============================================================================
 // WebDAV browse screen
 // ============================================================================
@@ -2638,12 +2651,7 @@ void drawInfoScreen() {
 #define ALPHA_BAR_W  16       // width of the alphabet strip
 #define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
 
-// List layout constants (no header bar — full screen list)
-#define LIST_START_Y   4
-#define LIST_ITEM_H    52
-#define LIST_THUMB_W   46
-#define LIST_THUMB_H   46
-#define LIST_BOTTOM    (gH - 48)
+// List layout constants already defined above (before WebDAV section)
 
 int items_per_page() {
   return (LIST_BOTTOM - LIST_START_Y) / LIST_ITEM_H;
@@ -3471,12 +3479,6 @@ void doLoadSelected() {
     saveConfig();
   }
 }
-
-// ============================================================================
-// WiFi Web Server (include after all game/theme functions are defined)
-// ============================================================================
-#include "ftp_client.h"
-#include "webdav_client.h"
 
 // ============================================================================
 // Load disk image from WebDAV directly into RAM (no SD write)
