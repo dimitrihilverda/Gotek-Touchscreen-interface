@@ -2083,6 +2083,30 @@ void hideBusyIndicator() {
 // ============================================================================
 // Info / Status screen
 // ============================================================================
+// Toggle switch Y positions on info screen (for touch detection)
+int info_toggle_ap_y = -1;
+int info_toggle_net_y = -1;
+
+// Draw a small toggle switch: [ON] green or [OFF] red
+void drawToggle(int x, int y, bool state) {
+  int w = 38, h = 16;
+  if (state) {
+    gfx_fillRect(x, y + 2, w, h, 0x03E0);   // green bg
+    gfx_fillRect(x + w/2, y + 2, w/2, h, TFT_GREEN); // slider right
+    gfx_setTextSize(1);
+    gfx_setTextColor(TFT_WHITE, 0x03E0);
+    gfx_setCursor(x + 3, y + 6);
+    gfx_print("ON");
+  } else {
+    gfx_fillRect(x, y + 2, w, h, 0x3186);   // grey bg
+    gfx_fillRect(x, y + 2, w/2, h, 0x7BEF);  // slider left
+    gfx_setTextSize(1);
+    gfx_setTextColor(TFT_WHITE, 0x3186);
+    gfx_setCursor(x + w/2 + 3, y + 6);
+    gfx_print("OFF");
+  }
+}
+
 void drawInfoScreen() {
   gfx_fillScreen(TFT_BLACK);
 
@@ -2165,7 +2189,8 @@ void drawInfoScreen() {
   gfx_print(cfg_theme);
   y += lineH;
 
-  // --- WiFi AP status ---
+  // --- WiFi AP status + toggle ---
+  info_toggle_ap_y = y;  // store Y for touch detection
   gfx_setTextColor(TFT_GREEN, TFT_BLACK);
   gfx_setCursor(20, y);
   gfx_print("AP: ");
@@ -2178,9 +2203,12 @@ void drawInfoScreen() {
     gfx_setTextColor(0x7BEF, TFT_BLACK);
     gfx_print("Off");
   }
+  // Toggle button at right edge
+  drawToggle(gW - 52, y, cfg_wifi_enabled);
   y += lineH;
 
-  // --- Remote dongle status ---
+  // --- Remote dongle / WiFi Client status + toggle ---
+  info_toggle_net_y = y;  // store Y for touch detection
   if (cfg_remote_enabled) {
     gfx_setTextColor(TFT_GREEN, TFT_BLACK);
     gfx_setCursor(20, y);
@@ -2194,6 +2222,7 @@ void drawInfoScreen() {
       gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
       gfx_print("Connecting...");
     }
+    drawToggle(gW - 52, y, cfg_remote_enabled);
     y += lineH;
 
     // Show what's loaded on the dongle
@@ -2222,6 +2251,7 @@ void drawInfoScreen() {
       gfx_setTextColor(0x7BEF, TFT_BLACK);
       gfx_print("Off");
     }
+    drawToggle(gW - 52, y, cfg_wifi_client_enabled);
   }
 
   // Bottom buttons: BACK + THEME + ADF/DSK — evenly spaced, uniform 148x36
@@ -2248,6 +2278,98 @@ void drawInfoScreen() {
 
 int items_per_page() {
   return (LIST_BOTTOM - LIST_START_Y) / LIST_ITEM_H;
+}
+
+// ============================================================================
+// ALPHABET BAR — A-Z slider on right edge of list screen
+// ============================================================================
+#define ALPHA_BAR_W  16       // width of the alphabet strip
+#define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
+
+// Find the first game_list index that starts with given letter (or next available)
+int findFirstGameWithLetter(char letter) {
+  for (int i = 0; i < (int)game_list.size(); i++) {
+    char first = toupper(game_list[i].name.charAt(0));
+    if (first >= letter) return i;
+  }
+  return (int)game_list.size() - 1;
+}
+
+// Get the current leading letter for the first visible game
+char getCurrentLetter() {
+  if (scroll_offset >= 0 && scroll_offset < (int)game_list.size()) {
+    return toupper(game_list[scroll_offset].name.charAt(0));
+  }
+  return 'A';
+}
+
+void drawAlphabetBar() {
+  int barTop = LIST_START_Y;
+  int barH = LIST_BOTTOM - LIST_START_Y;
+  char curLetter = getCurrentLetter();
+
+  // On smaller screens (Waveshare 240px), show every other letter
+  bool showAll = (barH >= 230);  // JC3248: 268px, Waveshare: ~188px
+  int letterCount = showAll ? 26 : 13;
+
+  // Background strip
+  gfx_fillRect(ALPHA_BAR_X, barTop, ALPHA_BAR_W, barH, 0x1082);
+
+  int letterH = barH / letterCount;
+  gfx_setTextSize(1);
+
+  for (int i = 0; i < letterCount; i++) {
+    char letter = 'A' + (showAll ? i : i * 2);
+    int ly = barTop + i * letterH;
+
+    if (letter == curLetter) {
+      // Highlight current letter
+      gfx_fillRect(ALPHA_BAR_X, ly, ALPHA_BAR_W, letterH, 0x03E0);  // dark green
+      gfx_setTextColor(TFT_WHITE, 0x03E0);
+    } else {
+      gfx_setTextColor(TFT_GREY, 0x1082);
+    }
+
+    // Center letter in its slot
+    int cx = ALPHA_BAR_X + (ALPHA_BAR_W - 6) / 2;
+    int cy = ly + (letterH - 8) / 2;
+    gfx_setCursor(cx, cy);
+    gfx_print(String(letter));
+  }
+
+  // Scrollbar position indicator (thin line next to alphabet)
+  int maxOff = (int)game_list.size() - items_per_page();
+  if (maxOff > 0) {
+    int thumbH = max(6, barH * items_per_page() / (int)game_list.size());
+    int thumbY = barTop + (barH - thumbH) * scroll_offset / maxOff;
+    gfx_fillRect(ALPHA_BAR_X - 3, thumbY, 2, thumbH, TFT_CYAN);
+  }
+}
+
+// Handle touch/drag on the alphabet bar — returns true if handled
+bool handleAlphabetTouch(uint16_t px, uint16_t py) {
+  if (px < ALPHA_BAR_X || py < LIST_START_Y || py >= LIST_BOTTOM) return false;
+
+  int barH = LIST_BOTTOM - LIST_START_Y;
+  bool showAll = (barH >= 230);
+  int letterCount = showAll ? 26 : 13;
+  int letterH = barH / letterCount;
+
+  int idx = (py - LIST_START_Y) / letterH;
+  if (idx < 0) idx = 0;
+  if (idx >= letterCount) idx = letterCount - 1;
+
+  char letter = 'A' + (showAll ? idx : idx * 2);
+
+  // Jump to first game starting with this letter
+  int gameIdx = findFirstGameWithLetter(letter);
+  scroll_offset = gameIdx;
+  int maxOff = (int)game_list.size() - items_per_page();
+  if (maxOff < 0) maxOff = 0;
+  if (scroll_offset > maxOff) scroll_offset = maxOff;
+
+  drawList();
+  return true;
 }
 
 void drawList() {
@@ -2316,43 +2438,26 @@ void drawList() {
     gfx_fillRect(6, y + LIST_ITEM_H - 1, gW - 12, 1, 0x2104);
   }
 
-  // Scroll buttons (right edge — large touch targets)
+  // A-Z alphabet slider (right edge) — replaces old scroll buttons
   if ((int)game_list.size() > perPage) {
-    int btnW = 44;
-    int btnX = gW - btnW;
-    int listH = LIST_BOTTOM - LIST_START_Y;
-    int btnH = listH / 2;
-
-    // UP button (themed)
-    int downY = LIST_START_Y + btnH + 1;
-    int maxOff = (int)game_list.size() - perPage;
-    if (maxOff < 0) maxOff = 0;
-
-    uint16_t upBorderColor = (scroll_offset > 0) ? TFT_WHITE : 0x3186;
-    drawThemedButton(btnX, LIST_START_Y, btnW, btnH - 1, "BTN_UP", "^", upBorderColor);
-
-    // DOWN button (themed)
-    uint16_t dnBorderColor = (scroll_offset < maxOff) ? TFT_WHITE : 0x3186;
-    drawThemedButton(btnX, downY, btnW, btnH - 1, "BTN_DOWN", "v", dnBorderColor);
-
-    // Thin scrollbar between buttons
-    int trackH = LIST_BOTTOM - LIST_START_Y;
-    int thumbH = max(8, trackH * perPage / (int)game_list.size());
-    int thumbY = LIST_START_Y + (trackH - thumbH) * scroll_offset / max(1, maxOff);
-    gfx_fillRect(btnX - 4, thumbY, 3, thumbH, 0x4208);
+    drawAlphabetBar();
   }
 
-  // Bottom bar: status text left, INFO button right
-  gfx_setTextSize(1);
+  // Bottom bar: "Now Playing" (clickable) left, INFO button right
   if (loaded_disk_index >= 0 && loaded_disk_index < (int)file_list.size()) {
+    // Dark green background for the now-playing bar (clickable area)
+    gfx_fillRect(0, gH - 46, gW - 48, 46, 0x0320);  // dark green
+    gfx_setTextSize(1);
+    gfx_setTextColor(TFT_GREEN, 0x0320);
+    gfx_setCursor(8, gH - 43);
+    gfx_print("NOW PLAYING:");
+    gfx_setTextSize(2);
+    gfx_setTextColor(TFT_WHITE, 0x0320);
     String loadedName = getGameBaseName(file_list[loaded_disk_index]);
-    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-    gfx_setCursor(8, gH - 38);
-    gfx_print("Now playing:");
-    gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-    gfx_setCursor(8, gH - 26);
-    gfx_print(loadedName.substring(0, 32));
+    gfx_setCursor(8, gH - 28);
+    gfx_print(truncateToWidth(loadedName, gW - 64));
   } else {
+    gfx_setTextSize(1);
     gfx_setTextColor(TFT_GREY, TFT_BLACK);
     gfx_setCursor(8, gH - 32);
     gfx_print(String((int)game_list.size()) + " games");
@@ -3144,7 +3249,11 @@ void waitForRelease(unsigned long timeout_ms = 2000) {
 //   - waitForRelease() after heavy operations to prevent phantom taps
 //   - Simple 200ms debounce
 
-#define SWIPE_THRESHOLD 30
+#define SWIPE_THRESHOLD 15
+
+// Kinetic scroll state
+int kinetic_velocity = 0;        // items/tick remaining to scroll
+unsigned long kinetic_last = 0;  // last kinetic tick time
 
 void loop() {
   // Process incoming HTTP requests (non-blocking)
@@ -3160,8 +3269,9 @@ void loop() {
 
   if (haveTouch) {
     if (!touch_active) {
-      // Touch DOWN — start tracking
+      // Touch DOWN — start tracking, cancel kinetic scroll
       touch_active = true;
+      kinetic_velocity = 0;
       touch_start_x = px;
       touch_start_y = py;
       touch_start_time = millis();
@@ -3169,6 +3279,16 @@ void loop() {
     // Update last known position while dragging
     touch_last_x = px;
     touch_last_y = py;
+
+    // Live drag on alphabet bar — scroll list as finger moves
+    if (current_screen == SCR_SELECTION && px >= ALPHA_BAR_X &&
+        py >= LIST_START_Y && py < LIST_BOTTOM) {
+      static unsigned long lastAlphaDrag = 0;
+      if (millis() - lastAlphaDrag > 80) {  // throttle redraws
+        handleAlphabetTouch(px, py);
+        lastAlphaDrag = millis();
+      }
+    }
   } else if (touch_active) {
     // Touch UP — determine if it was a tap or swipe
     touch_active = false;
@@ -3191,6 +3311,24 @@ void loop() {
     last_touch_time = millis();
   }
 
+  // Kinetic scroll: coast after fast flick on list screen
+  if (kinetic_velocity != 0 && current_screen == SCR_SELECTION && !touch_active) {
+    if (millis() - kinetic_last >= 150) {
+      scroll_offset += (kinetic_velocity > 0) ? 1 : -1;
+      int maxOff = (int)game_list.size() - items_per_page();
+      if (maxOff < 0) maxOff = 0;
+      if (scroll_offset > maxOff) { scroll_offset = maxOff; kinetic_velocity = 0; }
+      if (scroll_offset < 0)      { scroll_offset = 0;      kinetic_velocity = 0; }
+
+      // Decay velocity
+      if (kinetic_velocity > 0) kinetic_velocity--;
+      else if (kinetic_velocity < 0) kinetic_velocity++;
+
+      drawList();
+      kinetic_last = millis();
+    }
+  }
+
   delay(10);
 }
 
@@ -3202,7 +3340,7 @@ void handleSwipe(int16_t dx, int16_t dy, uint16_t startX, uint16_t startY) {
   int16_t absDy = abs(dy);
 
   if (current_screen == SCR_SELECTION) {
-    // Vertical swipe in list area → scroll
+    // Vertical swipe in list area → scroll (proportional + kinetic)
     if (startY >= LIST_START_Y && startY < LIST_BOTTOM && absDy > absDx) {
       int scrollItems = absDy / LIST_ITEM_H;
       if (scrollItems < 1) scrollItems = 1;
@@ -3212,6 +3350,20 @@ void handleSwipe(int16_t dx, int16_t dy, uint16_t startX, uint16_t startY) {
       if (maxOff < 0) maxOff = 0;
       if (scroll_offset > maxOff) scroll_offset = maxOff;
       if (scroll_offset < 0) scroll_offset = 0;
+
+      // Start kinetic scroll: fast swipe = extra momentum
+      unsigned long swipeDuration = millis() - touch_start_time;
+      if (swipeDuration < 300 && absDy > 60) {
+        // Fast flick → add kinetic momentum (1-3 extra items)
+        int momentum = absDy / 80;
+        if (momentum > 3) momentum = 3;
+        if (momentum < 1) momentum = 1;
+        kinetic_velocity = (dy > 0) ? -momentum : momentum;
+        kinetic_last = millis();
+      } else {
+        kinetic_velocity = 0;
+      }
+
       drawList();
     }
   } else if (current_screen == SCR_DETAILS) {
@@ -3233,27 +3385,18 @@ void handleTap(uint16_t px, uint16_t py) {
   // ══════════════════════════════════════
   if (current_screen == SCR_SELECTION) {
 
-    // Scroll UP/DOWN buttons (right edge, large touch targets)
-    int scrollBtnX = gW - 44;
-    int listH = LIST_BOTTOM - LIST_START_Y;
-    int halfH = listH / 2;
-    if (px >= scrollBtnX && py >= LIST_START_Y && py < LIST_BOTTOM) {
-      int perPage = items_per_page();
-      int maxOff = (int)game_list.size() - perPage;
-      if (maxOff < 0) maxOff = 0;
-      if (py < LIST_START_Y + halfH) {
-        // UP button
-        if (scroll_offset > 0) {
-          scroll_offset--;
-          drawList();
-        }
-      } else {
-        // DOWN button
-        if (scroll_offset < maxOff) {
-          scroll_offset++;
-          drawList();
-        }
-      }
+    // Alphabet bar (right edge) — tap on letter jumps to that section
+    if (handleAlphabetTouch(px, py)) {
+      return;
+    }
+
+    // "Now Playing" bar tap → go to detail page of loaded game
+    if (loaded_disk_index >= 0 && py >= gH - 46 && px < gW - 48) {
+      selected_index = loaded_disk_index;
+      game_selected = findGameIndex(loaded_disk_index);
+      detail_filename = file_list[selected_index];
+      current_screen = SCR_DETAILS;
+      drawDetailsFromNFO(detail_filename);
       return;
     }
 
@@ -3265,7 +3408,7 @@ void handleTap(uint16_t px, uint16_t py) {
     }
 
     // Game list area — tap item → go to detail page
-    if (py >= LIST_START_Y && py < LIST_BOTTOM && px < gW - 44) {
+    if (py >= LIST_START_Y && py < LIST_BOTTOM && px < ALPHA_BAR_X) {
       int idx = (py - LIST_START_Y) / LIST_ITEM_H + scroll_offset;
       if (idx >= 0 && idx < (int)game_list.size()) {
         game_selected = idx;
@@ -3346,6 +3489,53 @@ void handleTap(uint16_t px, uint16_t py) {
   // INFO SCREEN
   // ══════════════════════════════════════
   else if (current_screen == SCR_INFO) {
+
+    // WiFi AP toggle tap
+    if (info_toggle_ap_y >= 0 && py >= info_toggle_ap_y && py < info_toggle_ap_y + 20 && px >= gW - 52) {
+      cfg_wifi_enabled = !cfg_wifi_enabled;
+      saveConfig();
+      // Apply WiFi change without full reboot
+      if (!cfg_wifi_enabled && wifi_ap_active) {
+        WiFi.softAPdisconnect(true);
+        wifi_ap_active = false;
+        wifi_ap_ip = "";
+        Serial.println("WiFi AP disabled");
+      } else if (cfg_wifi_enabled && !wifi_ap_active) {
+        initWiFiAP();
+        startWebServer();
+        Serial.println("WiFi AP enabled: " + wifi_ap_ip);
+      }
+      drawInfoScreen();
+      return;
+    }
+
+    // WiFi Client / Remote toggle tap
+    if (info_toggle_net_y >= 0 && py >= info_toggle_net_y && py < info_toggle_net_y + 20 && px >= gW - 52) {
+      if (cfg_remote_enabled) {
+        // Toggle remote dongle connection
+        cfg_remote_enabled = !cfg_remote_enabled;
+        if (!cfg_remote_enabled) {
+          WiFi.disconnect();
+          remote_connected = false;
+        }
+      } else {
+        // Toggle WiFi client (internet)
+        cfg_wifi_client_enabled = !cfg_wifi_client_enabled;
+        if (!cfg_wifi_client_enabled) {
+          WiFi.disconnect();
+          wifi_sta_connected = false;
+          wifi_sta_ip = "";
+        }
+      }
+      saveConfig();
+      // Re-initialize WiFi with new settings
+      if (cfg_wifi_enabled || cfg_remote_enabled || cfg_wifi_client_enabled) {
+        initWiFiAP();
+      }
+      drawInfoScreen();
+      return;
+    }
+
     // Uniform buttons: 148px wide, gap=8, margin=10
     // BACK: 10..158, THEME: 166..314, ADF/DSK: 322..470
     if (px >= 10 && px <= 158 && py >= gH - 42) {

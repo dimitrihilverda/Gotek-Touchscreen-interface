@@ -89,6 +89,12 @@ bool initWiFiAP() {
     Serial.println("WiFi mode: Station only (remote)");
   }
 
+  // Reduce TX power to prevent brownouts when powered from Gotek USB
+  // Default is 19.5 dBm (~80mA peak). Lowering to 8.5 dBm (~40mA) is safer.
+  // Still gives ~10m range which is plenty for a room.
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  Serial.println("WiFi TX power: 8.5 dBm (low power mode)");
+
   // Start Access Point (if enabled)
   if (cfg_wifi_enabled) {
     WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
