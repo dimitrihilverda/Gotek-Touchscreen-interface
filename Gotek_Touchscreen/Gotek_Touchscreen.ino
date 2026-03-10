@@ -3252,13 +3252,19 @@ void waitForRelease(unsigned long timeout_ms = 2000) {
 //   - waitForRelease() after heavy operations to prevent phantom taps
 //   - Simple 200ms debounce
 
-#define SWIPE_THRESHOLD 20
-#define TAP_MAX_DURATION 250   // ms — longer touch = scroll attempt, not tap
-#define TAP_MAX_MOVE     8     // px — any movement beyond this = not a tap
+#define SWIPE_THRESHOLD  20    // px — minimum for horizontal swipe (detail nav)
+#define DRAG_THRESHOLD   10    // px — start live-scrolling after this much vertical drag
+#define TAP_MAX_DURATION 200   // ms — only short, still touches count as taps
+#define TAP_MAX_MOVE     6     // px — any movement beyond this = not a tap
+
+// Drag-scroll state
+bool drag_scrolling = false;        // true once we've entered drag-scroll mode
+int  drag_scroll_accum = 0;         // accumulated pixels during drag
+int  drag_last_y = 0;               // last Y during drag for delta calculation
 
 // Kinetic scroll state
-int kinetic_velocity = 0;        // items/tick remaining to scroll
-unsigned long kinetic_last = 0;  // last kinetic tick time
+int kinetic_velocity = 0;           // items/tick remaining to scroll
+unsigned long kinetic_last = 0;     // last kinetic tick time
 
 void loop() {
   // Process incoming HTTP requests (non-blocking)
@@ -3276,26 +3282,69 @@ void loop() {
     if (!touch_active) {
       // Touch DOWN — start tracking, cancel kinetic scroll
       touch_active = true;
+      drag_scrolling = false;
+      drag_scroll_accum = 0;
       kinetic_velocity = 0;
       touch_start_x = px;
       touch_start_y = py;
+      touch_last_x = px;
+      touch_last_y = py;
+      drag_last_y = py;
       touch_start_time = millis();
-    }
-    // Update last known position while dragging
-    touch_last_x = px;
-    touch_last_y = py;
+    } else {
+      // Touch HELD — check for live drag-scrolling
+      touch_last_x = px;
+      touch_last_y = py;
 
-    // Live drag on alphabet bar — scroll list as finger moves
-    if (current_screen == SCR_SELECTION && px >= ALPHA_BAR_X &&
-        py >= LIST_START_Y && py < LIST_BOTTOM) {
-      static unsigned long lastAlphaDrag = 0;
-      if (millis() - lastAlphaDrag > 80) {  // throttle redraws
-        handleAlphabetTouch(px, py);
-        lastAlphaDrag = millis();
+      // Alphabet bar: live drag always handled
+      if (current_screen == SCR_SELECTION && px >= ALPHA_BAR_X &&
+          touch_start_x >= ALPHA_BAR_X &&
+          py >= LIST_START_Y && py < LIST_BOTTOM) {
+        static unsigned long lastAlphaDrag = 0;
+        if (millis() - lastAlphaDrag > 80) {
+          handleAlphabetTouch(px, py);
+          lastAlphaDrag = millis();
+        }
+      }
+      // Game list: live drag-scrolling (finger moves list in real-time)
+      else if (current_screen == SCR_SELECTION &&
+               touch_start_x < ALPHA_BAR_X &&
+               touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM) {
+        int16_t totalDy = (int16_t)py - (int16_t)touch_start_y;
+
+        if (!drag_scrolling && abs(totalDy) > DRAG_THRESHOLD) {
+          // Cross the drag threshold → enter drag-scroll mode
+          drag_scrolling = true;
+          drag_last_y = py;
+          drag_scroll_accum = 0;
+        }
+
+        if (drag_scrolling) {
+          // Accumulate pixel delta since last scroll step
+          int16_t delta = (int16_t)drag_last_y - (int16_t)py;  // positive = finger up = scroll down
+          drag_scroll_accum += delta;
+          drag_last_y = py;
+
+          // Scroll one item per LIST_ITEM_H pixels dragged
+          while (abs(drag_scroll_accum) >= LIST_ITEM_H) {
+            if (drag_scroll_accum > 0) {
+              scroll_offset++;
+              drag_scroll_accum -= LIST_ITEM_H;
+            } else {
+              scroll_offset--;
+              drag_scroll_accum += LIST_ITEM_H;
+            }
+            int maxOff = (int)game_list.size() - items_per_page();
+            if (maxOff < 0) maxOff = 0;
+            if (scroll_offset > maxOff) scroll_offset = maxOff;
+            if (scroll_offset < 0) scroll_offset = 0;
+            drawList();
+          }
+        }
       }
     }
   } else if (touch_active) {
-    // Touch UP — determine if it was a tap or swipe
+    // Touch UP — determine action
     touch_active = false;
     unsigned long now = millis();
 
@@ -3309,20 +3358,31 @@ void loop() {
     int16_t dy = (int16_t)touch_last_y - (int16_t)touch_start_y;
     unsigned long touchDuration = now - touch_start_time;
 
-    bool isSwipe = (abs(dx) > SWIPE_THRESHOLD || abs(dy) > SWIPE_THRESHOLD);
+    if (drag_scrolling) {
+      // Was drag-scrolling → apply kinetic momentum on release
+      if (touchDuration < 400 && abs(dy) > 40) {
+        int momentum = abs(dy) / 60;
+        if (momentum > 3) momentum = 3;
+        if (momentum < 1) momentum = 1;
+        kinetic_velocity = (dy > 0) ? -momentum : momentum;
+        kinetic_last = millis();
+      }
+      // Don't fire tap or swipe — drag already handled
+    } else {
+      // Was NOT drag-scrolling — check for tap or horizontal swipe
+      bool isTap = (abs(dx) <= TAP_MAX_MOVE && abs(dy) <= TAP_MAX_MOVE) &&
+                   (touchDuration < TAP_MAX_DURATION);
+      bool isHSwipe = (abs(dx) > SWIPE_THRESHOLD && abs(dx) > abs(dy));
 
-    // A slow drag that didn't reach swipe threshold is still NOT a tap
-    // (e.g., finger moved 10px over 400ms = scroll attempt, not a game select)
-    bool isTap = !isSwipe &&
-                 (abs(dx) <= TAP_MAX_MOVE && abs(dy) <= TAP_MAX_MOVE) &&
-                 (touchDuration < TAP_MAX_DURATION);
-
-    if (isSwipe) {
-      handleSwipe(dx, dy, touch_start_x, touch_start_y);
-    } else if (isTap) {
-      handleTap(touch_start_x, touch_start_y);
+      if (isTap) {
+        handleTap(touch_start_x, touch_start_y);
+      } else if (isHSwipe) {
+        // Horizontal swipe (detail screen: prev/next game)
+        handleSwipe(dx, dy, touch_start_x, touch_start_y);
+      }
     }
-    // else: small drag / slow movement — ignore (not a tap, not a swipe)
+
+    drag_scrolling = false;
     last_touch_time = millis();
   }
 
@@ -3351,39 +3411,11 @@ void loop() {
 // Handle swipe gestures
 // ============================================================================
 void handleSwipe(int16_t dx, int16_t dy, uint16_t startX, uint16_t startY) {
-  int16_t absDx = abs(dx);
-  int16_t absDy = abs(dy);
+  // Vertical scroll on list screen is now handled by live drag-scrolling.
+  // handleSwipe() only handles horizontal swipes (detail screen navigation).
 
-  if (current_screen == SCR_SELECTION) {
-    // Vertical swipe in list area → scroll (proportional + kinetic)
-    if (startY >= LIST_START_Y && startY < LIST_BOTTOM && absDy > absDx) {
-      int scrollItems = absDy / LIST_ITEM_H;
-      if (scrollItems < 1) scrollItems = 1;
-      if (dy > 0) scroll_offset -= scrollItems;
-      else        scroll_offset += scrollItems;
-      int maxOff = (int)game_list.size() - items_per_page();
-      if (maxOff < 0) maxOff = 0;
-      if (scroll_offset > maxOff) scroll_offset = maxOff;
-      if (scroll_offset < 0) scroll_offset = 0;
-
-      // Start kinetic scroll: fast swipe = extra momentum
-      unsigned long swipeDuration = millis() - touch_start_time;
-      if (swipeDuration < 300 && absDy > 60) {
-        // Fast flick → add kinetic momentum (1-3 extra items)
-        int momentum = absDy / 80;
-        if (momentum > 3) momentum = 3;
-        if (momentum < 1) momentum = 1;
-        kinetic_velocity = (dy > 0) ? -momentum : momentum;
-        kinetic_last = millis();
-      } else {
-        kinetic_velocity = 0;
-      }
-
-      drawList();
-    }
-  } else if (current_screen == SCR_DETAILS) {
-    // Horizontal swipe → previous/next game
-    if (absDx > absDy) {
+  if (current_screen == SCR_DETAILS) {
+    if (abs(dx) > abs(dy)) {
       if (dx > 0) detailGoToPrev();
       else        detailGoToNext();
     }
