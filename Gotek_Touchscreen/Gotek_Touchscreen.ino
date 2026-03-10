@@ -1906,13 +1906,16 @@ void initStars() {
 void drawCracktroSplash() {
   initStars();
 
-  // Scroll text — classic cracktro message
+  // Scroll text — classic cracktro scroller
   const char *scrollText =
-    "       GOTEK TOUCHSCREEN INTERFACE  ...  "
+    "       CRACKED BY DEXX OF OMEGAWARE  *  "
+    "GOTEK TOUCHSCREEN INTERFACE  ...  "
     "THE ULTIMATE RETRO DISK LOADER FOR AMIGA AND CPC  ...  "
     "ORIGINAL CODE BY DIMMY  ...  "
     "ACTIVE THEME ENGINE - PNG BUTTON SUPPORT - FAT12 RAM DISK  ...  "
-    "GREETINGS TO ALL RETRO COMPUTING ENTHUSIASTS!  ...       ";
+    "GREETINGS TO ALL RETRO COMPUTING ENTHUSIASTS!  ...  "
+    "OMEGAWARE - QUALITY OVER QUANTITY SINCE 2025  *  "
+    "TAP SCREEN TO CONTINUE  ...       ";
   int scrollLen = strlen(scrollText);
   int scrollPos = 0;
   int charW = 12;  // textSize 2 = 12px per char
@@ -1924,13 +1927,24 @@ void drawCracktroSplash() {
   };
   int numCopper = 16;
 
+  // Sine-wave color table for "DEXX" text effect
+  uint16_t sineColors[] = {
+    0xF800, 0xFBE0, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xF81F, 0xF800
+  };
+  int numSineColors = 8;
+
   unsigned long startTime = millis();
   int frame = 0;
 
-  // Run for 4 seconds or until touch
-  while (millis() - startTime < 7000) {
+  // Run until tap (no time limit — classic cracktro style)
+  while (true) {
     uint16_t tx, ty;
-    if (touchRead(&tx, &ty)) break;  // skip on touch
+    if (touchRead(&tx, &ty)) {
+      // Wait for release before continuing
+      unsigned long tapStart = millis();
+      while (touchRead(&tx, &ty) && millis() - tapStart < 1000) delay(10);
+      break;
+    }
 
     gfx_fillScreen(TFT_BLACK);
 
@@ -1949,7 +1963,7 @@ void drawCracktroSplash() {
     }
 
     // ── Copper bars (raster bars) — sinusoidal bounce ──
-    int copperY = 80 + (int)(40.0 * sin((float)frame * 0.08));
+    int copperY = gH / 2 - 30 + (int)(40.0 * sin((float)frame * 0.06));
     for (int i = 0; i < numCopper; i++) {
       int barY = copperY + i * 3;
       if (barY >= 0 && barY < gH) {
@@ -1957,29 +1971,57 @@ void drawCracktroSplash() {
       }
     }
 
-    // ── Title text (big, centered, over copper bars) ──
+    // ── "DEXX" — large, color-cycling text above copper bars ──
     text_transparent = true;
     gfx_setTextSize(3);
-    gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-    String title = "GOTEK";
-    int tw = gfx_textWidth(title);
-    gfx_setCursor((gW - tw) / 2, copperY + 6);
-    gfx_print(title);
+    String cracker = "DEXX";
+    int tw = gfx_textWidth(cracker);
+    int dexxY = copperY - 8;
+    // Draw each letter in a cycling color
+    int cx = (gW - tw) / 2;
+    for (int c = 0; c < (int)cracker.length(); c++) {
+      int colorIdx = (frame / 4 + c) % numSineColors;
+      gfx_setTextColor(sineColors[colorIdx], TFT_BLACK);
+      gfx_setCursor(cx, dexxY);
+      char buf[2] = { cracker.charAt(c), 0 };
+      gfx_print(String(buf));
+      cx += gfx_textWidth(String(buf));
+    }
 
+    // ── "OMEGAWARE" — medium text, pulsing brightness ──
     gfx_setTextSize(2);
-    String sub = "TOUCHSCREEN";
-    tw = gfx_textWidth(sub);
-    gfx_setCursor((gW - tw) / 2, copperY + 32);
-    gfx_print(sub);
+    String group = "- OMEGAWARE -";
+    tw = gfx_textWidth(group);
+    // Pulse between white and cyan
+    uint16_t groupCol = (frame % 30 < 15) ? TFT_CYAN : TFT_WHITE;
+    gfx_setTextColor(groupCol, TFT_BLACK);
+    gfx_setCursor((gW - tw) / 2, copperY + 42);
+    gfx_print(group);
+
+    // ── "GOTEK TOUCHSCREEN" — smaller, below group name ──
+    gfx_setTextSize(1);
+    gfx_setTextColor(0x7BEF, TFT_BLACK);  // light grey
+    String subtitle = "GOTEK TOUCHSCREEN INTERFACE";
+    tw = gfx_textWidth(subtitle);
+    gfx_setCursor((gW - tw) / 2, copperY + 62);
+    gfx_print(subtitle);
     text_transparent = false;
 
-    // ── Scroll text (bottom) ──
+    // ── "TAP TO CONTINUE" — blinking at bottom ──
+    if ((frame / 20) % 2 == 0) {
+      gfx_setTextSize(1);
+      gfx_setTextColor(0x7BEF, TFT_BLACK);
+      String tapMsg = "TAP SCREEN TO CONTINUE";
+      tw = gfx_textWidth(tapMsg);
+      gfx_setCursor((gW - tw) / 2, gH - 40);
+      gfx_print(tapMsg);
+    }
+
+    // ── Scroll text (bottom bar) ──
     gfx_fillRect(0, gH - 30, gW, 24, 0x0010);  // dark blue bar
     gfx_setTextSize(2);
     gfx_setTextColor(TFT_YELLOW, 0x0010);
 
-    int drawX = gW - (scrollPos % (scrollLen * charW));
-    // Draw enough characters to fill screen
     int startChar = scrollPos / charW;
     int pixOffset = scrollPos % charW;
     gfx_setCursor(-pixOffset, gH - 26);
