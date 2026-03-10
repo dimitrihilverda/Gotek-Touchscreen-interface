@@ -3306,6 +3306,25 @@ void loop() {
       if (curDy > touch_max_dy) touch_max_dy = curDy;
       if (curDx > touch_max_dx) touch_max_dx = curDx;
 
+      // ── TOUCH DIAGNOSTIC (top of screen) ──
+      // Shows live touch data to diagnose if controller reports movement
+      static unsigned long lastDiagDraw = 0;
+      if (millis() - lastDiagDraw > 100) {
+        gfx_fillRect(0, 0, 320, 24, TFT_BLACK);
+        gfx_setTextSize(1);
+        gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+        gfx_setCursor(2, 2);
+        gfx_print("X:" + String(px) + " Y:" + String(py) +
+                   " sY:" + String(touch_start_y) +
+                   " mDy:" + String(touch_max_dy) +
+                   " drg:" + String(drag_scrolling));
+        gfx_setCursor(2, 13);
+        gfx_print("dy:" + String((int16_t)py - (int16_t)touch_start_y) +
+                   " dur:" + String(millis() - touch_start_time) + "ms");
+        gfx_flush();
+        lastDiagDraw = millis();
+      }
+
       // Alphabet bar: live drag always handled
       if (current_screen == SCR_SELECTION && px >= ALPHA_BAR_X &&
           touch_start_x >= ALPHA_BAR_X &&
