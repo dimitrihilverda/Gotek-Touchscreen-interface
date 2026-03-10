@@ -1542,79 +1542,10 @@ void handleArchiveFetch(WiFiClient &client) {
 }
 
 // Download a game from the archive by slug/id
-// Extract ADF/DSK files from a ZIP on the SD card.
-// ZIP local file header: PK\x03\x04 (4 bytes)
-//   version (2) + flags (2) + compression (2) + modtime (2) + moddate (2)
-//   crc32 (4) + compressed_size (4) + uncompressed_size (4)
-//   filename_len (2) + extra_len (2) + filename (variable) + extra (variable)
-// If compression == 0 (STORED), file data follows directly.
+// Extract ADF/DSK files from a ZIP — delegates to extractZipToDir() in .ino
+// which supports both STORED and DEFLATE compression.
 int extractZipADFs(const String &zipPath, const String &destDir) {
-  File zf = SD_MMC.open(zipPath.c_str(), "r");
-  if (!zf) return 0;
-
-  int extracted = 0;
-  uint8_t hdr[30];
-  String ext1 = (g_mode == MODE_ADF) ? ".adf" : ".dsk";
-
-  while (zf.available() >= 30) {
-    yield();
-    if (zf.read(hdr, 30) != 30) break;
-
-    // Check PK\x03\x04 signature
-    if (hdr[0] != 0x50 || hdr[1] != 0x4B || hdr[2] != 0x03 || hdr[3] != 0x04) break;
-
-    uint16_t compression = hdr[8] | (hdr[9] << 8);
-    uint32_t compSize   = hdr[18] | (hdr[19] << 8) | (hdr[20] << 16) | (hdr[21] << 24);
-    uint32_t uncompSize = hdr[22] | (hdr[23] << 8) | (hdr[24] << 16) | (hdr[25] << 24);
-    uint16_t fnLen      = hdr[26] | (hdr[27] << 8);
-    uint16_t extraLen   = hdr[28] | (hdr[29] << 8);
-
-    // Read filename
-    char fnBuf[256];
-    int toRead = (fnLen < 255) ? fnLen : 255;
-    zf.read((uint8_t*)fnBuf, toRead);
-    fnBuf[toRead] = 0;
-    if (fnLen > 255) zf.seek(zf.position() + (fnLen - 255));  // skip rest
-
-    // Skip extra field
-    if (extraLen > 0) zf.seek(zf.position() + extraLen);
-
-    String entryName = String(fnBuf);
-    // Strip path from filename
-    int lastSlash = entryName.lastIndexOf('/');
-    if (lastSlash >= 0) entryName = entryName.substring(lastSlash + 1);
-
-    String entryLower = entryName;
-    entryLower.toLowerCase();
-
-    bool isADF = entryLower.endsWith(".adf") || entryLower.endsWith(".dsk") || entryLower.endsWith(".img");
-
-    if (isADF && compression == 0 && compSize > 0) {
-      // STORED — extract directly
-      String outPath = destDir + "/" + entryName;
-      File outFile = SD_MMC.open(outPath.c_str(), "w");
-      if (outFile) {
-        uint8_t buf[4096];
-        uint32_t remaining = compSize;
-        while (remaining > 0 && zf.available()) {
-          yield();
-          size_t chunk = (remaining > sizeof(buf)) ? sizeof(buf) : remaining;
-          size_t n = zf.read(buf, chunk);
-          outFile.write(buf, n);
-          remaining -= n;
-        }
-        outFile.close();
-        extracted++;
-        Serial.println("ZIP extracted: " + outPath + " (" + String(compSize) + " bytes)");
-      }
-    } else {
-      // Skip this entry's data
-      if (compSize > 0) zf.seek(zf.position() + compSize);
-    }
-  }
-
-  zf.close();
-  return extracted;
+  return extractZipToDir(zipPath, destDir);
 }
 
 // Download a game from the archive.

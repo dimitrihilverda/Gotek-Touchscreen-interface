@@ -2584,49 +2584,127 @@ void archiveFetchIndex() {
   drawArchiveScreen();
 }
 
-// Simple ZIP extractor for ADF/DSK files (STORED method only)
+// ZIP extractor for ADF/DSK files — supports STORED and DEFLATE.
+// Uses PSRAM buffers + ESP-IDF zlib (always available on ESP32).
+// For raw DEFLATE (ZIP method 8), we use inflateInit2 with -MAX_WBITS.
+#include <zlib.h>
+
 int extractZipToDir(const String &zipPath, const String &destDir) {
   File zf = SD_MMC.open(zipPath.c_str(), "r");
   if (!zf) return 0;
   int extracted = 0;
   uint8_t hdr[30];
+
   while (zf.available() >= 30) {
     yield();
     if (zf.read(hdr, 30) != 30) break;
     if (hdr[0] != 0x50 || hdr[1] != 0x4B || hdr[2] != 0x03 || hdr[3] != 0x04) break;
+
     uint16_t compression = hdr[8] | (hdr[9] << 8);
     uint32_t compSize   = hdr[18] | (hdr[19] << 8) | (hdr[20] << 16) | (hdr[21] << 24);
+    uint32_t uncompSize = hdr[22] | (hdr[23] << 8) | (hdr[24] << 16) | (hdr[25] << 24);
     uint16_t fnLen      = hdr[26] | (hdr[27] << 8);
     uint16_t extraLen   = hdr[28] | (hdr[29] << 8);
+
+    // Read filename
     char fnBuf[256];
     int toRead = (fnLen < 255) ? fnLen : 255;
     zf.read((uint8_t*)fnBuf, toRead);
     fnBuf[toRead] = 0;
     if (fnLen > 255) zf.seek(zf.position() + (fnLen - 255));
     if (extraLen > 0) zf.seek(zf.position() + extraLen);
+
     String entryName = String(fnBuf);
     int lastSlash = entryName.lastIndexOf('/');
     if (lastSlash >= 0) entryName = entryName.substring(lastSlash + 1);
     String entryLower = entryName;
     entryLower.toLowerCase();
     bool isImage = entryLower.endsWith(".adf") || entryLower.endsWith(".dsk") || entryLower.endsWith(".img");
-    if (isImage && compression == 0 && compSize > 0) {
-      File outFile = SD_MMC.open((destDir + "/" + entryName).c_str(), "w");
-      if (outFile) {
-        uint8_t buf[4096];
-        uint32_t remaining = compSize;
-        while (remaining > 0 && zf.available()) {
-          yield();
-          size_t chunk = (remaining > sizeof(buf)) ? sizeof(buf) : remaining;
-          size_t n = zf.read(buf, chunk);
-          outFile.write(buf, n);
-          remaining -= n;
+
+    if (isImage && compSize > 0 && (compression == 0 || compression == 8)) {
+      String outPath = destDir + "/" + entryName;
+      Serial.println("ZIP entry: " + entryName + " comp=" + String(compression) +
+                     " csize=" + String(compSize) + " usize=" + String(uncompSize));
+
+      if (compression == 0) {
+        // STORED — copy directly
+        File outFile = SD_MMC.open(outPath.c_str(), "w");
+        if (outFile) {
+          uint8_t buf[4096];
+          uint32_t remaining = compSize;
+          while (remaining > 0 && zf.available()) {
+            yield();
+            size_t chunk = (remaining > sizeof(buf)) ? sizeof(buf) : remaining;
+            size_t n = zf.read(buf, chunk);
+            outFile.write(buf, n);
+            remaining -= n;
+          }
+          outFile.close();
+          extracted++;
+          Serial.println("ZIP extracted (stored): " + outPath);
         }
-        outFile.close();
-        extracted++;
-        Serial.println("ZIP extracted: " + destDir + "/" + entryName);
+      } else {
+        // DEFLATE — decompress using zlib + PSRAM buffers
+        uint32_t outBufSize = uncompSize > 0 ? uncompSize : 901120;  // default ADF size
+        uint8_t *compBuf = (uint8_t *)ps_malloc(compSize);
+        uint8_t *outBuf  = (uint8_t *)ps_malloc(outBufSize);
+        if (!compBuf || !outBuf) {
+          Serial.println("ZIP: PSRAM alloc failed (need " + String(compSize + outBufSize) + " bytes)");
+          if (compBuf) free(compBuf);
+          if (outBuf) free(outBuf);
+          zf.seek(zf.position() + compSize);
+          continue;
+        }
+
+        // Read all compressed data into PSRAM
+        size_t readTotal = 0;
+        while (readTotal < compSize && zf.available()) {
+          yield();
+          size_t chunk = compSize - readTotal;
+          if (chunk > 4096) chunk = 4096;
+          size_t n = zf.read(compBuf + readTotal, chunk);
+          readTotal += n;
+        }
+
+        // Decompress using zlib inflate (raw DEFLATE = -MAX_WBITS)
+        z_stream strm;
+        memset(&strm, 0, sizeof(strm));
+        strm.next_in   = compBuf;
+        strm.avail_in  = compSize;
+        strm.next_out  = outBuf;
+        strm.avail_out = outBufSize;
+
+        int ret = inflateInit2(&strm, -MAX_WBITS);  // raw DEFLATE, no zlib/gzip header
+        if (ret == Z_OK) {
+          ret = inflate(&strm, Z_FINISH);
+          inflateEnd(&strm);
+        }
+
+        free(compBuf);
+
+        if (ret == Z_STREAM_END || ret == Z_OK) {
+          size_t decompSize = strm.total_out;
+          File outFile = SD_MMC.open(outPath.c_str(), "w");
+          if (outFile) {
+            size_t written = 0;
+            while (written < decompSize) {
+              yield();
+              size_t chunk = decompSize - written;
+              if (chunk > 4096) chunk = 4096;
+              outFile.write(outBuf + written, chunk);
+              written += chunk;
+            }
+            outFile.close();
+            extracted++;
+            Serial.println("ZIP extracted (deflate): " + outPath + " (" + String(decompSize) + " bytes)");
+          }
+        } else {
+          Serial.println("ZIP: inflate failed, ret=" + String(ret));
+        }
+        free(outBuf);
       }
     } else {
+      // Skip this entry
       if (compSize > 0) zf.seek(zf.position() + compSize);
     }
   }
