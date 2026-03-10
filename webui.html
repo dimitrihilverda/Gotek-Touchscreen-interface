@@ -934,18 +934,6 @@ let archiveAlpha = '';
 async function loadArchive() {
   const noInet = document.getElementById('archive-no-internet');
   const controls = document.getElementById('archive-controls');
-
-  // Check if we have internet
-  if (!systemInfo.internet) {
-    // Refresh system info
-    try { systemInfo = await api('/api/system/info'); } catch(e) {}
-  }
-
-  if (!systemInfo.internet) {
-    noInet.style.display = 'block';
-    controls.style.display = 'none';
-    return;
-  }
   noInet.style.display = 'none';
   controls.style.display = 'flex';
 
@@ -954,10 +942,15 @@ async function loadArchive() {
     const loading = document.getElementById('archive-loading');
     loading.style.display = 'block';
     try {
-      archiveIndex = await api('/api/archive/index');
-      loading.style.display = 'none';
-      buildArchiveAlpha(archiveIndex.games || []);
-      renderArchiveList(archiveIndex.games || []);
+      const data = await api('/api/archive/index');
+      if (data.games && data.games.length > 0) {
+        archiveIndex = data;
+        loading.style.display = 'none';
+        buildArchiveAlpha(archiveIndex.games);
+        renderArchiveList(archiveIndex.games);
+      } else {
+        loading.innerHTML = '<p>No cached archive index. <button class="btn btn-sm" onclick="fetchArchiveIndex()">Fetch from amiga500archive.com</button></p>';
+      }
     } catch (e) {
       loading.innerHTML = '<p style="color:var(--red)">Failed to load archive index. <button class="btn btn-sm" onclick="fetchArchiveIndex()">Fetch from amiga500archive.com</button></p>';
     }
@@ -968,56 +961,44 @@ async function fetchArchiveIndex() {
   const loading = document.getElementById('archive-loading');
   loading.style.display = 'block';
 
+  // Check if ESP32 has internet (STA connected)
+  try { systemInfo = await api('/api/system/info'); } catch(e) {}
+  if (!systemInfo.internet) {
+    loading.innerHTML = '<p style="color:var(--red)">ESP32 has no internet connection. Enable WiFi Client in Config and connect to your home network first.</p>';
+    return;
+  }
+
   const pages = 'abcdefghijklmnopqrstuvwxyz'.split('').concat(['0-9']);
   const games = [];
   const seen = new Set();
+  let errors = 0;
 
   for (let i = 0; i < pages.length; i++) {
     loading.textContent = 'Fetching ' + pages[i].toUpperCase() + '... (' + (i+1) + '/' + pages.length + ', ' + games.length + ' games found)';
 
     try {
-      // Fetch directly from browser (no ESP32 HTTPS needed!)
-      const resp = await fetch('https://amiga500archive.com/games/' + pages[i], { mode: 'cors' }).catch(() => null);
-      if (!resp || !resp.ok) {
-        // CORS blocked? Fall back to ESP32 proxy for this page
-        // Actually, CORS will likely block this. Let's use the ESP32 as fallback.
-        continue;
-      }
-      const html = await resp.text();
-
-      // Parse game links from HTML
-      const re = /href="\/game\/([^"\/]+)"[^>]*>([^<]+)</g;
-      let m;
-      while ((m = re.exec(html)) !== null) {
-        const slug = m[1];
-        const title = m[2].trim();
-        if (slug.length >= 2 && title.length > 0 && !seen.has(slug)) {
-          seen.add(slug);
-          games.push({ name: title, id: slug, cached: false });
+      // Use ESP32 as proxy — one page at a time to avoid crashes
+      const data = await fetch(API + '/api/archive/proxy?page=' + pages[i]).then(r => r.json());
+      if (data.games) {
+        for (const g of data.games) {
+          if (!seen.has(g.id)) {
+            seen.add(g.id);
+            games.push({ name: g.name, id: g.id, cached: false });
+          }
         }
       }
     } catch (e) {
-      // Ignore individual page failures
+      errors++;
+      if (errors > 5) {
+        loading.innerHTML = '<p style="color:var(--red)">Too many errors fetching archive. Check WiFi connection.</p>';
+        return;
+      }
     }
   }
 
-  // If CORS blocked all requests, fall back to ESP32 fetch
   if (games.length === 0) {
-    loading.textContent = 'Browser fetch blocked by CORS, using ESP32... (this takes a while)';
-    try {
-      await api('/api/archive/fetch', { method: 'POST' });
-      // Wait a bit then reload index
-      await new Promise(r => setTimeout(r, 2000));
-      archiveIndex = await api('/api/archive/index');
-      loading.style.display = 'none';
-      buildArchiveAlpha(archiveIndex.games || []);
-      renderArchiveList(archiveIndex.games || []);
-      toast('Archive index loaded: ' + (archiveIndex.games || []).length + ' games');
-      return;
-    } catch (e) {
-      loading.innerHTML = '<p style="color:var(--red)">Failed to fetch archive index.</p>';
-      return;
-    }
+    loading.innerHTML = '<p style="color:var(--red)">No games found. Check internet connection.</p>';
+    return;
   }
 
   // Save index to ESP32 SD cache

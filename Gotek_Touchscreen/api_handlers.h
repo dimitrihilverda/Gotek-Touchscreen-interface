@@ -1151,6 +1151,121 @@ void handleArchiveSaveIndex(WiFiClient &client, const String &body) {
   sendJSON(client, 200, "{\"status\":\"ok\",\"saved\":" + String(count) + "}");
 }
 
+// Proxy a single archive page: GET /api/archive/proxy?page=a
+// Fetches one page from amiga500archive.com, parses game links,
+// returns JSON array. Browser drives the A-Z iteration.
+void handleArchiveProxy(WiFiClient &client, const String &page) {
+  if (page.length() == 0) {
+    sendJSON(client, 400, "{\"error\":\"Missing page parameter\"}");
+    return;
+  }
+  if (!wifi_sta_connected) {
+    sendJSON(client, 503, "{\"error\":\"No internet connection\"}");
+    return;
+  }
+
+  WiFiClientSecure *httpsClient = new WiFiClientSecure();
+  if (!httpsClient) {
+    sendJSON(client, 500, "{\"error\":\"Out of memory\"}");
+    return;
+  }
+  httpsClient->setInsecure();
+  httpsClient->setTimeout(10000);
+
+  String pagePath = "/games/" + page;
+  Serial.println("Archive proxy: " + pagePath + " (heap: " + String(ESP.getFreeHeap()) + ")");
+
+  if (!httpsClient->connect(ARCHIVE_HOST, 443)) {
+    delete httpsClient;
+    sendJSON(client, 502, "{\"error\":\"Cannot connect to archive\"}");
+    return;
+  }
+
+  httpsClient->println("GET " + pagePath + " HTTP/1.1");
+  httpsClient->println("Host: " + String(ARCHIVE_HOST));
+  httpsClient->println("Connection: close");
+  httpsClient->println("User-Agent: Gotek-Touchscreen/1.0");
+  httpsClient->println();
+
+  unsigned long timeout = millis();
+  while (!httpsClient->available() && millis() - timeout < 8000) {
+    delay(50);
+    yield();
+  }
+
+  // Skip headers
+  bool headersEnded = false;
+  while (httpsClient->available()) {
+    String line = httpsClient->readStringUntil('\n');
+    if (line == "\r" || line.length() == 0) { headersEnded = true; break; }
+    yield();
+  }
+
+  if (!headersEnded) {
+    httpsClient->stop();
+    delete httpsClient;
+    sendJSON(client, 502, "{\"error\":\"No response from archive\"}");
+    return;
+  }
+
+  // Parse game links from body, stream into JSON response
+  String json = "{\"games\":[";
+  bool first = true;
+  String buffer = "";
+  buffer.reserve(2048);
+  int count = 0;
+
+  while (httpsClient->available() || httpsClient->connected()) {
+    yield();
+    if (!httpsClient->available()) { delay(10); continue; }
+
+    char c = httpsClient->read();
+    buffer += c;
+
+    if (c == '\n' || buffer.length() > 1500) {
+      int searchFrom = 0;
+      while (true) {
+        int hrefIdx = buffer.indexOf("/game/", searchFrom);
+        if (hrefIdx < 0) break;
+
+        int slugStart = hrefIdx + 6;
+        int slugEnd = buffer.indexOf("\"", slugStart);
+        if (slugEnd < 0) { searchFrom = slugStart; break; }
+
+        String slug = buffer.substring(slugStart, slugEnd);
+        if (slug.indexOf('/') >= 0 || slug.length() < 2) {
+          searchFrom = slugEnd;
+          continue;
+        }
+
+        int textStart = buffer.indexOf(">", slugEnd);
+        if (textStart < 0) { searchFrom = slugEnd; break; }
+        textStart++;
+        int textEnd = buffer.indexOf("<", textStart);
+        if (textEnd < 0) { searchFrom = slugEnd; break; }
+
+        String title = buffer.substring(textStart, textEnd);
+        title.trim();
+        if (title.length() == 0) { searchFrom = textEnd; continue; }
+
+        if (!first) json += ",";
+        first = false;
+        json += "{\"name\":\"" + jsonEscape(title) + "\",\"id\":\"" + jsonEscape(slug) + "\"}";
+        count++;
+        searchFrom = textEnd;
+      }
+      buffer = "";
+    }
+  }
+
+  httpsClient->stop();
+  delete httpsClient;
+
+  json += "],\"count\":" + String(count) + "}";
+  sendJSON(client, 200, json);
+  Serial.println("Archive proxy: " + page + " -> " + String(count) + " games");
+}
+
 // Fetch archive index from amiga500archive.com (ESP32 fallback)
 // Scrapes the site alphabetically: /games/a, /games/b, etc.
 void handleArchiveFetch(WiFiClient &client) {
