@@ -96,6 +96,18 @@ textarea{min-height:80px;resize:vertical}
 .archive-dl-btn{padding:4px 12px;font-size:12px;font-weight:600;border:2px outset var(--light);background:var(--green);color:var(--white);cursor:pointer;border-radius:2px;border-color:#006600}
 .archive-dl-btn:hover{background:#00cc00}
 .archive-dl-btn:disabled{opacity:.5;cursor:default}
+.ftp-item{display:flex;gap:12px;align-items:center;background:var(--light);border:1px solid #999;padding:10px;border-radius:2px;cursor:pointer;transition:all .1s}
+.ftp-item:hover{border-color:var(--blue);background:#d8d8e8}
+.ftp-item.dir{font-weight:700}
+.ftp-icon{width:32px;text-align:center;font-size:18px}
+.ftp-name{flex:1;font-size:14px}
+.ftp-size{font-size:12px;color:#555;min-width:70px;text-align:right}
+.ftp-breadcrumb{font-size:13px;color:#555;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.ftp-breadcrumb a{color:var(--blue);cursor:pointer;text-decoration:underline}
+.ftp-status{font-size:13px;padding:8px 12px;border-radius:2px;margin-bottom:10px}
+.ftp-status.connected{background:#c8e8c8;border:1px solid var(--green);color:#006600}
+.ftp-status.disconnected{background:#e8e0c0;border:1px solid var(--orange);color:#886600}
+.ftp-status.error{background:#ffe8e8;border:1px solid var(--red);color:var(--red)}
 @media(max-width:600px){.tabs{flex-wrap:wrap}.tab{flex:1;text-align:center;padding:8px 10px;font-size:13px}.stat-grid{grid-template-columns:1fr 1fr}.content{padding:10px}}
 </style>
 </head>
@@ -111,6 +123,7 @@ textarea{min-height:80px;resize:vertical}
   <div class="tab" data-view="config">Config</div>
   <div class="tab" data-view="games">Games</div>
   <div class="tab" data-view="archive">Archive</div>
+  <div class="tab" data-view="ftp">FTP</div>
   <div class="tab" data-view="themes">Themes</div>
 </div>
 
@@ -181,6 +194,30 @@ textarea{min-height:80px;resize:vertical}
 
       <div id="wifi-status-box" style="margin-top:10px;padding:8px;background:var(--light);border:1px inset #999;font-size:13px;display:none"></div>
 
+      <h2 style="margin-top:16px">FTP Network Source</h2>
+      <p style="font-size:12px;color:#555;margin-bottom:8px">Browse and download games from your NAS via FTP (requires WiFi Client)</p>
+
+      <label>FTP Enabled</label>
+      <select name="FTP_ENABLED" id="cfg-ftp-enabled">
+        <option value="0">No</option>
+        <option value="1">Yes</option>
+      </select>
+
+      <label>FTP Host</label>
+      <input type="text" name="FTP_HOST" id="cfg-ftp-host" placeholder="192.168.1.100">
+
+      <label>FTP Port</label>
+      <input type="number" name="FTP_PORT" id="cfg-ftp-port" placeholder="21" value="21">
+
+      <label>FTP User</label>
+      <input type="text" name="FTP_USER" id="cfg-ftp-user" placeholder="anonymous">
+
+      <label>FTP Password</label>
+      <input type="password" name="FTP_PASS" id="cfg-ftp-pass">
+
+      <label>FTP Base Path</label>
+      <input type="text" name="FTP_PATH" id="cfg-ftp-path" placeholder="/" value="/">
+
       <div style="margin-top:16px">
         <button type="submit" class="btn btn-primary">Save Configuration</button>
         <button type="button" class="btn" onclick="checkWiFiStatus()">Check WiFi Status</button>
@@ -237,6 +274,28 @@ textarea{min-height:80px;resize:vertical}
     <div id="archive-alpha" style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:2px"></div>
     <div class="game-list" id="archive-list"></div>
     <div id="archive-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading archive index...</div>
+  </div>
+</div>
+
+<!-- FTP -->
+<div class="content view hidden" id="view-ftp">
+  <div class="card">
+    <h2>FTP Network Source</h2>
+    <p style="font-size:13px;color:#555;margin-bottom:10px">Browse and download games from your NAS or network FTP server</p>
+    <div id="ftp-status-bar" class="ftp-status disconnected">Not connected</div>
+    <div id="ftp-no-config" style="display:none;padding:16px;background:#ffe8e8;border:1px solid var(--red);border-radius:2px;margin-bottom:12px">
+      <strong style="color:var(--red)">FTP Not Configured</strong>
+      <p style="font-size:13px;margin-top:4px">Add FTP settings to CONFIG.TXT on the SD card:<br>
+      <code style="font-size:12px">FTP_ENABLED=1<br>FTP_HOST=192.168.1.100<br>FTP_USER=amiga<br>FTP_PASS=games<br>FTP_PATH=/amiga/adf/</code></p>
+    </div>
+    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary" id="ftp-connect-btn" onclick="ftpConnect()">Connect</button>
+      <button class="btn btn-danger" id="ftp-disconnect-btn" onclick="ftpDisconnect()" style="display:none">Disconnect</button>
+      <button class="btn" onclick="ftpRefresh()">Refresh</button>
+    </div>
+    <div id="ftp-breadcrumb" class="ftp-breadcrumb"></div>
+    <div class="game-list" id="ftp-list"></div>
+    <div id="ftp-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading...</div>
   </div>
 </div>
 
@@ -310,6 +369,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.view === 'config') loadConfig();
     if (tab.dataset.view === 'games') loadGames();
     if (tab.dataset.view === 'archive') loadArchive();
+    if (tab.dataset.view === 'ftp') ftpLoadStatus();
     if (tab.dataset.view === 'themes') loadThemes();
   });
 });
@@ -382,6 +442,12 @@ async function loadConfig() {
   document.getElementById('cfg-wifi-client-enabled').value = cfg.WIFI_CLIENT_ENABLED || '0';
   document.getElementById('cfg-wifi-client-ssid').value = cfg.WIFI_CLIENT_SSID || '';
   document.getElementById('cfg-wifi-client-pass').value = cfg.WIFI_CLIENT_PASS || '';
+  document.getElementById('cfg-ftp-enabled').value = cfg.FTP_ENABLED || '0';
+  document.getElementById('cfg-ftp-host').value = cfg.FTP_HOST || '';
+  document.getElementById('cfg-ftp-port').value = cfg.FTP_PORT || '21';
+  document.getElementById('cfg-ftp-user').value = cfg.FTP_USER || 'anonymous';
+  document.getElementById('cfg-ftp-pass').value = cfg.FTP_PASS || '';
+  document.getElementById('cfg-ftp-path').value = cfg.FTP_PATH || '/';
 
   // Load themes for dropdown
   const themes = await api('/api/themes/list');
@@ -1011,6 +1077,189 @@ async function downloadArchiveGame(gameId) {
   } catch (e) {
     btn.textContent = 'Failed';
     btn.disabled = false;
+  }
+}
+
+// ── FTP Functions ──
+
+let ftpCurrentPath = '/';
+let ftpConnected = false;
+
+async function ftpLoadStatus() {
+  try {
+    const status = await api('/api/ftp/status');
+    ftpConnected = status.connected;
+    const bar = document.getElementById('ftp-status-bar');
+    const noConfig = document.getElementById('ftp-no-config');
+    const connectBtn = document.getElementById('ftp-connect-btn');
+    const disconnectBtn = document.getElementById('ftp-disconnect-btn');
+
+    if (!status.enabled || !status.host) {
+      bar.className = 'ftp-status error';
+      bar.textContent = 'FTP not configured';
+      noConfig.style.display = '';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = 'none';
+      return;
+    }
+
+    noConfig.style.display = 'none';
+
+    if (!status.wifi_connected) {
+      bar.className = 'ftp-status disconnected';
+      bar.textContent = 'WiFi client not connected — enable WIFI_CLIENT_ENABLED in Config';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = 'none';
+      return;
+    }
+
+    if (status.connected) {
+      bar.className = 'ftp-status connected';
+      bar.textContent = 'Connected to ' + status.host + ':' + status.port + ' as ' + status.user;
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = '';
+    } else {
+      bar.className = 'ftp-status disconnected';
+      bar.textContent = 'Disconnected — ' + status.host + ':' + status.port;
+      connectBtn.style.display = '';
+      disconnectBtn.style.display = 'none';
+    }
+  } catch (e) {
+    document.getElementById('ftp-status-bar').className = 'ftp-status error';
+    document.getElementById('ftp-status-bar').textContent = 'Failed to get FTP status';
+  }
+}
+
+async function ftpConnect() {
+  const btn = document.getElementById('ftp-connect-btn');
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+  document.getElementById('ftp-loading').style.display = '';
+
+  try {
+    await api('/api/ftp/connect', { method: 'POST' });
+    ftpConnected = true;
+    toast('FTP connected!');
+    ftpCurrentPath = '/';
+    await ftpLoadStatus();
+    await ftpBrowse('/');
+  } catch (e) {
+    toast('FTP connection failed', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+    document.getElementById('ftp-loading').style.display = 'none';
+  }
+}
+
+async function ftpDisconnect() {
+  try {
+    await api('/api/ftp/disconnect', { method: 'POST' });
+    ftpConnected = false;
+    document.getElementById('ftp-list').innerHTML = '';
+    document.getElementById('ftp-breadcrumb').innerHTML = '';
+    await ftpLoadStatus();
+    toast('FTP disconnected');
+  } catch (e) { /* ignore */ }
+}
+
+async function ftpRefresh() {
+  if (ftpConnected) {
+    await ftpBrowse(ftpCurrentPath);
+  } else {
+    await ftpLoadStatus();
+  }
+}
+
+async function ftpBrowse(path) {
+  ftpCurrentPath = path;
+  const list = document.getElementById('ftp-list');
+  const loading = document.getElementById('ftp-loading');
+  loading.style.display = '';
+  list.innerHTML = '';
+  ftpUpdateBreadcrumb(path);
+
+  try {
+    const data = await api('/api/ftp/list?path=' + encodeURIComponent(path));
+    loading.style.display = 'none';
+
+    if (data.entries.length === 0) {
+      list.innerHTML = '<div style="padding:20px;text-align:center;color:#888">No ADF/DSK files found in this directory</div>';
+      return;
+    }
+
+    // Sort: directories first, then files
+    data.entries.sort((a, b) => {
+      if (a.dir && !b.dir) return -1;
+      if (!a.dir && b.dir) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    let html = '';
+    // Add parent directory link if not at root
+    if (path !== '/' && path !== '') {
+      const parentPath = path.substring(0, path.lastIndexOf('/')) || '/';
+      html += '<div class="ftp-item dir" onclick="ftpBrowse(\'' + parentPath.replace(/'/g, "\\'") + '\')">' +
+        '<div class="ftp-icon">&#128193;</div>' +
+        '<div class="ftp-name">..</div>' +
+        '<div class="ftp-size"></div></div>';
+    }
+
+    data.entries.forEach(entry => {
+      const fullPath = (path === '/' ? '/' : path + '/') + entry.name;
+      if (entry.dir) {
+        html += '<div class="ftp-item dir" onclick="ftpBrowse(\'' + fullPath.replace(/'/g, "\\'") + '\')">' +
+          '<div class="ftp-icon">&#128193;</div>' +
+          '<div class="ftp-name">' + esc(entry.name) + '</div>' +
+          '<div class="ftp-size"></div></div>';
+      } else {
+        const sizeStr = entry.size > 1048576 ? (entry.size / 1048576).toFixed(1) + ' MB' :
+                        entry.size > 1024 ? (entry.size / 1024).toFixed(0) + ' KB' : entry.size + ' B';
+        html += '<div class="ftp-item">' +
+          '<div class="ftp-icon">&#128190;</div>' +
+          '<div class="ftp-name">' + esc(entry.name) + '</div>' +
+          '<div class="ftp-size">' + sizeStr + '</div>' +
+          '<button class="archive-dl-btn" onclick="ftpDownload(\'' + fullPath.replace(/'/g, "\\'") + '\',this)">Download</button>' +
+          '</div>';
+      }
+    });
+    list.innerHTML = html;
+  } catch (e) {
+    loading.style.display = 'none';
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--red)">Failed to list directory: ' + esc(e.message || 'Unknown error') + '</div>';
+  }
+}
+
+function ftpUpdateBreadcrumb(path) {
+  const bc = document.getElementById('ftp-breadcrumb');
+  const parts = path.split('/').filter(p => p.length > 0);
+  let html = '<a onclick="ftpBrowse(\'/\')">FTP Root</a>';
+  let buildPath = '';
+  parts.forEach(part => {
+    buildPath += '/' + part;
+    const p = buildPath;
+    html += ' / <a onclick="ftpBrowse(\'' + p.replace(/'/g, "\\'") + '\')">' + esc(part) + '</a>';
+  });
+  bc.innerHTML = html;
+}
+
+async function ftpDownload(remotePath, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Downloading...';
+
+  try {
+    const result = await api('/api/ftp/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'path=' + encodeURIComponent(remotePath)
+    });
+    btn.textContent = 'Done!';
+    toast(result.file + ' downloaded (' + (result.bytes / 1024).toFixed(0) + ' KB)');
+    loadGames();  // refresh game list
+  } catch (e) {
+    btn.textContent = 'Failed';
+    btn.disabled = false;
+    toast('Download failed: ' + (e.message || 'Unknown error'), 'error');
   }
 }
 

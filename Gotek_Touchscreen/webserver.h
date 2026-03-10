@@ -674,6 +674,39 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
+  // ── FTP API routes ──
+  if (req.path == "/api/ftp/status" && req.method == "GET") {
+    handleFTPStatus(client);
+    return;
+  }
+  if (req.path == "/api/ftp/connect" && req.method == "POST") {
+    handleFTPConnect(client);
+    return;
+  }
+  if (req.path == "/api/ftp/disconnect" && req.method == "POST") {
+    handleFTPDisconnect(client);
+    return;
+  }
+  if (req.path == "/api/ftp/list" && req.method == "GET") {
+    // Parse path from query string: /api/ftp/list?path=/subdir
+    String ftpPath = "/";
+    if (req.query.length() > 0) {
+      int pIdx = req.query.indexOf("path=");
+      if (pIdx >= 0) {
+        ftpPath = req.query.substring(pIdx + 5);
+        int ampIdx = ftpPath.indexOf("&");
+        if (ampIdx >= 0) ftpPath = ftpPath.substring(0, ampIdx);
+        ftpPath = urlDecode(ftpPath);
+      }
+    }
+    handleFTPList(client, ftpPath);
+    return;
+  }
+  if (req.path == "/api/ftp/download" && req.method == "POST") {
+    handleFTPDownload(client, req.body);
+    return;
+  }
+
   // ── Archive API routes ──
   if (req.path == "/api/archive/index" && req.method == "GET") {
     handleArchiveIndex(client);

@@ -376,6 +376,14 @@ bool   cfg_wifi_client_enabled = false;
 String cfg_wifi_client_ssid    = "";
 String cfg_wifi_client_pass    = "";
 
+// FTP config — browse and download from a network FTP server
+bool   cfg_ftp_enabled = false;
+String cfg_ftp_host    = "";
+int    cfg_ftp_port    = 21;
+String cfg_ftp_user    = "anonymous";
+String cfg_ftp_pass    = "gotek@local";
+String cfg_ftp_path    = "/";
+
 // Remote dongle config — send disk images to a WiFi Dongle instead of local USB
 bool   cfg_remote_enabled  = false;
 String cfg_remote_ssid     = "Gotek-Dongle";   // dongle's WiFi AP name
@@ -1004,6 +1012,19 @@ void loadConfig() {
     } else if (key == "REMOTE_PORT") {
       cfg_remote_port = val.toInt();
       if (cfg_remote_port <= 0) cfg_remote_port = 80;
+    } else if (key == "FTP_ENABLED") {
+      cfg_ftp_enabled = (val == "1" || val == "true");
+    } else if (key == "FTP_HOST") {
+      cfg_ftp_host = val;
+    } else if (key == "FTP_PORT") {
+      cfg_ftp_port = val.toInt();
+      if (cfg_ftp_port <= 0) cfg_ftp_port = 21;
+    } else if (key == "FTP_USER") {
+      cfg_ftp_user = val;
+    } else if (key == "FTP_PASS") {
+      cfg_ftp_pass = val;
+    } else if (key == "FTP_PATH") {
+      cfg_ftp_path = val;
     }
   }
   f.close();
@@ -1047,6 +1068,16 @@ void saveConfig() {
   }
   f.println("REMOTE_HOST=" + cfg_remote_host);
   f.println("REMOTE_PORT=" + String(cfg_remote_port));
+
+  // FTP settings
+  f.println("FTP_ENABLED=" + String(cfg_ftp_enabled ? "1" : "0"));
+  if (cfg_ftp_host.length() > 0) {
+    f.println("FTP_HOST=" + cfg_ftp_host);
+    f.println("FTP_PORT=" + String(cfg_ftp_port));
+    f.println("FTP_USER=" + cfg_ftp_user);
+    f.println("FTP_PASS=" + cfg_ftp_pass);
+    f.println("FTP_PATH=" + cfg_ftp_path);
+  }
 
   f.close();
 }
@@ -3154,6 +3185,7 @@ void doLoadSelected() {
 // ============================================================================
 // WiFi Web Server (include after all game/theme functions are defined)
 // ============================================================================
+#include "ftp_client.h"
 #include "webserver.h"
 
 void setup() {
