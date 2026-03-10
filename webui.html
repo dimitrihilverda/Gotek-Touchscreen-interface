@@ -276,11 +276,8 @@ textarea{min-height:80px;resize:vertical}
     <div id="archive-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading archive index...</div>
     <div style="margin-top:12px;padding:8px;background:#eee;border:1px solid #ccc;border-radius:2px">
       <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-sm" onclick="debugArchive('/items.php?category=games')">Test /items.php?category=games</button>
         <button class="btn btn-sm" onclick="debugArchive('/')">Test /</button>
-        <button class="btn btn-sm" onclick="debugArchive('/games')">Test /games</button>
-        <button class="btn btn-sm" onclick="debugArchive('/browse')">Test /browse</button>
-        <button class="btn btn-sm" onclick="debugArchive('/list')">Test /list</button>
-        <button class="btn btn-sm" onclick="debugArchive('/search')">Test /search</button>
         <button class="btn btn-sm" onclick="debugArchive('/sitemap.xml')">Sitemap</button>
         <input type="text" id="debug-path" placeholder="/custom/path" style="width:140px;font-size:12px">
         <button class="btn btn-sm" onclick="debugArchive(document.getElementById('debug-path').value)">Test custom</button>

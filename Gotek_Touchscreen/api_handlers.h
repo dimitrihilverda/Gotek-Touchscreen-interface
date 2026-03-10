@@ -1052,6 +1052,7 @@ void handleThemeActivateParsed(WiFiClient &client, const String &name) {
 
 #define ARCHIVE_CACHE_PATH "/CACHE/archive_index.txt"
 #define ARCHIVE_HOST "amiga500archive.com"
+#define ARCHIVE_GAMES_PATH "/items.php?category=games"
 
 // Read cached archive index from SD
 void handleArchiveIndex(WiFiClient &client) {
