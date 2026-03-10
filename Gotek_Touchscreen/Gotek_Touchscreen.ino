@@ -2585,9 +2585,9 @@ void archiveFetchIndex() {
 }
 
 // ZIP extractor for ADF/DSK files — supports STORED and DEFLATE.
-// Uses PSRAM buffers + ESP-IDF zlib (always available on ESP32).
+// Uses PSRAM buffers + zlib (provided by PNGdec library).
+// PNGdec's zlib has a 3-arg inflate(strm, flush, check_crc).
 // For raw DEFLATE (ZIP method 8), we use inflateInit2 with -MAX_WBITS.
-#include <zlib.h>
 
 int extractZipToDir(const String &zipPath, const String &destDir) {
   File zf = SD_MMC.open(zipPath.c_str(), "r");
@@ -2676,7 +2676,7 @@ int extractZipToDir(const String &zipPath, const String &destDir) {
 
         int ret = inflateInit2(&strm, -MAX_WBITS);  // raw DEFLATE, no zlib/gzip header
         if (ret == Z_OK) {
-          ret = inflate(&strm, Z_FINISH);
+          ret = inflate(&strm, Z_FINISH, 0);  // 3rd arg: check_crc (PNGdec zlib)
           inflateEnd(&strm);
         }
 
