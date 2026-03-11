@@ -89,6 +89,12 @@ bool initWiFiAP() {
     Serial.println("WiFi mode: Station only (remote)");
   }
 
+  // Reduce TX power to prevent brownouts when powered from Gotek USB
+  // Default is 19.5 dBm (~80mA peak). Lowering to 8.5 dBm (~40mA) is safer.
+  // Still gives ~10m range which is plenty for a room.
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  Serial.println("WiFi TX power: 8.5 dBm (low power mode)");
+
   // Start Access Point (if enabled)
   if (cfg_wifi_enabled) {
     WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
@@ -548,7 +554,7 @@ void handleHttpRequest(WiFiClient &client) {
 
   // ── Serve SPA ──
   if (req.path == "/" || req.path == "/index.html") {
-    sendGzipResponse(client, "text/html", webui_html_gz, webui_html_gz_len);
+    sendGzipResponse(client, "text/html", webui_gz, webui_gz_len);
     return;
   }
 
@@ -665,6 +671,88 @@ void handleHttpRequest(WiFiClient &client) {
   if (req.path.startsWith("/api/themes/") && req.path.endsWith("/activate") && req.method == "POST") {
     String name = req.path.substring(12, req.path.length() - 9);
     handleThemeActivateParsed(client, name);
+    return;
+  }
+
+  // ── FTP API routes ──
+  if (req.path == "/api/ftp/status" && req.method == "GET") {
+    handleFTPStatus(client);
+    return;
+  }
+  if (req.path == "/api/ftp/connect" && req.method == "POST") {
+    handleFTPConnect(client);
+    return;
+  }
+  if (req.path == "/api/ftp/disconnect" && req.method == "POST") {
+    handleFTPDisconnect(client);
+    return;
+  }
+  if (req.path == "/api/ftp/list" && req.method == "GET") {
+    // Parse path from query string: /api/ftp/list?path=/subdir
+    String ftpPath = "/";
+    if (req.query.length() > 0) {
+      int pIdx = req.query.indexOf("path=");
+      if (pIdx >= 0) {
+        ftpPath = req.query.substring(pIdx + 5);
+        int ampIdx = ftpPath.indexOf("&");
+        if (ampIdx >= 0) ftpPath = ftpPath.substring(0, ampIdx);
+        ftpPath = urlDecode(ftpPath);
+      }
+    }
+    handleFTPList(client, ftpPath);
+    return;
+  }
+  if (req.path == "/api/ftp/download" && req.method == "POST") {
+    handleFTPDownload(client, req.body);
+    return;
+  }
+
+  // ── WebDAV API routes ──
+  if (req.path == "/api/dav/status" && req.method == "GET") {
+    handleDAVStatus(client);
+    return;
+  }
+  if (req.path == "/api/dav/connect" && req.method == "POST") {
+    handleDAVConnect(client);
+    return;
+  }
+  if (req.path == "/api/dav/disconnect" && req.method == "POST") {
+    handleDAVDisconnect(client);
+    return;
+  }
+  if (req.path == "/api/dav/list" && req.method == "GET") {
+    String davPath = "/";
+    int pIdx = req.query.indexOf("path=");
+    if (pIdx >= 0) {
+      davPath = req.query.substring(pIdx + 5);
+      int ampIdx = davPath.indexOf("&");
+      if (ampIdx >= 0) davPath = davPath.substring(0, ampIdx);
+      davPath = urlDecode(davPath);
+    }
+    bool forceRefresh = (req.query.indexOf("refresh=1") >= 0);
+    handleDAVList(client, davPath, forceRefresh);
+    return;
+  }
+  if (req.path == "/api/dav/download" && req.method == "POST") {
+    handleDAVDownload(client, req.body);
+    return;
+  }
+  if (req.path == "/api/dav/load" && req.method == "POST") {
+    handleDAVLoad(client, req.body);
+    return;
+  }
+  if (req.path.startsWith("/api/dav/cover") && req.method == "GET") {
+    String coverPath = "";
+    int qm = req.query.indexOf("path=");
+    if (qm >= 0) coverPath = req.query.substring(qm + 5);
+    handleDAVCover(client, coverPath);
+    return;
+  }
+  if (req.path.startsWith("/api/dav/nfo") && req.method == "GET") {
+    String nfoPath = "";
+    int qm = req.query.indexOf("path=");
+    if (qm >= 0) nfoPath = req.query.substring(qm + 5);
+    handleDAVNfo(client, nfoPath);
     return;
   }
 

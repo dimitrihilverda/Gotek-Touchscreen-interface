@@ -5,9 +5,9 @@
   No SD card, no display — disk images are sent via WiFi and stored in PSRAM.
 
   How it works:
-    1. Dongle creates WiFi AP ("Gotek-Dongle")
-    2. Open http://192.168.4.1 on your phone/laptop
-    3. Upload or drag & drop an ADF/DSK file
+    1. Dongle creates WiFi AP ("Gotek-Dongle") + optionally connects to your home network
+    2. Open http://192.168.4.1 (AP) or the assigned IP (STA) on your phone/laptop
+    3. Upload, FTP browse, or WebDAV browse disk images
     4. Dongle loads it into PSRAM → presents as USB floppy to Gotek
     5. Play!
 
@@ -37,6 +37,9 @@
 #include <USBMSC.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
+#include <Preferences.h>
+#include <SPIFFS.h>
 
 extern "C" {
   extern bool tud_mounted(void);
@@ -45,7 +48,7 @@ extern "C" {
   extern void* ps_malloc(size_t size);
 }
 
-#define FW_VERSION "v1.0.0-WiFiDongle"
+#define FW_VERSION "v2.0.0-WiFiDongle"
 
 // ==========================================================================
 // STATUS LED (XIAO ESP32-S3 built-in LED on IO21)
@@ -62,15 +65,185 @@ void ledBlink(int times = 1, int ms = 100) {
 }
 
 // ==========================================================================
-// WiFi CONFIG
+// CONFIG — stored in NVS flash (no SD card on dongle)
 // ==========================================================================
-String cfg_wifi_ssid = "Gotek-Dongle";
-String cfg_wifi_pass = "retrogaming";
+Preferences prefs;
+
+// WiFi AP config
+String cfg_wifi_ssid     = "Gotek-Dongle";
+String cfg_wifi_pass     = "retrogaming";
 uint8_t cfg_wifi_channel = 6;
+
+// WiFi Client (STA) config — connect to existing network
+bool   cfg_wifi_client_enabled = false;
+String cfg_wifi_client_ssid    = "";
+String cfg_wifi_client_pass    = "";
+
+// FTP config
+bool   cfg_ftp_enabled = false;
+String cfg_ftp_host    = "";
+int    cfg_ftp_port    = 21;
+String cfg_ftp_user    = "anonymous";
+String cfg_ftp_pass    = "gotek@local";
+String cfg_ftp_path    = "/";
+
+// WebDAV config
+bool   cfg_dav_enabled = false;
+String cfg_dav_host    = "";
+int    cfg_dav_port    = 443;
+String cfg_dav_user    = "";
+String cfg_dav_pass    = "";
+String cfg_dav_path    = "/remote.php/webdav/";
+bool   cfg_dav_https   = true;
 
 // WiFi state
 bool wifi_ap_active = false;
 String wifi_ap_ip = "";
+bool wifi_sta_connected = false;
+String wifi_sta_ip = "";
+
+void loadConfig() {
+  prefs.begin("gotek", true);  // read-only
+  cfg_wifi_ssid     = prefs.getString("ap_ssid", "Gotek-Dongle");
+  cfg_wifi_pass     = prefs.getString("ap_pass", "retrogaming");
+  cfg_wifi_channel  = prefs.getUChar("ap_chan", 6);
+
+  cfg_wifi_client_enabled = prefs.getBool("sta_en", false);
+  cfg_wifi_client_ssid    = prefs.getString("sta_ssid", "");
+  cfg_wifi_client_pass    = prefs.getString("sta_pass", "");
+
+  cfg_ftp_enabled = prefs.getBool("ftp_en", false);
+  cfg_ftp_host    = prefs.getString("ftp_host", "");
+  cfg_ftp_port    = prefs.getInt("ftp_port", 21);
+  cfg_ftp_user    = prefs.getString("ftp_user", "anonymous");
+  cfg_ftp_pass    = prefs.getString("ftp_pass", "gotek@local");
+  cfg_ftp_path    = prefs.getString("ftp_path", "/");
+
+  cfg_dav_enabled = prefs.getBool("dav_en", false);
+  cfg_dav_host    = prefs.getString("dav_host", "");
+  cfg_dav_port    = prefs.getInt("dav_port", 443);
+  cfg_dav_user    = prefs.getString("dav_user", "");
+  cfg_dav_pass    = prefs.getString("dav_pass", "");
+  cfg_dav_path    = prefs.getString("dav_path", "/remote.php/webdav/");
+  cfg_dav_https   = prefs.getBool("dav_https", true);
+  prefs.end();
+}
+
+void saveConfig() {
+  prefs.begin("gotek", false);  // read-write
+  prefs.putString("ap_ssid", cfg_wifi_ssid);
+  prefs.putString("ap_pass", cfg_wifi_pass);
+  prefs.putUChar("ap_chan", cfg_wifi_channel);
+
+  prefs.putBool("sta_en", cfg_wifi_client_enabled);
+  prefs.putString("sta_ssid", cfg_wifi_client_ssid);
+  prefs.putString("sta_pass", cfg_wifi_client_pass);
+
+  prefs.putBool("ftp_en", cfg_ftp_enabled);
+  prefs.putString("ftp_host", cfg_ftp_host);
+  prefs.putInt("ftp_port", cfg_ftp_port);
+  prefs.putString("ftp_user", cfg_ftp_user);
+  prefs.putString("ftp_pass", cfg_ftp_pass);
+  prefs.putString("ftp_path", cfg_ftp_path);
+
+  prefs.putBool("dav_en", cfg_dav_enabled);
+  prefs.putString("dav_host", cfg_dav_host);
+  prefs.putInt("dav_port", cfg_dav_port);
+  prefs.putString("dav_user", cfg_dav_user);
+  prefs.putString("dav_pass", cfg_dav_pass);
+  prefs.putString("dav_path", cfg_dav_path);
+  prefs.putBool("dav_https", cfg_dav_https);
+  prefs.end();
+}
+
+// ==========================================================================
+// DAV CACHE — in-memory + SPIFFS persistent cache (no SD card on dongle)
+// ==========================================================================
+std::vector<DAVFileEntry> dav_entries;  // in-memory cache of root listing
+
+#define DAV_CACHE_FILE "/DAV_CACHE.TXT"
+
+void davSaveCache() {
+  File f = SPIFFS.open(DAV_CACHE_FILE, "w");
+  if (!f) return;
+  f.println("HOST=" + cfg_dav_host);
+  f.println("COUNT=" + String(dav_entries.size()));
+  for (const auto &e : dav_entries) {
+    if (e.isDir) {
+      f.println("D|" + e.name);
+    } else {
+      f.println("F|" + String(e.size) + "|" + e.name + "|" + e.coverFile + "|" + e.nfoFile);
+    }
+  }
+  f.close();
+}
+
+bool davLoadCache() {
+  if (!SPIFFS.exists(DAV_CACHE_FILE)) return false;
+  File f = SPIFFS.open(DAV_CACHE_FILE, "r");
+  if (!f) return false;
+
+  dav_entries.clear();
+  String line;
+  bool hostOk = false;
+
+  while (f.available()) {
+    line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+
+    if (line.startsWith("HOST=")) {
+      hostOk = (line.substring(5) == cfg_dav_host);
+      continue;
+    }
+    if (line.startsWith("COUNT=")) continue;
+
+    if (!hostOk) {
+      f.close();
+      dav_entries.clear();
+      return false;
+    }
+
+    if (line.startsWith("D|")) {
+      DAVFileEntry entry;
+      entry.name = line.substring(2);
+      entry.isDir = true;
+      entry.size = 0;
+      entry.hasCover = false;
+      entry.hasNfo = false;
+      dav_entries.push_back(entry);
+    } else if (line.startsWith("F|")) {
+      String rest = line.substring(2);
+      int p1 = rest.indexOf('|');
+      if (p1 < 0) continue;
+      int p2 = rest.indexOf('|', p1 + 1);
+      if (p2 < 0) continue;
+      int p3 = rest.indexOf('|', p2 + 1);
+
+      DAVFileEntry entry;
+      entry.isDir = false;
+      entry.size = rest.substring(0, p1).toInt();
+      entry.name = rest.substring(p1 + 1, p2);
+      entry.hasCover = false;
+      entry.hasNfo = false;
+      if (p3 >= 0) {
+        entry.coverFile = rest.substring(p2 + 1, p3);
+        entry.nfoFile = rest.substring(p3 + 1);
+        if (entry.coverFile.length() > 0) entry.hasCover = true;
+        if (entry.nfoFile.length() > 0) entry.hasNfo = true;
+      }
+      dav_entries.push_back(entry);
+    }
+  }
+  f.close();
+  return (dav_entries.size() > 0);
+}
+
+void davClearCache() {
+  if (SPIFFS.exists(DAV_CACHE_FILE)) {
+    SPIFFS.remove(DAV_CACHE_FILE);
+  }
+}
 
 // ==========================================================================
 // RAM DISK — FAT12 floppy in PSRAM
@@ -110,18 +283,18 @@ void build_boot_sector(uint8_t *buf) {
   memset(buf, 0, 512);
   buf[0x00] = 0xEB; buf[0x01] = 0x3C; buf[0x02] = 0x90;
   memcpy(&buf[0x03], "MSDOS5.0", 8);
-  *(uint16_t *)&buf[0x0B] = 512;    // bytes per sector
-  buf[0x0D] = 1;                     // sectors per cluster
-  *(uint16_t *)&buf[0x0E] = 1;      // reserved sectors
-  buf[0x10] = 2;                     // number of FATs
-  *(uint16_t *)&buf[0x11] = 224;    // root dir entries
-  *(uint16_t *)&buf[0x13] = 2880;   // total sectors (1.44MB)
-  buf[0x15] = 0xF0;                  // media descriptor (1.44MB floppy)
-  *(uint16_t *)&buf[0x16] = 9;      // sectors per FAT
-  *(uint16_t *)&buf[0x18] = 18;     // sectors per track
-  *(uint16_t *)&buf[0x1A] = 2;      // heads
-  buf[0x24] = 0x00;                  // drive number (floppy)
-  buf[0x26] = 0x29;                  // extended boot sig
+  *(uint16_t *)&buf[0x0B] = 512;
+  buf[0x0D] = 1;
+  *(uint16_t *)&buf[0x0E] = 1;
+  buf[0x10] = 2;
+  *(uint16_t *)&buf[0x11] = 224;
+  *(uint16_t *)&buf[0x13] = 2880;
+  buf[0x15] = 0xF0;
+  *(uint16_t *)&buf[0x16] = 9;
+  *(uint16_t *)&buf[0x18] = 18;
+  *(uint16_t *)&buf[0x1A] = 2;
+  buf[0x24] = 0x00;
+  buf[0x26] = 0x29;
   buf[0x27] = 0x47; buf[0x28] = 0x4F; buf[0x29] = 0x54; buf[0x2A] = 0x4B;
   memcpy(&buf[0x2B], "GOTEK      ", 11);
   memcpy(&buf[0x36], "FAT12   ", 8);
@@ -139,8 +312,6 @@ void make_83_name(const char *src, uint8_t *dst) {
 void build_empty_volume() {
   memset(ram_disk, 0, RAM_DISK_SIZE);
   build_boot_sector(&ram_disk[0]);
-
-  // FAT1 + FAT2: media descriptor + end-of-chain
   uint8_t *fat1 = &ram_disk[FAT1_OFFSET];
   uint8_t *fat2 = &ram_disk[FAT2_OFFSET];
   memset(fat1, 0, 4608);
@@ -149,26 +320,20 @@ void build_empty_volume() {
   fat12_set(fat1, 1, 0xFFF);
   fat12_set(fat2, 0, 0xFF0);
   fat12_set(fat2, 1, 0xFFF);
-
-  // Empty root directory
   memset(&ram_disk[ROOTDIR_OFFSET], 0, 7168);
-
   msc_block_count = RAM_DISK_SIZE / 512;
 }
 
-// Load file data (already in ram_disk data area) into FAT structure
 void build_fat_for_file(const char *filename, size_t fileSize) {
-  // Root directory entry
   uint8_t *root = &ram_disk[ROOTDIR_OFFSET];
   memset(root, 0, 32);
   uint8_t fname83[11];
   make_83_name(filename, fname83);
   memcpy(root, fname83, 11);
-  root[11] = 0x20;  // archive attribute
-  *(uint16_t *)&root[26] = 2;  // start cluster
+  root[11] = 0x20;
+  *(uint16_t *)&root[26] = 2;
   *(uint32_t *)&root[28] = fileSize;
 
-  // FAT chain
   uint16_t clusters = (fileSize + 511) / 512;
   uint8_t *fat1 = &ram_disk[FAT1_OFFSET];
   uint8_t *fat2 = &ram_disk[FAT2_OFFSET];
@@ -205,12 +370,10 @@ static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t 
 // DISK LOAD / EJECT
 // ==========================================================================
 
-// Load disk image data that's already been written to ram_disk[DATA_OFFSET]
 void loadDisk(const String &filename, size_t size) {
   tud_disconnect();
   delay(50);
 
-  // Rebuild FAT structure around the data
   build_boot_sector(&ram_disk[0]);
   uint8_t *fat1 = &ram_disk[FAT1_OFFSET];
   uint8_t *fat2 = &ram_disk[FAT2_OFFSET];
@@ -252,6 +415,78 @@ void ejectDisk() {
 }
 
 // ==========================================================================
+// FTP & WebDAV CLIENTS
+// ==========================================================================
+#include "ftp_client.h"
+#include "webdav_client.h"
+
+GotekFTP ftpClient;
+GotekDAV davClient;
+
+// Stream a file from FTP directly into RAM disk
+size_t loadFileFromFTP(const String &remotePath) {
+  tud_disconnect();
+  delay(50);
+
+  build_empty_volume();
+
+  size_t maxData = RAM_DISK_SIZE - DATA_OFFSET;
+  long totalRead = ftpClient.streamToBuffer(remotePath, &ram_disk[DATA_OFFSET], maxData);
+
+  if (totalRead <= 0) {
+    tud_connect();
+    return 0;
+  }
+
+  // Extract filename from path
+  String filename = remotePath;
+  int lastSlash = filename.lastIndexOf('/');
+  if (lastSlash >= 0) filename = filename.substring(lastSlash + 1);
+  if (filename.length() == 0) filename = "DISK.ADF";
+
+  build_fat_for_file(filename.c_str(), totalRead);
+  loaded_filename = filename;
+  loaded_size = totalRead;
+  disk_present = true;
+
+  msc.mediaPresent(true);
+  tud_connect();
+  ledBlink(2, 50);
+  return totalRead;
+}
+
+// Stream a file from WebDAV directly into RAM disk
+size_t loadFileFromDAV(const String &remotePath) {
+  tud_disconnect();
+  delay(50);
+
+  build_empty_volume();
+
+  size_t maxData = RAM_DISK_SIZE - DATA_OFFSET;
+  long totalRead = davClient.streamToBuffer(remotePath, &ram_disk[DATA_OFFSET], maxData);
+
+  if (totalRead <= 0) {
+    tud_connect();
+    return 0;
+  }
+
+  String filename = remotePath;
+  int lastSlash = filename.lastIndexOf('/');
+  if (lastSlash >= 0) filename = filename.substring(lastSlash + 1);
+  if (filename.length() == 0) filename = "DISK.ADF";
+
+  build_fat_for_file(filename.c_str(), totalRead);
+  loaded_filename = filename;
+  loaded_size = totalRead;
+  disk_present = true;
+
+  msc.mediaPresent(true);
+  tud_connect();
+  ledBlink(2, 50);
+  return totalRead;
+}
+
+// ==========================================================================
 // HTTP HELPERS
 // ==========================================================================
 
@@ -264,6 +499,7 @@ String jsonEscape(const String &s) {
     else if (c == '\\') out += "\\\\";
     else if (c == '\n') out += "\\n";
     else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
     else out += c;
   }
   return out;
@@ -275,7 +511,7 @@ void sendResponse(WiFiClient &client, int code, const String &contentType, const
   client.println("Content-Length: " + String(body.length()));
   client.println("Access-Control-Allow-Origin: *");
   client.println("Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS");
-  client.println("Access-Control-Allow-Headers: Content-Type");
+  client.println("Access-Control-Allow-Headers: Content-Type,X-Filename");
   client.println("Connection: close");
   client.println();
   client.print(body);
@@ -285,238 +521,89 @@ void sendJSON(WiFiClient &client, int code, const String &json) {
   sendResponse(client, code, "application/json", json);
 }
 
-// ==========================================================================
-// WEB UI — embedded HTML (self-contained SPA)
-// ==========================================================================
-
-const char WEBUI_HTML[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Gotek WiFi Dongle</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#1a1a2e;--panel:#16213e;--accent:#0f3460;--blue:#00a8cc;--green:#00cc66;--red:#e94560;--orange:#ff8c00;--text:#eee;--dim:#888}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;align-items:center}
-.header{background:linear-gradient(135deg,#0f3460,#00a8cc);width:100%;padding:20px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.5)}
-.header h1{font-size:22px;font-weight:700;letter-spacing:2px}
-.header .sub{font-size:13px;opacity:.7;margin-top:4px;font-family:monospace}
-.container{width:100%;max-width:500px;padding:16px}
-.card{background:var(--panel);border:1px solid #2a2a4a;border-radius:12px;padding:20px;margin-bottom:16px}
-.card h2{font-size:15px;color:var(--blue);margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
-.status{display:flex;align-items:center;gap:10px;padding:12px;background:#0d1b2a;border-radius:8px;margin-bottom:12px}
-.status .dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
-.status .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
-.status .dot.off{background:var(--red)}
-.status .info{flex:1}
-.status .name{font-weight:600;font-size:15px}
-.status .detail{font-size:12px;color:var(--dim);margin-top:2px}
-.drop-zone{border:2px dashed #3a3a6a;border-radius:12px;padding:40px 20px;text-align:center;cursor:pointer;transition:all .2s}
-.drop-zone:hover,.drop-zone.over{border-color:var(--blue);background:rgba(0,168,204,.08)}
-.drop-zone .icon{font-size:48px;margin-bottom:8px}
-.drop-zone p{font-size:14px;color:var(--dim)}
-.drop-zone input{display:none}
-.progress{display:none;margin-top:12px}
-.progress-bar{height:6px;background:#2a2a4a;border-radius:3px;overflow:hidden}
-.progress-fill{height:100%;background:linear-gradient(90deg,var(--blue),var(--green));width:0;transition:width .3s;border-radius:3px}
-.progress-text{font-size:12px;color:var(--dim);margin-top:4px;text-align:center}
-.btn{display:block;width:100%;padding:14px;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;transition:all .15s;text-align:center}
-.btn:active{transform:scale(.98)}
-.btn-eject{background:var(--red);color:#fff;margin-top:8px}
-.btn-eject:hover{background:#ff2255}
-.btn-eject:disabled{background:#444;color:#888;cursor:not-allowed}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.info-item{background:#0d1b2a;border-radius:6px;padding:10px}
-.info-item .label{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
-.info-item .value{font-size:16px;font-weight:700;margin-top:2px}
-.msg{padding:10px;border-radius:6px;font-size:13px;margin-top:8px;display:none}
-.msg.ok{display:block;background:rgba(0,204,102,.15);color:var(--green);border:1px solid rgba(0,204,102,.3)}
-.msg.err{display:block;background:rgba(233,69,96,.15);color:var(--red);border:1px solid rgba(233,69,96,.3)}
-</style>
-</head>
-<body>
-
-<div class="header">
-  <h1>GOTEK WiFi DONGLE</h1>
-  <div class="sub" id="ipAddr">connecting...</div>
-</div>
-
-<div class="container">
-
-  <!-- Status Card -->
-  <div class="card">
-    <h2>Current Disk</h2>
-    <div class="status">
-      <div class="dot" id="statusDot"></div>
-      <div class="info">
-        <div class="name" id="statusName">No disk loaded</div>
-        <div class="detail" id="statusDetail">Upload a disk image to begin</div>
-      </div>
-    </div>
-    <button class="btn btn-eject" id="btnEject" disabled onclick="ejectDisk()">EJECT</button>
-  </div>
-
-  <!-- Upload Card -->
-  <div class="card">
-    <h2>Load Disk Image</h2>
-    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-      <div class="icon">💾</div>
-      <p>Tap to select or drag & drop<br>ADF / DSK / IMG (max 1.44 MB)</p>
-      <input type="file" id="fileInput" accept=".adf,.dsk,.img">
-    </div>
-    <div class="progress" id="progress">
-      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-      <div class="progress-text" id="progressText">Uploading...</div>
-    </div>
-    <div class="msg" id="msg"></div>
-  </div>
-
-  <!-- System Info -->
-  <div class="card">
-    <h2>System</h2>
-    <div class="info-grid">
-      <div class="info-item"><div class="label">Firmware</div><div class="value" id="infoFw">-</div></div>
-      <div class="info-item"><div class="label">Free RAM</div><div class="value" id="infoRam">-</div></div>
-      <div class="info-item"><div class="label">WiFi IP</div><div class="value" id="infoIp">-</div></div>
-      <div class="info-item"><div class="label">Clients</div><div class="value" id="infoClients">-</div></div>
-    </div>
-  </div>
-
-</div>
-
-<script>
-const $ = id => document.getElementById(id);
-
-// Status polling
-async function updateStatus() {
-  try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
-    $('statusDot').className = 'dot ' + (d.loaded ? 'on' : 'off');
-    $('statusName').textContent = d.loaded ? d.filename : 'No disk loaded';
-    $('statusDetail').textContent = d.loaded ? (d.size/1024).toFixed(0)+' KB — USB active' : 'Upload a disk image to begin';
-    $('btnEject').disabled = !d.loaded;
-    $('infoFw').textContent = d.firmware;
-    $('infoRam').textContent = (d.free_psram/1024).toFixed(0)+' KB';
-    $('infoIp').textContent = d.wifi_ip;
-    $('infoClients').textContent = d.wifi_clients;
-    $('ipAddr').textContent = d.wifi_ip;
-  } catch(e) {}
-}
-
-// File upload
-async function uploadFile(file) {
-  const maxSize = 1474560; // 1.44 MB
-  if (file.size > maxSize) {
-    showMsg('File too large! Max 1.44 MB ('+file.size+' bytes)', true);
-    return;
-  }
-  const ext = file.name.split('.').pop().toLowerCase();
-  if (!['adf','dsk','img'].includes(ext)) {
-    showMsg('Unsupported format. Use .adf, .dsk, or .img', true);
-    return;
-  }
-
-  $('progress').style.display = 'block';
-  $('progressFill').style.width = '0%';
-  $('progressText').textContent = 'Uploading ' + file.name + '...';
-  $('msg').style.display = 'none';
-
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/load');
-
-  xhr.upload.onprogress = e => {
-    if (e.lengthComputable) {
-      const pct = (e.loaded / e.total * 100).toFixed(0);
-      $('progressFill').style.width = pct + '%';
-      $('progressText').textContent = 'Uploading... ' + pct + '%';
-    }
-  };
-
-  xhr.onload = () => {
-    $('progress').style.display = 'none';
-    try {
-      const d = JSON.parse(xhr.responseText);
-      if (d.status === 'ok') {
-        showMsg('Loaded: ' + d.filename + ' (' + (d.size/1024).toFixed(0) + ' KB)', false);
+String urlDecode(const String &in) {
+  String out;
+  out.reserve(in.length());
+  for (unsigned int i = 0; i < in.length(); i++) {
+    char c = in[i];
+    if (c == '+') {
+      out += ' ';
+    } else if (c == '%' && i + 2 < in.length()) {
+      char hi = in[i + 1];
+      char lo = in[i + 2];
+      int h = (hi >= '0' && hi <= '9') ? hi - '0' : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10 : -1;
+      int l = (lo >= '0' && lo <= '9') ? lo - '0' : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10 : -1;
+      if (h >= 0 && l >= 0) {
+        out += (char)((h << 4) | l);
+        i += 2;
       } else {
-        showMsg(d.error || 'Upload failed', true);
+        out += c;
       }
-    } catch(e) {
-      showMsg('Upload failed: ' + xhr.statusText, true);
+    } else {
+      out += c;
     }
-    updateStatus();
-  };
-
-  xhr.onerror = () => {
-    $('progress').style.display = 'none';
-    showMsg('Connection error', true);
-  };
-
-  // Send raw binary with filename in header
-  xhr.setRequestHeader('X-Filename', file.name);
-  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-  xhr.send(file);
+  }
+  return out;
 }
 
-function showMsg(text, isErr) {
-  $('msg').textContent = text;
-  $('msg').className = 'msg ' + (isErr ? 'err' : 'ok');
+String getFormValue(const String &body, const String &key) {
+  String search = key + "=";
+  int start = body.indexOf(search);
+  if (start < 0) return "";
+  if (start > 0 && body[start - 1] != '&') {
+    search = "&" + key + "=";
+    start = body.indexOf(search);
+    if (start < 0) return "";
+    start += 1;
+  }
+  start += key.length() + 1;
+  int end = body.indexOf('&', start);
+  String val = (end < 0) ? body.substring(start) : body.substring(start, end);
+  return urlDecode(val);
 }
 
-async function ejectDisk() {
-  try {
-    await fetch('/api/eject', {method:'POST'});
-    showMsg('Disk ejected', false);
-    updateStatus();
-  } catch(e) {
-    showMsg('Eject failed', true);
+// ==========================================================================
+// WEB UI — embedded HTML (gzipped in webui.h)
+// ==========================================================================
+#include "webui.h"
+
+void sendGzipResponse(WiFiClient &client, const String &contentType, const uint8_t *data, size_t len) {
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: " + contentType);
+  client.println("Content-Encoding: gzip");
+  client.println("Content-Length: " + String(len));
+  client.println("Connection: close");
+  client.println();
+
+  size_t sent = 0;
+  while (sent < len) {
+    size_t chunk = len - sent;
+    if (chunk > 2048) chunk = 2048;
+    client.write(&data[sent], chunk);
+    sent += chunk;
+    yield();
   }
 }
-
-// Drag & drop
-const dz = $('dropZone');
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('over'));
-dz.addEventListener('drop', e => {
-  e.preventDefault();
-  dz.classList.remove('over');
-  if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
-});
-$('fileInput').addEventListener('change', e => {
-  if (e.target.files.length) uploadFile(e.target.files[0]);
-  e.target.value = '';
-});
-
-// Init
-updateStatus();
-setInterval(updateStatus, 3000);
-</script>
-</body>
-</html>
-)rawliteral";
 
 // ==========================================================================
 // HTTP REQUEST PARSER
 // ==========================================================================
 
 struct HttpRequest {
-  String method, path;
+  String method, path, query, body;
   int contentLength;
-  String filename;     // from X-Filename header
+  String filename;
   String contentType;
-  String boundary;
 };
 
 bool parseRequest(WiFiClient &client, HttpRequest &req) {
   req.method = "";
   req.path = "";
+  req.query = "";
+  req.body = "";
   req.contentLength = 0;
   req.filename = "";
   req.contentType = "";
-  req.boundary = "";
 
   String line = client.readStringUntil('\n');
   line.trim();
@@ -527,7 +614,16 @@ bool parseRequest(WiFiClient &client, HttpRequest &req) {
   if (sp1 < 0 || sp2 < 0) return false;
 
   req.method = line.substring(0, sp1);
-  req.path = line.substring(sp1 + 1, sp2);
+  String fullPath = line.substring(sp1 + 1, sp2);
+
+  // Split path and query string
+  int qIdx = fullPath.indexOf('?');
+  if (qIdx >= 0) {
+    req.path = fullPath.substring(0, qIdx);
+    req.query = fullPath.substring(qIdx + 1);
+  } else {
+    req.path = fullPath;
+  }
 
   // Read headers
   while (client.connected()) {
@@ -546,14 +642,37 @@ bool parseRequest(WiFiClient &client, HttpRequest &req) {
     } else if (lower.startsWith("content-type:")) {
       req.contentType = hdr.substring(13);
       req.contentType.trim();
-      int bIdx = req.contentType.indexOf("boundary=");
-      if (bIdx >= 0) {
-        req.boundary = req.contentType.substring(bIdx + 9);
-        req.boundary.trim();
-      }
     }
   }
+
+  // Read body for POST requests (non-binary)
+  if (req.method == "POST" && req.contentLength > 0 && req.contentLength < 4096 &&
+      req.contentType.indexOf("octet-stream") < 0) {
+    unsigned long t = millis();
+    while (client.available() < req.contentLength && millis() - t < 3000) {
+      yield(); delay(1);
+    }
+    req.body = client.readString();
+  }
+
   return true;
+}
+
+// Helper to extract query parameter
+String getQueryParam(const String &query, const String &key) {
+  String search = key + "=";
+  int start = query.indexOf(search);
+  if (start < 0) return "";
+  if (start > 0 && query[start - 1] != '&') {
+    search = "&" + key + "=";
+    start = query.indexOf(search);
+    if (start < 0) return "";
+    start += 1;
+  }
+  start += key.length() + 1;
+  int end = query.indexOf('&', start);
+  String val = (end < 0) ? query.substring(start) : query.substring(start, end);
+  return urlDecode(val);
 }
 
 // ==========================================================================
@@ -576,29 +695,13 @@ void handleRequest(WiFiClient &client) {
     return;
   }
 
-  // Serve Web UI
+  // ── Serve Web UI (gzipped) ──
   if (req.path == "/" || req.path == "/index.html") {
-    String html = String(WEBUI_HTML);
-    client.println("HTTP/1.1 200 OK");
-    client.println("Content-Type: text/html");
-    client.println("Content-Length: " + String(html.length()));
-    client.println("Connection: close");
-    client.println();
-
-    // Send in chunks
-    const char *p = html.c_str();
-    size_t len = html.length();
-    size_t sent = 0;
-    while (sent < len) {
-      size_t chunk = min((size_t)1024, len - sent);
-      client.write((const uint8_t *)(p + sent), chunk);
-      sent += chunk;
-      yield();
-    }
+    sendGzipResponse(client, "text/html", webui_gz, webui_gz_len);
     return;
   }
 
-  // GET /api/status
+  // ── GET /api/status ──
   if (req.path == "/api/status" && req.method == "GET") {
     String json = "{";
     json += "\"loaded\":" + String(disk_present ? "true" : "false") + ",";
@@ -607,21 +710,22 @@ void handleRequest(WiFiClient &client) {
     json += "\"firmware\":\"" + String(FW_VERSION) + "\",";
     json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
     json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
-    json += "\"wifi_ip\":\"" + wifi_ap_ip + "\",";
+    json += "\"wifi_ap_ip\":\"" + wifi_ap_ip + "\",";
+    json += "\"wifi_sta_ip\":\"" + wifi_sta_ip + "\",";
+    json += "\"wifi_sta_connected\":" + String(wifi_sta_connected ? "true" : "false") + ",";
     json += "\"wifi_clients\":" + String(WiFi.softAPgetStationNum());
     json += "}";
     sendJSON(client, 200, json);
     return;
   }
 
-  // POST /api/load — receive raw binary disk image
+  // ── POST /api/load — receive raw binary disk image ──
   if (req.path == "/api/load" && req.method == "POST") {
     if (req.contentLength <= 0) {
       sendJSON(client, 400, "{\"error\":\"No data\"}");
       return;
     }
     if (req.contentLength > (int)(RAM_DISK_SIZE - DATA_OFFSET)) {
-      // Drain body
       unsigned long t = millis();
       while (client.available() && millis() - t < 3000) { client.read(); yield(); }
       sendJSON(client, 413, "{\"error\":\"File too large. Max 1.44 MB.\"}");
@@ -631,10 +735,8 @@ void handleRequest(WiFiClient &client) {
     String filename = req.filename;
     if (filename.length() == 0) filename = "DISK.ADF";
 
-    Serial.println("Receiving: " + filename + " (" + String(req.contentLength) + " bytes)");
     ledBlink(1, 50);
 
-    // Read directly into PSRAM data area
     int toRead = req.contentLength;
     int pos = 0;
     unsigned long timeout = millis();
@@ -644,8 +746,7 @@ void handleRequest(WiFiClient &client) {
         int n = client.read(&ram_disk[DATA_OFFSET + pos], toRead - pos);
         if (n > 0) { pos += n; timeout = millis(); }
       } else {
-        yield();
-        delay(1);
+        yield(); delay(1);
       }
     }
 
@@ -654,24 +755,484 @@ void handleRequest(WiFiClient &client) {
       return;
     }
 
-    // Build FAT structure and activate USB
     loadDisk(filename, pos);
-
     sendJSON(client, 200,
       "{\"status\":\"ok\",\"filename\":\"" + jsonEscape(filename) +
       "\",\"size\":" + String(pos) + "}");
     return;
   }
 
-  // POST /api/eject
-  if (req.path == "/api/eject" && req.method == "POST") {
+  // ── POST /api/eject ──
+  if ((req.path == "/api/eject" || req.path == "/api/disk/unload") && req.method == "POST") {
     ejectDisk();
     sendJSON(client, 200, "{\"status\":\"ok\"}");
     return;
   }
 
+  // ── GET /api/config ──
+  if (req.path == "/api/config" && req.method == "GET") {
+    String json = "{";
+    json += "\"WIFI_SSID\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
+    json += "\"WIFI_PASS\":\"" + jsonEscape(cfg_wifi_pass) + "\",";
+    json += "\"WIFI_CHANNEL\":\"" + String(cfg_wifi_channel) + "\",";
+    json += "\"WIFI_CLIENT_ENABLED\":\"" + String(cfg_wifi_client_enabled ? "1" : "0") + "\",";
+    json += "\"WIFI_CLIENT_SSID\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\",";
+    json += "\"WIFI_CLIENT_PASS\":\"" + jsonEscape(cfg_wifi_client_pass) + "\",";
+    json += "\"FTP_ENABLED\":\"" + String(cfg_ftp_enabled ? "1" : "0") + "\",";
+    json += "\"FTP_HOST\":\"" + jsonEscape(cfg_ftp_host) + "\",";
+    json += "\"FTP_PORT\":\"" + String(cfg_ftp_port) + "\",";
+    json += "\"FTP_USER\":\"" + jsonEscape(cfg_ftp_user) + "\",";
+    json += "\"FTP_PASS\":\"" + jsonEscape(cfg_ftp_pass) + "\",";
+    json += "\"FTP_PATH\":\"" + jsonEscape(cfg_ftp_path) + "\",";
+    json += "\"DAV_ENABLED\":\"" + String(cfg_dav_enabled ? "1" : "0") + "\",";
+    json += "\"DAV_HOST\":\"" + jsonEscape(cfg_dav_host) + "\",";
+    json += "\"DAV_PORT\":\"" + String(cfg_dav_port) + "\",";
+    json += "\"DAV_USER\":\"" + jsonEscape(cfg_dav_user) + "\",";
+    json += "\"DAV_PASS\":\"" + jsonEscape(cfg_dav_pass) + "\",";
+    json += "\"DAV_PATH\":\"" + jsonEscape(cfg_dav_path) + "\",";
+    json += "\"DAV_HTTPS\":\"" + String(cfg_dav_https ? "1" : "0") + "\"";
+    json += "}";
+    sendJSON(client, 200, json);
+    return;
+  }
+
+  // ── POST /api/config ──
+  if (req.path == "/api/config" && req.method == "POST") {
+    String val;
+
+    val = getFormValue(req.body, "WIFI_SSID");
+    if (val.length() > 0) cfg_wifi_ssid = val;
+
+    val = getFormValue(req.body, "WIFI_PASS");
+    if (val.length() > 0) cfg_wifi_pass = val;
+
+    val = getFormValue(req.body, "WIFI_CHANNEL");
+    if (val.length() > 0) {
+      cfg_wifi_channel = (uint8_t)val.toInt();
+      if (cfg_wifi_channel < 1 || cfg_wifi_channel > 13) cfg_wifi_channel = 6;
+    }
+
+    val = getFormValue(req.body, "WIFI_CLIENT_ENABLED");
+    if (val.length() > 0) cfg_wifi_client_enabled = (val == "1" || val == "true");
+
+    val = getFormValue(req.body, "WIFI_CLIENT_SSID");
+    if (val.length() > 0) cfg_wifi_client_ssid = val;
+
+    if (req.body.indexOf("WIFI_CLIENT_PASS=") >= 0)
+      cfg_wifi_client_pass = getFormValue(req.body, "WIFI_CLIENT_PASS");
+
+    val = getFormValue(req.body, "FTP_ENABLED");
+    if (val.length() > 0) cfg_ftp_enabled = (val == "1" || val == "true");
+
+    val = getFormValue(req.body, "FTP_HOST");
+    if (val.length() > 0) cfg_ftp_host = val;
+    else if (req.body.indexOf("FTP_HOST=") >= 0) cfg_ftp_host = "";
+
+    val = getFormValue(req.body, "FTP_PORT");
+    if (val.length() > 0) { cfg_ftp_port = val.toInt(); if (cfg_ftp_port <= 0) cfg_ftp_port = 21; }
+
+    val = getFormValue(req.body, "FTP_USER");
+    if (val.length() > 0) cfg_ftp_user = val;
+
+    if (req.body.indexOf("FTP_PASS=") >= 0)
+      cfg_ftp_pass = getFormValue(req.body, "FTP_PASS");
+
+    val = getFormValue(req.body, "FTP_PATH");
+    if (val.length() > 0) cfg_ftp_path = val;
+
+    val = getFormValue(req.body, "DAV_ENABLED");
+    if (val.length() > 0) cfg_dav_enabled = (val == "1" || val == "true");
+
+    val = getFormValue(req.body, "DAV_HOST");
+    if (val.length() > 0) cfg_dav_host = val;
+    else if (req.body.indexOf("DAV_HOST=") >= 0) cfg_dav_host = "";
+
+    val = getFormValue(req.body, "DAV_PORT");
+    if (val.length() > 0) { cfg_dav_port = val.toInt(); if (cfg_dav_port <= 0) cfg_dav_port = 443; }
+
+    val = getFormValue(req.body, "DAV_USER");
+    if (val.length() > 0) cfg_dav_user = val;
+
+    if (req.body.indexOf("DAV_PASS=") >= 0)
+      cfg_dav_pass = getFormValue(req.body, "DAV_PASS");
+
+    val = getFormValue(req.body, "DAV_PATH");
+    if (val.length() > 0) cfg_dav_path = val;
+
+    val = getFormValue(req.body, "DAV_HTTPS");
+    if (val.length() > 0) cfg_dav_https = (val == "1" || val == "true");
+
+    saveConfig();
+    sendJSON(client, 200, "{\"status\":\"ok\"}");
+    return;
+  }
+
+  // ══════════════════════════════════════
+  // FTP API ENDPOINTS
+  // ══════════════════════════════════════
+
+  if (req.path == "/api/ftp/status" && req.method == "GET") {
+    String json = "{";
+    json += "\"enabled\":" + String(cfg_ftp_enabled ? "true" : "false");
+    json += ",\"host\":\"" + jsonEscape(cfg_ftp_host) + "\"";
+    json += ",\"port\":" + String(cfg_ftp_port);
+    json += ",\"user\":\"" + jsonEscape(cfg_ftp_user) + "\"";
+    json += ",\"path\":\"" + jsonEscape(cfg_ftp_path) + "\"";
+    json += ",\"connected\":" + String(ftpClient.isConnected() ? "true" : "false");
+    json += ",\"wifi_connected\":" + String(wifi_sta_connected ? "true" : "false");
+    json += "}";
+    sendJSON(client, 200, json);
+    return;
+  }
+
+  if (req.path == "/api/ftp/connect" && req.method == "POST") {
+    if (!cfg_ftp_enabled) { sendJSON(client, 400, "{\"error\":\"FTP not enabled\"}"); return; }
+    if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected to network\"}"); return; }
+    if (ftpClient.isConnected()) ftpClient.disconnect();
+    if (ftpClient.connect()) {
+      sendJSON(client, 200, "{\"status\":\"connected\"}");
+    } else {
+      sendJSON(client, 503, "{\"error\":\"" + jsonEscape(ftpClient.lastError()) + "\"}");
+    }
+    return;
+  }
+
+  if (req.path == "/api/ftp/disconnect" && req.method == "POST") {
+    ftpClient.disconnect();
+    sendJSON(client, 200, "{\"status\":\"disconnected\"}");
+    return;
+  }
+
+  if (req.path == "/api/ftp/list" && req.method == "GET") {
+    if (!ftpClient.isConnected()) {
+      if (cfg_ftp_enabled && wifi_sta_connected) {
+        if (!ftpClient.connect()) {
+          sendJSON(client, 503, "{\"error\":\"" + jsonEscape(ftpClient.lastError()) + "\"}");
+          return;
+        }
+      } else {
+        sendJSON(client, 503, "{\"error\":\"FTP not connected\"}");
+        return;
+      }
+    }
+    String path = getQueryParam(req.query, "path");
+    if (path.length() == 0) path = "/";
+    std::vector<FTPFileEntry> entries;
+    if (!ftpClient.listDir(path, entries)) {
+      sendJSON(client, 500, "{\"error\":\"" + jsonEscape(ftpClient.lastError()) + "\"}");
+      return;
+    }
+    String json = "{\"path\":\"" + jsonEscape(path) + "\",\"entries\":[";
+    for (int i = 0; i < (int)entries.size(); i++) {
+      if (i > 0) json += ",";
+      json += "{\"name\":\"" + jsonEscape(entries[i].name) + "\"";
+      json += ",\"dir\":" + String(entries[i].isDir ? "true" : "false");
+      json += ",\"size\":" + String(entries[i].size);
+      json += "}";
+    }
+    json += "]}";
+    sendJSON(client, 200, json);
+    return;
+  }
+
+  // POST /api/ftp/load — Stream file from FTP directly into RAM
+  if (req.path == "/api/ftp/load" && req.method == "POST") {
+    if (!ftpClient.isConnected()) {
+      sendJSON(client, 503, "{\"error\":\"FTP not connected\"}");
+      return;
+    }
+    String remotePath = "";
+    int pathIdx = req.body.indexOf("path=");
+    if (pathIdx >= 0) {
+      remotePath = req.body.substring(pathIdx + 5);
+      int ampIdx = remotePath.indexOf("&");
+      if (ampIdx >= 0) remotePath = remotePath.substring(0, ampIdx);
+      remotePath = urlDecode(remotePath);
+    }
+    if (remotePath.length() == 0) {
+      sendJSON(client, 400, "{\"error\":\"Missing path\"}");
+      return;
+    }
+    size_t loaded = loadFileFromFTP(remotePath);
+    if (loaded > 0) {
+      sendJSON(client, 200, "{\"status\":\"ok\",\"file\":\"" + jsonEscape(remotePath) +
+        "\",\"bytes\":" + String(loaded) + ",\"name\":\"" + jsonEscape(loaded_filename) + "\"}");
+    } else {
+      sendJSON(client, 500, "{\"error\":\"" + jsonEscape(ftpClient.lastError()) + "\"}");
+    }
+    return;
+  }
+
+  // ══════════════════════════════════════
+  // WEBDAV API ENDPOINTS
+  // ══════════════════════════════════════
+
+  if (req.path == "/api/dav/status" && req.method == "GET") {
+    String json = "{";
+    json += "\"enabled\":" + String(cfg_dav_enabled ? "true" : "false");
+    json += ",\"host\":\"" + jsonEscape(cfg_dav_host) + "\"";
+    json += ",\"port\":" + String(cfg_dav_port);
+    json += ",\"user\":\"" + jsonEscape(cfg_dav_user) + "\"";
+    json += ",\"path\":\"" + jsonEscape(cfg_dav_path) + "\"";
+    json += ",\"https\":" + String(cfg_dav_https ? "true" : "false");
+    json += ",\"connected\":" + String(davClient.isConnected() ? "true" : "false");
+    json += ",\"wifi_connected\":" + String(wifi_sta_connected ? "true" : "false");
+    // Tell web UI if a cache exists (so it can show games without connecting first)
+    bool hasCache = (dav_entries.size() > 0) || SPIFFS.exists(DAV_CACHE_FILE);
+    json += ",\"has_cache\":" + String(hasCache ? "true" : "false");
+    // Include now-playing state so web UI knows what's loaded
+    if (disk_present && loaded_filename.length() > 0) {
+      json += ",\"now_playing\":{";
+      json += "\"source\":\"dav\"";
+      json += ",\"name\":\"" + jsonEscape(loaded_filename) + "\"";
+      json += ",\"path\":\"" + jsonEscape(loaded_filename) + "\"";
+      json += "}";
+    }
+    String dbg = davClient.lastDebug();
+    if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+    json += "}";
+    sendJSON(client, 200, json);
+    return;
+  }
+
+  if (req.path == "/api/dav/connect" && req.method == "POST") {
+    if (!cfg_dav_enabled) { sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}"); return; }
+    if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected to network\"}"); return; }
+    if (davClient.connect()) {
+      String json = "{\"status\":\"connected\"";
+      String dbg = davClient.lastDebug();
+      if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+      json += "}";
+      sendJSON(client, 200, json);
+    } else {
+      String json = "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"";
+      String dbg = davClient.lastDebug();
+      if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+      json += "}";
+      sendJSON(client, 503, json);
+    }
+    return;
+  }
+
+  if (req.path == "/api/dav/disconnect" && req.method == "POST") {
+    davClient.disconnect();
+    sendJSON(client, 200, "{\"status\":\"disconnected\"}");
+    return;
+  }
+
+  if (req.path == "/api/dav/list" && req.method == "GET") {
+    if (!cfg_dav_enabled) { sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}"); return; }
+
+    String path = getQueryParam(req.query, "path");
+    if (path.length() == 0) path = "/";
+    bool forceRefresh = (req.query.indexOf("refresh=1") >= 0);
+
+    // For root path: try returning cached data first (unless forced refresh)
+    if (path == "/" && !forceRefresh) {
+      // Check in-memory cache first
+      if (dav_entries.size() > 0) {
+        String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
+        bool first = true;
+        for (int i = 0; i < (int)dav_entries.size(); i++) {
+          if (!first) json += ",";
+          first = false;
+          json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+          json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
+          json += ",\"size\":" + String(dav_entries[i].size);
+          json += "}";
+        }
+        json += "]}";
+        sendJSON(client, 200, json);
+        return;
+      }
+      // Try SPIFFS cache
+      if (davLoadCache()) {
+        String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
+        bool first = true;
+        for (int i = 0; i < (int)dav_entries.size(); i++) {
+          if (!first) json += ",";
+          first = false;
+          json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+          json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
+          json += ",\"size\":" + String(dav_entries[i].size);
+          json += "}";
+        }
+        json += "]}";
+        sendJSON(client, 200, json);
+        return;
+      }
+    }
+
+    // No cache or forced refresh — need WiFi for PROPFIND
+    if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}"); return; }
+
+    std::vector<DAVFileEntry> entries;
+    if (!davClient.listDir(path, entries)) {
+      sendJSON(client, 500, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
+      return;
+    }
+
+    String coverFile = "", nfoFile = "";
+    for (int i = 0; i < (int)entries.size(); i++) {
+      if (entries[i].coverFile.length() > 0 && coverFile.length() == 0) coverFile = entries[i].coverFile;
+      if (entries[i].nfoFile.length() > 0 && nfoFile.length() == 0) nfoFile = entries[i].nfoFile;
+    }
+
+    String json = "{\"path\":\"" + jsonEscape(path) + "\"";
+    if (coverFile.length() > 0) json += ",\"cover\":\"" + jsonEscape(coverFile) + "\"";
+    if (nfoFile.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(nfoFile) + "\"";
+    json += ",\"entries\":[";
+    bool first = true;
+    for (int i = 0; i < (int)entries.size(); i++) {
+      if (entries[i].coverFile.length() > 0 || entries[i].nfoFile.length() > 0) continue;
+      if (!first) json += ",";
+      first = false;
+      json += "{\"name\":\"" + jsonEscape(entries[i].name) + "\"";
+      json += ",\"dir\":" + String(entries[i].isDir ? "true" : "false");
+      json += ",\"size\":" + String(entries[i].size);
+      json += "}";
+    }
+    json += "]";
+    String dbg = davClient.lastDebug();
+    if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+    json += "}";
+    sendJSON(client, 200, json);
+
+    // Update in-memory + SPIFFS cache for root listing
+    if (path == "/") {
+      dav_entries.clear();
+      for (int i = 0; i < (int)entries.size(); i++) {
+        dav_entries.push_back(entries[i]);
+      }
+      davSaveCache();
+    }
+    return;
+  }
+
+  // POST /api/dav/load — Stream file from WebDAV directly into RAM
+  if (req.path == "/api/dav/load" && req.method == "POST") {
+    if (!cfg_dav_enabled) { sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}"); return; }
+    String remotePath = "";
+    int pathIdx = req.body.indexOf("path=");
+    if (pathIdx >= 0) {
+      remotePath = req.body.substring(pathIdx + 5);
+      int ampIdx = remotePath.indexOf("&");
+      if (ampIdx >= 0) remotePath = remotePath.substring(0, ampIdx);
+      remotePath = urlDecode(remotePath);
+    }
+    if (remotePath.length() == 0) {
+      sendJSON(client, 400, "{\"error\":\"Missing path\"}");
+      return;
+    }
+    size_t loaded = loadFileFromDAV(remotePath);
+    if (loaded > 0) {
+      sendJSON(client, 200, "{\"status\":\"ok\",\"file\":\"" + jsonEscape(remotePath) +
+        "\",\"bytes\":" + String(loaded) + ",\"name\":\"" + jsonEscape(loaded_filename) + "\"}");
+    } else {
+      String json = "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"";
+      String dbg = davClient.lastDebug();
+      if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
+      json += "}";
+      sendJSON(client, 500, json);
+    }
+    return;
+  }
+
+  // GET /api/dav/cover?path= — Proxy cover image from WebDAV
+  if (req.path == "/api/dav/cover" && req.method == "GET") {
+    String coverPath = getQueryParam(req.query, "path");
+    if (!cfg_dav_enabled || coverPath.length() == 0) {
+      sendJSON(client, 400, "{\"error\":\"Invalid request\"}");
+      return;
+    }
+    size_t maxCover = 150 * 1024;
+    uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
+    if (!buf) { sendJSON(client, 500, "{\"error\":\"Out of PSRAM\"}"); return; }
+
+    long bytes = davClient.streamToBuffer(coverPath, buf, maxCover);
+    if (bytes <= 0) { free(buf); sendJSON(client, 404, "{\"error\":\"Cover not found\"}"); return; }
+
+    String lp = coverPath; lp.toLowerCase();
+    String ct = lp.endsWith(".png") ? "image/png" : "image/jpeg";
+
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: " + ct);
+    client.println("Content-Length: " + String(bytes));
+    client.println("Cache-Control: max-age=3600");
+    client.println("Connection: close");
+    client.println();
+
+    size_t sent = 0;
+    while (sent < (size_t)bytes) {
+      size_t chunk = bytes - sent;
+      if (chunk > 4096) chunk = 4096;
+      client.write(&buf[sent], chunk);
+      sent += chunk;
+      yield();
+    }
+    free(buf);
+    return;
+  }
+
+  // GET /api/dav/nfo?path= — Proxy NFO text from WebDAV
+  if (req.path == "/api/dav/nfo" && req.method == "GET") {
+    String nfoPath = getQueryParam(req.query, "path");
+    if (!cfg_dav_enabled || nfoPath.length() == 0) {
+      sendJSON(client, 400, "{\"error\":\"Invalid request\"}");
+      return;
+    }
+    uint8_t buf[2048];
+    long bytes = davClient.streamToBuffer(nfoPath, buf, sizeof(buf) - 1);
+    if (bytes <= 0) { sendJSON(client, 404, "{\"error\":\"NFO not found\"}"); return; }
+    buf[bytes] = 0;
+    sendJSON(client, 200, "{\"nfo\":\"" + jsonEscape(String((char *)buf)) + "\"}");
+    return;
+  }
+
   // 404
   sendJSON(client, 404, "{\"error\":\"Not found\"}");
+}
+
+// ==========================================================================
+// WIFI SETUP
+// ==========================================================================
+
+void setupWiFi() {
+  // Always start AP mode
+  if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
+    // AP + STA dual mode
+    WiFi.mode(WIFI_AP_STA);
+  } else {
+    WiFi.mode(WIFI_AP);
+  }
+
+  // Start AP
+  WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
+  delay(200);
+  wifi_ap_ip = WiFi.softAPIP().toString();
+  wifi_ap_active = true;
+  Serial.println("WiFi AP: " + cfg_wifi_ssid + " @ " + wifi_ap_ip);
+
+  // Connect to home network if configured
+  if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
+    Serial.println("WiFi STA: connecting to " + cfg_wifi_client_ssid + "...");
+    WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
+
+    // Wait up to 10 seconds for connection
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+      delay(250);
+      ledBlink(1, 50);
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      wifi_sta_connected = true;
+      wifi_sta_ip = WiFi.localIP().toString();
+      Serial.println("WiFi STA: connected! IP: " + wifi_sta_ip);
+    } else {
+      Serial.println("WiFi STA: connection failed, AP-only mode");
+    }
+  }
 }
 
 // ==========================================================================
@@ -689,6 +1250,16 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
   ledBlink(1, 200);
 
+  // Load saved config from NVS
+  loadConfig();
+
+  // Initialize SPIFFS for DAV cache
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS mount failed — cache disabled");
+  } else {
+    Serial.println("SPIFFS mounted (" + String(SPIFFS.totalBytes() / 1024) + " KB total, " + String(SPIFFS.usedBytes() / 1024) + " KB used)");
+  }
+
   // Allocate RAM disk in PSRAM
   ram_disk = (uint8_t *)ps_malloc(RAM_DISK_SIZE);
   if (!ram_disk) {
@@ -698,13 +1269,8 @@ void setup() {
   build_empty_volume();
   Serial.println("RAM disk: " + String(RAM_DISK_SIZE / 1024) + " KB allocated in PSRAM");
 
-  // WiFi Access Point
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
-  delay(200);
-  wifi_ap_ip = WiFi.softAPIP().toString();
-  wifi_ap_active = true;
-  Serial.println("WiFi AP: " + cfg_wifi_ssid + " @ " + wifi_ap_ip);
+  // WiFi (AP + optional STA)
+  setupWiFi();
 
   // HTTP server
   httpServer.begin();
@@ -713,21 +1279,26 @@ void setup() {
   // USB Mass Storage
   msc.vendorID("Gotek");
   msc.productID("Disk");
-  msc.productRevision("1.0");
+  msc.productRevision("2.0");
   msc.onRead(onRead);
   msc.onWrite(onWrite);
-  msc.mediaPresent(false);  // no disk until uploaded
+  msc.mediaPresent(false);
   msc.begin(msc_block_count, 512);
   USB.begin();
   Serial.println("USB MSC ready (no disk)");
 
   ledBlink(3, 100);
   Serial.println("\nReady! Connect to '" + cfg_wifi_ssid + "' → http://" + wifi_ap_ip);
+  if (wifi_sta_connected) {
+    Serial.println("Or use http://" + wifi_sta_ip + " from your home network");
+  }
 }
 
 // ==========================================================================
 // LOOP
 // ==========================================================================
+
+unsigned long lastWiFiCheck = 0;
 
 void loop() {
   WiFiClient client = httpServer.available();
@@ -744,5 +1315,22 @@ void loop() {
     delay(1);
     client.stop();
   }
+
+  // Check WiFi STA connection periodically (auto-reconnect)
+  if (cfg_wifi_client_enabled && millis() - lastWiFiCheck > 15000) {
+    lastWiFiCheck = millis();
+    bool connected = (WiFi.status() == WL_CONNECTED);
+    if (connected && !wifi_sta_connected) {
+      wifi_sta_connected = true;
+      wifi_sta_ip = WiFi.localIP().toString();
+      Serial.println("WiFi STA: reconnected! IP: " + wifi_sta_ip);
+    } else if (!connected && wifi_sta_connected) {
+      wifi_sta_connected = false;
+      wifi_sta_ip = "";
+      Serial.println("WiFi STA: disconnected, reconnecting...");
+      WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
+    }
+  }
+
   delay(5);
 }
