@@ -39,6 +39,7 @@
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <Preferences.h>
+#include <SPIFFS.h>
 
 extern "C" {
   extern bool tud_mounted(void);
@@ -153,6 +154,95 @@ void saveConfig() {
   prefs.putString("dav_path", cfg_dav_path);
   prefs.putBool("dav_https", cfg_dav_https);
   prefs.end();
+}
+
+// ==========================================================================
+// DAV CACHE — in-memory + SPIFFS persistent cache (no SD card on dongle)
+// ==========================================================================
+std::vector<DAVFileEntry> dav_entries;  // in-memory cache of root listing
+
+#define DAV_CACHE_FILE "/DAV_CACHE.TXT"
+
+void davSaveCache() {
+  File f = SPIFFS.open(DAV_CACHE_FILE, "w");
+  if (!f) return;
+  f.println("HOST=" + cfg_dav_host);
+  f.println("COUNT=" + String(dav_entries.size()));
+  for (const auto &e : dav_entries) {
+    if (e.isDir) {
+      f.println("D|" + e.name);
+    } else {
+      f.println("F|" + String(e.size) + "|" + e.name + "|" + e.coverFile + "|" + e.nfoFile);
+    }
+  }
+  f.close();
+}
+
+bool davLoadCache() {
+  if (!SPIFFS.exists(DAV_CACHE_FILE)) return false;
+  File f = SPIFFS.open(DAV_CACHE_FILE, "r");
+  if (!f) return false;
+
+  dav_entries.clear();
+  String line;
+  bool hostOk = false;
+
+  while (f.available()) {
+    line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+
+    if (line.startsWith("HOST=")) {
+      hostOk = (line.substring(5) == cfg_dav_host);
+      continue;
+    }
+    if (line.startsWith("COUNT=")) continue;
+
+    if (!hostOk) {
+      f.close();
+      dav_entries.clear();
+      return false;
+    }
+
+    if (line.startsWith("D|")) {
+      DAVFileEntry entry;
+      entry.name = line.substring(2);
+      entry.isDir = true;
+      entry.size = 0;
+      entry.hasCover = false;
+      entry.hasNfo = false;
+      dav_entries.push_back(entry);
+    } else if (line.startsWith("F|")) {
+      String rest = line.substring(2);
+      int p1 = rest.indexOf('|');
+      if (p1 < 0) continue;
+      int p2 = rest.indexOf('|', p1 + 1);
+      if (p2 < 0) continue;
+      int p3 = rest.indexOf('|', p2 + 1);
+
+      DAVFileEntry entry;
+      entry.isDir = false;
+      entry.size = rest.substring(0, p1).toInt();
+      entry.name = rest.substring(p1 + 1, p2);
+      entry.hasCover = false;
+      entry.hasNfo = false;
+      if (p3 >= 0) {
+        entry.coverFile = rest.substring(p2 + 1, p3);
+        entry.nfoFile = rest.substring(p3 + 1);
+        if (entry.coverFile.length() > 0) entry.hasCover = true;
+        if (entry.nfoFile.length() > 0) entry.hasNfo = true;
+      }
+      dav_entries.push_back(entry);
+    }
+  }
+  f.close();
+  return (dav_entries.size() > 0);
+}
+
+void davClearCache() {
+  if (SPIFFS.exists(DAV_CACHE_FILE)) {
+    SPIFFS.remove(DAV_CACHE_FILE);
+  }
 }
 
 // ==========================================================================
@@ -887,6 +977,17 @@ void handleRequest(WiFiClient &client) {
     json += ",\"https\":" + String(cfg_dav_https ? "true" : "false");
     json += ",\"connected\":" + String(davClient.isConnected() ? "true" : "false");
     json += ",\"wifi_connected\":" + String(wifi_sta_connected ? "true" : "false");
+    // Tell web UI if a cache exists (so it can show games without connecting first)
+    bool hasCache = (dav_entries.size() > 0) || SPIFFS.exists(DAV_CACHE_FILE);
+    json += ",\"has_cache\":" + String(hasCache ? "true" : "false");
+    // Include now-playing state so web UI knows what's loaded
+    if (disk_present && loaded_filename.length() > 0) {
+      json += ",\"now_playing\":{";
+      json += "\"source\":\"dav\"";
+      json += ",\"name\":\"" + jsonEscape(loaded_filename) + "\"";
+      json += ",\"path\":\"" + jsonEscape(loaded_filename) + "\"";
+      json += "}";
+    }
     String dbg = davClient.lastDebug();
     if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
     json += "}";
@@ -921,10 +1022,49 @@ void handleRequest(WiFiClient &client) {
 
   if (req.path == "/api/dav/list" && req.method == "GET") {
     if (!cfg_dav_enabled) { sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}"); return; }
-    if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}"); return; }
 
     String path = getQueryParam(req.query, "path");
     if (path.length() == 0) path = "/";
+    bool forceRefresh = (req.query.indexOf("refresh=1") >= 0);
+
+    // For root path: try returning cached data first (unless forced refresh)
+    if (path == "/" && !forceRefresh) {
+      // Check in-memory cache first
+      if (dav_entries.size() > 0) {
+        String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
+        bool first = true;
+        for (int i = 0; i < (int)dav_entries.size(); i++) {
+          if (!first) json += ",";
+          first = false;
+          json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+          json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
+          json += ",\"size\":" + String(dav_entries[i].size);
+          json += "}";
+        }
+        json += "]}";
+        sendJSON(client, 200, json);
+        return;
+      }
+      // Try SPIFFS cache
+      if (davLoadCache()) {
+        String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
+        bool first = true;
+        for (int i = 0; i < (int)dav_entries.size(); i++) {
+          if (!first) json += ",";
+          first = false;
+          json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+          json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
+          json += ",\"size\":" + String(dav_entries[i].size);
+          json += "}";
+        }
+        json += "]}";
+        sendJSON(client, 200, json);
+        return;
+      }
+    }
+
+    // No cache or forced refresh — need WiFi for PROPFIND
+    if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}"); return; }
 
     std::vector<DAVFileEntry> entries;
     if (!davClient.listDir(path, entries)) {
@@ -957,6 +1097,15 @@ void handleRequest(WiFiClient &client) {
     if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
     json += "}";
     sendJSON(client, 200, json);
+
+    // Update in-memory + SPIFFS cache for root listing
+    if (path == "/") {
+      dav_entries.clear();
+      for (int i = 0; i < (int)entries.size(); i++) {
+        dav_entries.push_back(entries[i]);
+      }
+      davSaveCache();
+    }
     return;
   }
 
@@ -1103,6 +1252,13 @@ void setup() {
 
   // Load saved config from NVS
   loadConfig();
+
+  // Initialize SPIFFS for DAV cache
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS mount failed — cache disabled");
+  } else {
+    Serial.println("SPIFFS mounted (" + String(SPIFFS.totalBytes() / 1024) + " KB total, " + String(SPIFFS.usedBytes() / 1024) + " KB used)");
+  }
 
   // Allocate RAM disk in PSRAM
   ram_disk = (uint8_t *)ps_malloc(RAM_DISK_SIZE);

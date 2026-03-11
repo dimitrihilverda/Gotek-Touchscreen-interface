@@ -457,10 +457,13 @@ function davShowDebug(data) {
   }
 }
 
+let davIsConnected = false;
+
 async function davLoadStatus() {
   try {
     const s = await api('/api/dav/status');
     davShowDebug(s);
+    davIsConnected = s.connected;
     const bar = $('dav-status-bar');
     if (s.connected) {
       bar.className = 'ftp-status connected';
@@ -470,9 +473,33 @@ async function davLoadStatus() {
     } else {
       bar.className = 'ftp-status disconnected';
       bar.textContent = s.wifi_connected ? 'Not connected — tap Connect' : 'WiFi client not connected (enable in Settings)';
-      $('dav-browse').style.display = 'none';
+      // Show cached game list even when disconnected
+      if (s.has_cache && !$('dav-list').innerHTML) {
+        $('dav-browse').style.display = '';
+        davBrowse(davCurrentPath);
+      } else if (!s.has_cache) {
+        $('dav-browse').style.display = 'none';
+      }
     }
   } catch(e) {}
+}
+
+async function davEnsureConnected() {
+  if (davIsConnected) return true;
+  try {
+    const res = await fetch(API + '/api/dav/connect', {method:'POST'});
+    const data = await res.json().catch(()=>({}));
+    if (res.ok) {
+      davIsConnected = true;
+      davLoadStatus();
+      return true;
+    }
+    toast('Auto-connect failed: ' + (data.error || 'Unknown'), 'error');
+    return false;
+  } catch(e) {
+    toast('Auto-connect failed: ' + (e.message || 'Unknown'), 'error');
+    return false;
+  }
 }
 
 async function davConnect() {
@@ -482,8 +509,15 @@ async function davConnect() {
     const res = await fetch(API + '/api/dav/connect', {method:'POST'});
     const d = await res.json().catch(()=>({}));
     davShowDebug(d);
-    if (!res.ok) toast('WebDAV: ' + (d.error || 'Failed'), 'error');
-    davLoadStatus();
+    if (!res.ok) {
+      toast('WebDAV: ' + (d.error || 'Failed'), 'error');
+      davLoadStatus();
+    } else {
+      davIsConnected = true;
+      davLoadStatus();
+      // After explicit connect, refresh from server
+      davBrowse('/', true);
+    }
   } catch(e) { toast('Connection failed', 'error'); }
 }
 
@@ -492,12 +526,22 @@ async function davDisconnect() {
   davLoadStatus();
 }
 
-async function davBrowse(path) {
+async function davBrowse(path, forceRefresh) {
   davCurrentPath = path;
   $('dav-path').textContent = path;
   $('dav-list').innerHTML = '<div style="text-align:center;color:var(--dim);padding:20px">Loading...</div>';
+  // Auto-connect if browsing a subfolder while disconnected (root can use cache)
+  if (path !== '/' && !davIsConnected) {
+    $('dav-list').innerHTML = '<div style="text-align:center;color:var(--dim);padding:20px">Connecting...</div>';
+    if (!await davEnsureConnected()) {
+      $('dav-list').innerHTML = '<div class="msg err" style="display:block">Could not connect to WebDAV server</div>';
+      return;
+    }
+  }
   try {
-    const d = await api('/api/dav/list?path=' + encodeURIComponent(path));
+    let url = '/api/dav/list?path=' + encodeURIComponent(path);
+    if (forceRefresh) url += '&refresh=1';
+    const d = await api(url);
     davShowDebug(d);
     if (d.error) { $('dav-list').innerHTML = '<div class="msg err" style="display:block">' + esc(d.error) + '</div>'; return; }
 
@@ -543,6 +587,15 @@ function davUp() {
 
 async function davInsert(remotePath, displayName, btn) {
   btn.disabled = true; btn.textContent = 'Loading...';
+  // Auto-connect if needed (user clicked from cached list while disconnected)
+  if (!davIsConnected) {
+    btn.textContent = 'Connecting...';
+    if (!await davEnsureConnected()) {
+      btn.disabled = false; btn.textContent = 'Insert';
+      return;
+    }
+    btn.textContent = 'Loading...';
+  }
   try {
     const res = await fetch(API + '/api/dav/load', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'path='+encodeURIComponent(remotePath)});
     const d = await res.json().catch(()=>({}));

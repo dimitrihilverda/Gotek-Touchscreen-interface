@@ -326,13 +326,51 @@ textarea{min-height:80px;resize:vertical}
       <button class="btn btn-danger" id="dav-disconnect-btn" onclick="davDisconnect()" style="display:none">Disconnect</button>
       <button class="btn" onclick="davRefresh()">Refresh</button>
     </div>
-    <div id="dav-breadcrumb" class="ftp-breadcrumb"></div>
+  </div>
+
+  <div class="card" id="dav-now-playing-card" style="display:none">
+    <h2>Now Playing</h2>
+    <div id="dav-now-playing" style="display:flex;align-items:center;gap:12px"></div>
+  </div>
+
+  <div class="card" id="dav-game-card" style="display:none">
+    <h2>Game Library <span id="dav-game-count" style="font-weight:400;color:#555"></span></h2>
+    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input type="text" id="dav-search" placeholder="Search games..." style="flex:1;min-width:150px;max-width:300px" oninput="davFilterGames()">
+      <button class="btn" onclick="davRefresh()">Refresh</button>
+    </div>
+    <div id="dav-alpha-filter" style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:2px"></div>
     <div class="game-list" id="dav-list"></div>
     <div id="dav-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading...</div>
-    <details id="dav-debug-wrap" style="display:none;margin-top:12px">
-      <summary style="cursor:pointer;font-size:12px;color:#888">Debug Log</summary>
-      <pre id="dav-debug-log" style="font-size:11px;background:#1a1a2e;color:#0f0;padding:8px;border-radius:4px;max-height:200px;overflow:auto;white-space:pre-wrap;margin-top:4px"></pre>
-    </details>
+  </div>
+
+  <details id="dav-debug-wrap" style="display:none;margin-top:12px">
+    <summary style="cursor:pointer;font-size:12px;color:#888">Debug Log</summary>
+    <pre id="dav-debug-log" style="font-size:11px;background:#1a1a2e;color:#0f0;padding:8px;border-radius:4px;max-height:200px;overflow:auto;white-space:pre-wrap;margin-top:4px"></pre>
+  </details>
+</div>
+
+<!-- WEBDAV GAME DETAIL MODAL -->
+<div class="modal-overlay" id="modal-dav-detail">
+  <div class="modal">
+    <h3 id="dav-modal-title">Game Details</h3>
+    <div style="text-align:center;margin-bottom:12px">
+      <img id="dav-modal-cover" class="game-cover" style="width:200px;height:auto;max-height:250px">
+    </div>
+    <div id="dav-modal-disk-loader" style="margin-bottom:12px;padding:10px;background:var(--light);border:1px inset #999;border-radius:2px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-weight:600;font-size:13px">Load Disk:</span>
+        <select id="dav-modal-disk-select" style="width:auto;min-width:120px;padding:4px 8px"></select>
+        <button class="btn btn-success btn-sm" id="dav-modal-load-btn">Insert</button>
+        <button class="btn btn-sm" id="dav-modal-eject-btn" onclick="davEject();davCloseFolderModal();">Eject</button>
+        <span id="dav-modal-load-status" style="font-size:12px;color:#555"></span>
+      </div>
+    </div>
+    <div id="dav-modal-disks" style="margin-bottom:8px"></div>
+    <div id="dav-modal-nfo" style="margin-bottom:8px"></div>
+    <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" onclick="davCloseFolderModal()">Close</button>
+    </div>
   </div>
 </div>
 
@@ -1164,6 +1202,9 @@ async function ftpDownload(remotePath, btn) {
 
 let davCurrentPath = '/';
 let davConnected = false;
+let davAllEntries = [];  // all folder entries from root listing
+let davActiveAlpha = '';
+let davLoadedFile = '';
 
 function davShowDebug(data) {
   const wrap = document.getElementById('dav-debug-wrap');
@@ -1184,6 +1225,27 @@ async function davLoadStatus() {
     const noConfig = document.getElementById('dav-no-config');
     const connectBtn = document.getElementById('dav-connect-btn');
     const disconnectBtn = document.getElementById('dav-disconnect-btn');
+
+    // Sync now-playing state from device (global — any source)
+    if (status.now_playing && status.now_playing.source === 'dav') {
+      davLoadedFile = status.now_playing.path;
+    } else {
+      davLoadedFile = '';  // clear if nothing loaded or SD game loaded
+    }
+    // Update now-playing card — show regardless of source (SD or DAV)
+    const npCard = document.getElementById('dav-now-playing-card');
+    const npEl = document.getElementById('dav-now-playing');
+    if (status.now_playing) {
+      npCard.style.display = 'block';
+      let srcLabel = status.now_playing.source.toUpperCase();
+      npEl.innerHTML =
+        '<span class="active-indicator"></span>' +
+        '<strong>' + esc(status.now_playing.name) + '</strong>' +
+        ' <span style="color:#555;font-size:13px">(' + srcLabel + ')</span>' +
+        ' <button class="btn btn-sm" onclick="davEject()">Eject</button>';
+    } else {
+      npCard.style.display = 'none';
+    }
 
     if (!status.enabled || !status.host) {
       bar.className = 'ftp-status error';
@@ -1209,7 +1271,11 @@ async function davLoadStatus() {
       noConfig.style.display = 'none';
       connectBtn.style.display = '';
       disconnectBtn.style.display = 'none';
+      // Load cached game list even when disconnected — no need to connect first
+      if (status.has_cache && !document.getElementById('dav-list').innerHTML) davBrowse('/');
     }
+    // Re-render list if loaded to update playing badges
+    if (davAllEntries.length > 0) davRenderGameList(davAllEntries);
   } catch (e) {
     document.getElementById('dav-status-bar').className = 'ftp-status error';
     document.getElementById('dav-status-bar').textContent = 'Failed to get WebDAV status';
@@ -1233,7 +1299,7 @@ async function davConnect() {
       toast('WebDAV connected!');
       davCurrentPath = '/';
       await davLoadStatus();
-      await davBrowse('/');
+      await davBrowse('/', true);  // fresh connect — get latest from server
     }
   } catch (e) {
     toast('WebDAV connection failed: ' + (e.message || 'Unknown error'), 'error');
@@ -1248,8 +1314,10 @@ async function davDisconnect() {
   try {
     await api('/api/dav/disconnect', { method: 'POST' });
     davConnected = false;
+    davAllEntries = [];
     document.getElementById('dav-list').innerHTML = '';
-    document.getElementById('dav-breadcrumb').innerHTML = '';
+    document.getElementById('dav-game-card').style.display = 'none';
+    document.getElementById('dav-now-playing-card').style.display = 'none';
     await davLoadStatus();
     toast('WebDAV disconnected');
   } catch (e) { toast('Disconnect failed', 'error'); }
@@ -1257,89 +1325,52 @@ async function davDisconnect() {
 
 async function davRefresh() {
   if (davConnected) {
-    await davBrowse(davCurrentPath);
+    await davBrowse('/', true);  // force refresh — bypass cache
   } else {
     await davLoadStatus();
   }
 }
 
-async function davBrowse(path) {
+async function davBrowse(path, forceRefresh) {
   davCurrentPath = path;
   const list = document.getElementById('dav-list');
   const loading = document.getElementById('dav-loading');
+  const gameCard = document.getElementById('dav-game-card');
   loading.style.display = '';
-  davUpdateBreadcrumb(path);
+  gameCard.style.display = '';
 
   try {
-    const data = await api('/api/dav/list?path=' + encodeURIComponent(path));
+    let url = '/api/dav/list?path=' + encodeURIComponent(path);
+    if (forceRefresh) url += '&refresh=1';
+    const data = await api(url);
     davShowDebug(data);
-    let html = '';
     const entries = data.entries || [];
 
-    // Show ".." for navigation up
-    if (path !== '/' && path !== '') {
-      let parentPath = path.replace(/\/+$/, '');
-      let li = parentPath.lastIndexOf('/');
-      parentPath = li > 0 ? parentPath.substring(0, li + 1) : '/';
-      html += '<div class="game-item" onclick="davBrowse(\'' + parentPath.replace(/'/g, "\\'") + '\')">' +
-        '<div class="game-cover empty" style="font-size:18px">&#11014;</div>' +
-        '<div class="game-info"><div class="game-name">.. (Back)</div></div>' +
-        '</div>';
+    // Only show folders as "games" — filter out files at root level
+    const folders = entries.filter(e => e.dir).sort((a, b) => a.name.localeCompare(b.name));
+    davAllEntries = folders;
+
+    // Now Playing bar
+    const npCard = document.getElementById('dav-now-playing-card');
+    const npEl = document.getElementById('dav-now-playing');
+    if (davLoadedFile) {
+      npCard.style.display = 'block';
+      let displayName = davLoadedFile.split('/').filter(s => s).pop() || davLoadedFile;
+      npEl.innerHTML =
+        '<span class="active-indicator"></span>' +
+        '<strong>' + esc(displayName) + '</strong>' +
+        '<button class="btn btn-sm" onclick="davEject()">Eject</button>';
+    } else {
+      npCard.style.display = 'none';
     }
 
-    // Cover and NFO from this directory level (returned by API)
-    const dirCover = data.cover || '';
-    const dirNfo = data.nfo || '';
-    const coverUrl = dirCover ? (API + '/api/dav/cover?path=' + encodeURIComponent(path + dirCover)) : '';
+    // Reset search/filter
+    document.getElementById('dav-search').value = '';
+    davActiveAlpha = '';
 
-    for (const entry of entries) {
-      let fullPath = path.endsWith('/') ? path + entry.name : path + '/' + entry.name;
-      if (entry.dir) {
-        // Try convention-based cover: FolderName/FolderName.jpg (then .png)
-        let folderCoverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + entry.name + '.jpg');
-        html += '<div class="game-item" onclick="davBrowse(\'' + fullPath.replace(/'/g, "\\'") + '\')">' +
-          '<img class="game-cover" src="' + folderCoverUrl + '" loading="lazy" onerror="' +
-            'if(this.src.endsWith(\'.jpg\')){this.src=this.src.replace(/\\.jpg$/,\'.png\')}' +
-            'else{this.outerHTML=\'<div class=&quot;game-cover empty&quot;>&#128193;</div>\'}' +
-          '">' +
-          '<div class="game-info">' +
-            '<div class="game-name">' + esc(entry.name) + '</div>' +
-            '<div class="game-meta"><span class="badge" style="background:#888;color:#fff">Folder</span></div>' +
-          '</div>' +
-          '</div>';
-      } else {
-        let sizeStr = entry.size > 1048576 ? (entry.size / 1048576).toFixed(1) + ' MB' :
-                      entry.size > 1024 ? (entry.size / 1024).toFixed(0) + ' KB' : entry.size + ' B';
-        let ext = entry.name.split('.').pop().toUpperCase();
-        let isDisk = ['ADF','DSK','ADZ','IMG'].includes(ext);
-        // For files: use dir-level cover, or try convention (filename without ext + .jpg)
-        let fileCoverUrl = coverUrl;
-        if (!fileCoverUrl) {
-          let baseName = entry.name.replace(/\.[^.]+$/, '');
-          fileCoverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(path + (path.endsWith('/') ? '' : '/') + baseName + '.jpg');
-        }
-        html += '<div class="game-item" style="cursor:default">' +
-          '<img class="game-cover" src="' + fileCoverUrl + '" loading="lazy" onerror="' +
-            'if(this.src.endsWith(\'.jpg\')){this.src=this.src.replace(/\\.jpg$/,\'.png\')}' +
-            'else{this.outerHTML=\'<div class=&quot;game-cover empty&quot;>&#128190;</div>\'}' +
-          '">' +
-          '<div class="game-info">' +
-            '<div class="game-name">' + esc(entry.name) + '</div>' +
-            '<div class="game-meta">' +
-              '<span class="badge" style="background:var(--blue);color:#fff">' + ext + '</span> ' +
-              '<span style="font-size:12px;color:#888">' + sizeStr + '</span>' +
-              (dirNfo ? ' <span class="badge badge-nfo">NFO</span>' : '') +
-            '</div>' +
-            '<div style="margin-top:6px;display:flex;gap:6px">' +
-              (isDisk ? '<button class="btn btn-primary" style="font-size:12px;padding:4px 12px" onclick="event.stopPropagation();davInsert(\'' + fullPath.replace(/'/g, "\\'") + '\',\'' + esc(entry.name).replace(/'/g, "\\'") + '\',this)">Insert</button>' : '') +
-              '<button class="btn" style="font-size:12px;padding:4px 12px" onclick="event.stopPropagation();davDownload(\'' + fullPath.replace(/'/g, "\\'") + '\',this)">Save to SD</button>' +
-            '</div>' +
-          '</div>' +
-          '</div>';
-      }
-    }
-
-    list.innerHTML = html || '<p style="color:#555;text-align:center;padding:20px">No disk images found in this folder</p>';
+    // Build A-Z and render
+    davBuildAlphaFilter(folders);
+    davRenderGameList(folders);
   } catch (e) {
     list.innerHTML = '<p style="color:var(--red);padding:12px">Error: ' + esc(e.message || 'Failed to list directory') + '</p>';
   } finally {
@@ -1347,19 +1378,222 @@ async function davBrowse(path) {
   }
 }
 
-function davUpdateBreadcrumb(path) {
-  const bc = document.getElementById('dav-breadcrumb');
-  const parts = path.split('/').filter(p => p.length > 0);
-  let html = '<a onclick="davBrowse(\'/\')">WebDAV Root</a>';
-  let p = '';
-  for (const part of parts) {
-    p += '/' + part;
-    html += ' / <a onclick="davBrowse(\'' + p.replace(/'/g, "\\'") + '\')">' + esc(part) + '</a>';
+function davBuildAlphaFilter(folders) {
+  const letters = new Set();
+  folders.forEach(f => {
+    const c = f.name.charAt(0).toUpperCase();
+    if (c >= 'A' && c <= 'Z') letters.add(c);
+    else letters.add('#');
+  });
+  const bar = document.getElementById('dav-alpha-filter');
+  let html = '<span class="alpha-btn' + (davActiveAlpha === '' ? ' active' : '') + '" onclick="davSetAlpha(\'\')">All</span>';
+  for (let i = 0; i < 26; i++) {
+    const l = String.fromCharCode(65 + i);
+    const has = letters.has(l);
+    html += '<span class="alpha-btn' + (!has ? ' disabled' : '') + (davActiveAlpha === l ? ' active' : '') + '" onclick="davSetAlpha(\'' + l + '\')">' + l + '</span>';
   }
-  bc.innerHTML = html;
+  if (letters.has('#')) {
+    html += '<span class="alpha-btn' + (davActiveAlpha === '#' ? ' active' : '') + '" onclick="davSetAlpha(\'#\')">#</span>';
+  }
+  bar.innerHTML = html;
 }
 
-let davLoadedFile = '';
+function davSetAlpha(letter) {
+  davActiveAlpha = letter;
+  document.getElementById('dav-search').value = '';
+  davFilterGames();
+}
+
+function davFilterGames() {
+  const search = document.getElementById('dav-search').value.toLowerCase().trim();
+  if (search) davActiveAlpha = '';
+
+  let filtered = davAllEntries;
+  if (search) {
+    filtered = filtered.filter(f => f.name.toLowerCase().includes(search));
+  } else if (davActiveAlpha) {
+    filtered = filtered.filter(f => {
+      const c = f.name.charAt(0).toUpperCase();
+      if (davActiveAlpha === '#') return !(c >= 'A' && c <= 'Z');
+      return c === davActiveAlpha;
+    });
+  }
+
+  davBuildAlphaFilter(davAllEntries);
+  davRenderGameList(filtered);
+}
+
+function davRenderGameList(folders) {
+  document.getElementById('dav-game-count').textContent = '(' + folders.length + ' games)';
+  const list = document.getElementById('dav-list');
+
+  if (folders.length === 0) {
+    list.innerHTML = '<p style="color:#555;padding:20px;text-align:center">No games found.</p>';
+    return;
+  }
+
+  list.innerHTML = folders.map(f => {
+    let fullPath = davCurrentPath.endsWith('/') ? davCurrentPath + f.name : davCurrentPath + '/' + f.name;
+    let coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + f.name + '.jpg');
+    let isPlaying = davLoadedFile && davLoadedFile.startsWith(fullPath + '/');
+    return '<div class="game-item' + (isPlaying ? ' active' : '') + '" onclick="davOpenFolder(\'' + fullPath.replace(/'/g, "\\'") + '\',\'' + esc(f.name).replace(/'/g, "\\'") + '\')">' +
+      '<img class="game-cover" src="' + coverUrl + '" loading="lazy" onerror="' +
+        'if(this.src.endsWith(\'.jpg\')){this.src=this.src.replace(/\\.jpg$/,\'.png\')}' +
+        'else{this.outerHTML=\'<div class=&quot;game-cover empty&quot;>No Art</div>\'}' +
+      '">' +
+      '<div class="game-info">' +
+        '<div class="game-name">' + (isPlaying ? '<span class="active-indicator"></span>' : '') + esc(f.name) + '</div>' +
+        '<div class="game-meta">' +
+          (isPlaying ? '<span class="badge" style="background:var(--green);color:#fff">PLAYING</span> ' : '') +
+          '<span class="badge" style="background:var(--blue);color:#fff">WebDAV</span>' +
+        '</div>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+}
+
+// Open a DAV folder as a game detail modal (like SD game detail)
+async function davEnsureConnected() {
+  if (davConnected) return true;
+  try {
+    const res = await fetch(API + '/api/dav/connect', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      davConnected = true;
+      davLoadStatus();  // refresh status bar in background
+      return true;
+    }
+    toast('Auto-connect failed: ' + (data.error || 'Unknown'), 'error');
+    return false;
+  } catch(e) {
+    toast('Auto-connect failed: ' + (e.message || 'Unknown'), 'error');
+    return false;
+  }
+}
+
+async function davOpenFolder(folderPath, folderName) {
+  document.getElementById('dav-modal-title').textContent = folderName;
+  document.getElementById('dav-modal-load-status').textContent = '';
+
+  // Show modal immediately with loading state
+  const modal = document.getElementById('modal-dav-detail');
+  modal.classList.add('show');
+
+  // Cover
+  const coverImg = document.getElementById('dav-modal-cover');
+  let coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(folderPath + '/' + folderName + '.jpg');
+  coverImg.src = coverUrl;
+  coverImg.style.display = 'block';
+  coverImg.onerror = function() {
+    if (this.src.endsWith('.jpg')) {
+      this.src = this.src.replace(/\.jpg$/, '.png');
+    } else {
+      this.style.display = 'none';
+    }
+  };
+
+  // Auto-connect if needed (user clicked game from cache while disconnected)
+  if (!davConnected) {
+    document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--orange)">Connecting to WebDAV...</p>';
+    if (!await davEnsureConnected()) {
+      document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--red)">Could not connect to WebDAV server</p>';
+      return;
+    }
+  }
+
+  // PROPFIND the folder to find disk files and NFO
+  try {
+    const data = await api('/api/dav/list?path=' + encodeURIComponent(folderPath));
+    davShowDebug(data);
+    const entries = data.entries || [];
+    const diskExts = ['ADF','DSK','ADZ','IMG'];
+    const disks = entries.filter(e => !e.dir && diskExts.includes(e.name.split('.').pop().toUpperCase()));
+    disks.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Disk selector
+    const diskSel = document.getElementById('dav-modal-disk-select');
+    diskSel.innerHTML = disks.map((d, i) => {
+      let sizeStr = d.size > 1048576 ? (d.size/1048576).toFixed(1)+' MB' : (d.size/1024).toFixed(0)+' KB';
+      return '<option value="' + i + '">' + esc(d.name) + ' (' + sizeStr + ')</option>';
+    }).join('');
+
+    // Disk file list
+    const disksEl = document.getElementById('dav-modal-disks');
+    if (disks.length > 1) {
+      disksEl.innerHTML = '<label>Disk Files</label>' + disks.map(d => {
+        let sizeStr = d.size > 1048576 ? (d.size/1048576).toFixed(1)+' MB' : (d.size/1024).toFixed(0)+' KB';
+        return '<div style="padding:4px 0;font-size:13px;color:#333">' + esc(d.name) + ' <span style="color:#888">(' + sizeStr + ')</span></div>';
+      }).join('');
+    } else {
+      disksEl.innerHTML = '';
+    }
+
+    // NFO
+    const nfoFile = entries.find(e => !e.dir && e.name.toLowerCase().endsWith('.nfo'));
+    const nfoEl = document.getElementById('dav-modal-nfo');
+    if (nfoFile) {
+      try {
+        const nfoData = await api('/api/dav/nfo?path=' + encodeURIComponent(folderPath + '/' + nfoFile.name));
+        nfoEl.innerHTML = '<label>NFO / Description</label><pre style="font-size:12px;background:var(--light);padding:8px;border:1px inset #999;border-radius:2px;max-height:150px;overflow:auto;white-space:pre-wrap">' + esc(nfoData.content || '') + '</pre>';
+      } catch(e) {
+        nfoEl.innerHTML = '<label>NFO</label><span class="badge badge-nfo">Available</span>';
+      }
+    } else {
+      nfoEl.innerHTML = '';
+    }
+
+    // Check if currently playing
+    const isPlaying = davLoadedFile && davLoadedFile.startsWith(folderPath + '/');
+    if (isPlaying) {
+      let loadedName = davLoadedFile.split('/').pop();
+      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>Playing: ' + esc(loadedName) + '</span>';
+    }
+
+    // Load button handler
+    document.getElementById('dav-modal-load-btn').onclick = async function() {
+      const idx = parseInt(diskSel.value);
+      if (idx < 0 || idx >= disks.length) return;
+      const disk = disks[idx];
+      const remotePath = folderPath + '/' + disk.name;
+      this.disabled = true;
+      this.textContent = 'Loading...';
+      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--orange)">Loading...</span>';
+      try {
+        const res = await fetch(API + '/api/dav/load', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'path=' + encodeURIComponent(remotePath)
+        });
+        const rdata = await res.json().catch(() => ({}));
+        davShowDebug(rdata);
+        if (!res.ok) throw new Error(rdata.error || 'HTTP ' + res.status);
+        davLoadedFile = remotePath;
+        this.textContent = 'Insert';
+        this.disabled = false;
+        document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>Playing: ' + esc(disk.name) + '</span>';
+        let loadMsg = rdata.name + ' loading...';
+        if (rdata.bytes) loadMsg = rdata.name + ' loaded! (' + (rdata.bytes / 1024).toFixed(0) + ' KB)';
+        toast(loadMsg);
+      } catch(e) {
+        this.textContent = 'Insert';
+        this.disabled = false;
+        document.getElementById('dav-modal-load-status').innerHTML = '';
+        toast('Load failed: ' + (e.message || 'Unknown'), 'error');
+      }
+    };
+
+  } catch(e) {
+    document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--red)">Failed to load folder contents</p>';
+  }
+}
+
+function davCloseFolderModal() {
+  document.getElementById('modal-dav-detail').classList.remove('show');
+  // Refresh list to update playing status
+  if (davConnected && davAllEntries.length > 0) {
+    davRenderGameList(davAllEntries);
+  }
+}
 
 async function davInsert(remotePath, displayName, btn) {
   btn.disabled = true;
@@ -1429,15 +1663,21 @@ async function davDownload(remotePath, btn) {
 document.getElementById('game-search').addEventListener('keyup', e => {
   if (e.key === 'Enter') filterGames();
 });
+document.getElementById('dav-search').addEventListener('keyup', e => {
+  if (e.key === 'Enter') davFilterGames();
+});
 
 // Close modal on overlay click
 document.getElementById('modal-game-detail').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeModal();
 });
+document.getElementById('modal-dav-detail').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) davCloseFolderModal();
+});
 
 // Keyboard shortcut
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Escape') { closeModal(); davCloseFolderModal(); }
 });
 
 // Init

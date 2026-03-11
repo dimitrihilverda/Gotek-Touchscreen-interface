@@ -729,7 +729,8 @@ void handleHttpRequest(WiFiClient &client) {
       if (ampIdx >= 0) davPath = davPath.substring(0, ampIdx);
       davPath = urlDecode(davPath);
     }
-    handleDAVList(client, davPath);
+    bool forceRefresh = (req.query.indexOf("refresh=1") >= 0);
+    handleDAVList(client, davPath, forceRefresh);
     return;
   }
   if (req.path == "/api/dav/download" && req.method == "POST") {
@@ -742,15 +743,15 @@ void handleHttpRequest(WiFiClient &client) {
   }
   if (req.path.startsWith("/api/dav/cover") && req.method == "GET") {
     String coverPath = "";
-    int qm = req.path.indexOf("path=");
-    if (qm >= 0) coverPath = urlDecode(req.path.substring(qm + 5));
+    int qm = req.query.indexOf("path=");
+    if (qm >= 0) coverPath = req.query.substring(qm + 5);
     handleDAVCover(client, coverPath);
     return;
   }
   if (req.path.startsWith("/api/dav/nfo") && req.method == "GET") {
     String nfoPath = "";
-    int qm = req.path.indexOf("path=");
-    if (qm >= 0) nfoPath = urlDecode(req.path.substring(qm + 5));
+    int qm = req.query.indexOf("path=");
+    if (qm >= 0) nfoPath = req.query.substring(qm + 5);
     handleDAVNfo(client, nfoPath);
     return;
   }

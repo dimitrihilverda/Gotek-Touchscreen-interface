@@ -261,11 +261,9 @@ void handleDiskLoad(WiFiClient &client, const String &mode, const String &name, 
   GameEntry &g = game_list[gameIdx];
 
   // Resolve which file_list index to load
-  // disk_num is 1-based, game disks are consecutive from first_file_index
   int targetIdx = g.first_file_index;
 
   if (g.disk_count > 1 && diskNum > 1) {
-    // Find the Nth disk file for this game
     int count = 0;
     for (int i = 0; i < (int)file_list.size(); i++) {
       String fdir = file_list[i];
@@ -290,27 +288,17 @@ void handleDiskLoad(WiFiClient &client, const String &mode, const String &name, 
     return;
   }
 
-  Serial.println("Web load: " + file_list[targetIdx]);
+  Serial.println("Web load (deferred): " + file_list[targetIdx]);
 
-  // Set selected_index and call doLoadSelected()
-  selected_index = targetIdx;
-  doLoadSelected();
+  // Defer the actual load to the main loop — send response immediately
+  // so the web UI doesn't hang and the touch stays responsive
+  web_pending_sd_load = targetIdx;
 
-  // Check if it actually loaded
-  if (loaded_disk_index == targetIdx) {
-    // Switch touchscreen to detail view for this game
-    detail_filename = file_list[targetIdx];
-    current_screen = SCR_DETAILS;
-    drawDetailsFromNFO(detail_filename);
-
-    String loadedFile = filenameOnly(file_list[targetIdx]);
-    sendJSON(client, 200,
-      "{\"status\":\"ok\",\"file\":\"" + jsonEscape(loadedFile) +
-      "\",\"game\":\"" + jsonEscape(name) +
-      "\",\"disk\":" + String(diskNum) + "}");
-  } else {
-    sendJSON(client, 500, "{\"error\":\"Failed to load disk\"}");
-  }
+  String loadedFile = filenameOnly(file_list[targetIdx]);
+  sendJSON(client, 200,
+    "{\"status\":\"ok\",\"file\":\"" + jsonEscape(loadedFile) +
+    "\",\"game\":\"" + jsonEscape(name) +
+    "\",\"disk\":" + String(diskNum) + "}");
 }
 
 // ============================================================================
@@ -1253,6 +1241,18 @@ void handleDAVStatus(WiFiClient &client) {
   if (err.length() > 0) {
     json += ",\"error\":\"" + jsonEscape(err) + "\"";
   }
+  // Tell web UI if a cache exists (so it can show games without connecting first)
+  bool hasCache = (dav_entries.size() > 0) || SD_MMC.exists(DAV_CACHE_FILE);
+  json += ",\"has_cache\":" + String(hasCache ? "true" : "false");
+
+  // Include global now-playing state so web UI knows what's loaded
+  if (nowPlaying.source != NP_NONE) {
+    json += ",\"now_playing\":{";
+    json += "\"source\":\"" + String(nowPlaying.source == NP_DAV ? "dav" : "sd") + "\"";
+    json += ",\"name\":\"" + jsonEscape(nowPlaying.name) + "\"";
+    json += ",\"path\":\"" + jsonEscape(nowPlaying.path) + "\"";
+    json += "}";
+  }
   json += "}";
   sendJSON(client, 200, json);
 }
@@ -1288,19 +1288,59 @@ void handleDAVDisconnect(WiFiClient &client) {
   sendJSON(client, 200, "{\"status\":\"disconnected\"}");
 }
 
-// GET /api/dav/list?path=/subdir — List WebDAV directory
-void handleDAVList(WiFiClient &client, const String &queryPath) {
+// GET /api/dav/list?path=/subdir&refresh=1 — List WebDAV directory
+// Uses SD card cache for root listing unless refresh=1 is specified
+void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefresh) {
   if (!cfg_dav_enabled) {
     sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}");
-    return;
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}");
     return;
   }
 
   String path = queryPath;
   if (path.length() == 0) path = "/";
+
+  // For root path: try returning cached data first (unless forced refresh)
+  if (path == "/" && !forceRefresh) {
+    // Check in-memory cache first
+    if (dav_entries.size() > 0) {
+      // Build JSON from in-memory entries
+      String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
+      bool first = true;
+      for (int i = 0; i < (int)dav_entries.size(); i++) {
+        if (!first) json += ",";
+        first = false;
+        json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+        json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
+        json += ",\"size\":" + String(dav_entries[i].size);
+        json += "}";
+      }
+      json += "]}";
+      sendJSON(client, 200, json);
+      return;
+    }
+    // Try SD card cache
+    if (davLoadCache()) {
+      String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
+      bool first = true;
+      for (int i = 0; i < (int)dav_entries.size(); i++) {
+        if (!first) json += ",";
+        first = false;
+        json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+        json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
+        json += ",\"size\":" + String(dav_entries[i].size);
+        json += "}";
+      }
+      json += "]}";
+      sendJSON(client, 200, json);
+      return;
+    }
+  }
+
+  // No cache available or forced refresh — do PROPFIND
+  if (WiFi.status() != WL_CONNECTED) {
+    sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}");
+    return;
+  }
 
   std::vector<DAVFileEntry> entries;
   if (!davClient.listDir(path, entries)) {
@@ -1309,7 +1349,6 @@ void handleDAVList(WiFiClient &client, const String &queryPath) {
   }
 
   // Separate cover/nfo metadata from browsable entries
-  // Cover/nfo files in a directory are metadata for sibling disk images
   String coverFile = "", nfoFile = "";
   for (int i = 0; i < (int)entries.size(); i++) {
     if (entries[i].coverFile.length() > 0 && coverFile.length() == 0)
@@ -1325,7 +1364,6 @@ void handleDAVList(WiFiClient &client, const String &queryPath) {
   json += ",\"entries\":[";
   bool first = true;
   for (int i = 0; i < (int)entries.size(); i++) {
-    // Skip cover/nfo files from the browsable list
     if (entries[i].coverFile.length() > 0 || entries[i].nfoFile.length() > 0) continue;
     if (!first) json += ",";
     first = false;
@@ -1339,6 +1377,18 @@ void handleDAVList(WiFiClient &client, const String &queryPath) {
   if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
   json += "}";
   sendJSON(client, 200, json);
+
+  // Update in-memory and SD cache for root listing
+  if (path == "/") {
+    dav_entries.clear();
+    for (int i = 0; i < (int)entries.size(); i++) {
+      dav_entries.push_back(entries[i]);
+    }
+    davSaveCache();
+    buildDAVActiveLetters();
+    // Start background cover pre-caching
+    davStartCoverPrecache();
+  }
 }
 
 // POST /api/dav/download — Download file from WebDAV to SD card
@@ -1441,25 +1491,15 @@ void handleDAVLoad(WiFiClient &client, const String &body) {
   int dotIdx = displayName.lastIndexOf('.');
   if (dotIdx > 0) displayName = displayName.substring(0, dotIdx);
 
-  size_t loaded = loadFileFromDAV(remotePath, displayName);
-  if (loaded > 0) {
-    // Mark as loaded from WebDAV (not from SD file_list)
-    loaded_disk_index = -2;
-    // Don't change current_screen — the web UI manages its own state
-    // and setting SCR_DETAILS would cause the touchscreen to show SD
-    // game details and remount an SD game on top of the DAV stream.
+  Serial.println("Web DAV load (deferred): " + remotePath);
 
-    sendJSON(client, 200,
-      "{\"status\":\"ok\",\"file\":\"" + jsonEscape(remotePath) +
-      "\",\"bytes\":" + String(loaded) +
-      "\",\"name\":\"" + jsonEscape(displayName) + "\"}");
-  } else {
-    String dbg = davClient.lastDebug();
-    String json = "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"";
-    if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
-    json += "}";
-    sendJSON(client, 500, json);
-  }
+  // Defer the actual DAV streaming to the main loop — send response immediately
+  web_pending_dav_path = remotePath;
+  web_pending_dav_name = displayName;
+
+  sendJSON(client, 200,
+    "{\"status\":\"ok\",\"file\":\"" + jsonEscape(remotePath) +
+    "\",\"name\":\"" + jsonEscape(displayName) + "\"}");
 }
 
 // ============================================================================
@@ -1480,7 +1520,17 @@ void handleDAVCover(WiFiClient &client, const String &queryPath) {
     return;
   }
 
-  long bytes = davClient.streamToBuffer(queryPath, buf, maxCover);
+  // Try SD cache first (instant), then WebDAV (slow)
+  long bytes = davReadCachedCover(queryPath, buf, maxCover);
+  if (bytes <= 0) {
+    // Not cached — download from WebDAV
+    bytes = davClient.streamToBuffer(queryPath, buf, maxCover);
+    if (bytes > 0) {
+      // Save to cache for next time
+      davSaveCachedCover(queryPath, buf, bytes);
+    }
+  }
+
   if (bytes <= 0) {
     free(buf);
     sendJSON(client, 404, "{\"error\":\"Cover not found\"}");
@@ -1493,11 +1543,11 @@ void handleDAVCover(WiFiClient &client, const String &queryPath) {
   String ct = "image/jpeg";
   if (lp.endsWith(".png")) ct = "image/png";
 
-  // Send raw image response
+  // Send raw image response with long cache header (cover won't change often)
   client.println("HTTP/1.1 200 OK");
   client.println("Content-Type: " + ct);
   client.println("Content-Length: " + String(bytes));
-  client.println("Cache-Control: max-age=3600");
+  client.println("Cache-Control: max-age=86400");
   client.println("Connection: close");
   client.println();
 

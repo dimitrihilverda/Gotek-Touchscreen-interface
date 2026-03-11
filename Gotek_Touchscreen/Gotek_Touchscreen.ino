@@ -474,6 +474,32 @@ String dav_detail_cover_path = "";      // cover file path (in same dir)
 String dav_detail_nfo_text = "";        // NFO text content
 bool dav_disk_loaded = false;           // true if a DAV disk is currently loaded
 
+// DAV detail view: folder contents (disk files found inside tapped folder)
+std::vector<String> dav_detail_disks;   // ADF/DSK filenames found in folder
+int dav_detail_disk_sel = 0;            // currently selected disk index
+String dav_detail_folder_path = "";     // full path of the folder being viewed
+
+// DAV navigation: index into dav_entries for detail prev/next
+int dav_detail_index = -1;              // index of folder in dav_entries for prev/next nav
+int dav_pending_detail_nav = -1;        // set by web API to navigate touchscreen to DAV detail
+bool dav_detail_needs_full_load = false; // true = detail page was opened lightweight, needs PROPFIND on next interaction
+
+// ── Pending web-triggered loads (deferred to main loop) ────────────────
+int web_pending_sd_load = -1;       // file_list index to load from SD (set by HTTP handler)
+String web_pending_dav_path = "";   // DAV remote path to load (set by HTTP handler)
+String web_pending_dav_name = "";   // DAV display name for loading screen
+
+// ── Global "Now Playing" state ──────────────────────────────────────────
+// Tracks what's currently loaded regardless of source (SD or WebDAV)
+enum NowPlayingSource { NP_NONE, NP_SD, NP_DAV };
+struct {
+  NowPlayingSource source = NP_NONE;
+  String name;           // display name (no extension)
+  String path;           // full path (file_list entry for SD, WebDAV path for DAV)
+  int sdIndex = -1;      // file_list index (SD only, -1 if DAV)
+  int davFolderIndex = -1; // dav_entries index of folder (DAV only)
+} nowPlaying;
+
 // Touch state
 bool touch_available = false;
 uint16_t last_touch_x = 0, last_touch_y = 0;
@@ -2240,29 +2266,319 @@ void drawToggle(int x, int y, bool state) {
 #define LIST_START_Y   4
 #define LIST_BOTTOM    (gH - 48)
 #endif
+#ifndef ALPHA_BAR_W
+#define ALPHA_BAR_W  16       // width of the alphabet strip
+#define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
+#endif
 
 // ============================================================================
 // WebDAV browse screen
 // ============================================================================
 
+// Forward declarations for DAV detail
+void davOpenFolderDetail(int folderIndex);
+void drawDAVDetail();
+
+// DAV loading screen — reuses boot screen style with progress bar
+// DAV loading screen — progress bar state persists across updates
+int _davLoadBarPct = 0;  // current rendered percentage
+
+void drawDAVLoadingScreen(const String &status, int pct = -1) {
+  gfx_fillScreen(TFT_BLACK);
+
+  // Title
+  gfx_setTextSize(3);
+  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+  String t = "WebDAV";
+  gfx_setCursor((gW - gfx_textWidth(t)) / 2, 60);
+  gfx_print(t);
+
+  // Status text
+  gfx_setTextSize(2);
+  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+  int sw = gfx_textWidth(status);
+  gfx_setCursor((gW - sw) / 2, 120);
+  gfx_print(status);
+
+  // Progress bar
+  int barX = 60, barY = 160, barW = gW - 120, barH = 16;
+  gfx_drawRect(barX, barY, barW, barH, TFT_GREY);
+  if (pct >= 0) {
+    _davLoadBarPct = pct;
+    int fillW = ((barW - 4) * min(pct, 100)) / 100;
+    if (fillW > 0) gfx_fillRect(barX + 2, barY + 2, fillW, barH - 4, TFT_CYAN);
+  }
+
+  gfx_flush();
+}
+
+// Smoothly animate progress bar from current to target over durationMs
+// While the bar animates, the status text and title stay on screen
+void davAnimateProgress(const String &status, int targetPct, int durationMs) {
+  int startPct = _davLoadBarPct;
+  if (startPct >= targetPct) { drawDAVLoadingScreen(status, targetPct); return; }
+  unsigned long startMs = millis();
+  while (true) {
+    unsigned long elapsed = millis() - startMs;
+    int pct;
+    if ((int)elapsed >= durationMs) {
+      pct = targetPct;
+    } else {
+      pct = startPct + (int)((long)(targetPct - startPct) * (long)elapsed / (long)durationMs);
+    }
+    drawDAVLoadingScreen(status, pct);
+    if (pct >= targetPct) break;
+    delay(30);  // ~33fps
+  }
+}
+
+// ── DAV Cache (persistent on SD card) ──────────────────────────────────
+// Stores root-level folder listing so we don't need PROPFIND on every visit.
+// Format: one line per entry: "D|FolderName" for dirs, "F|size|FileName" for files
+// First line: "PATH=/path" to validate cache belongs to current server path
+
+#define DAV_CACHE_FILE "/DAV_CACHE.TXT"
+
+void davSaveCache() {
+  File f = SD_MMC.open(DAV_CACHE_FILE, "w");
+  if (!f) return;
+  f.println("PATH=" + dav_current_path);
+  f.println("HOST=" + cfg_dav_host);
+  f.println("COUNT=" + String(dav_entries.size()));
+  for (const auto &e : dav_entries) {
+    if (e.isDir) {
+      f.println("D|" + e.name);
+    } else {
+      // F|size|name|coverFile|nfoFile
+      f.println("F|" + String(e.size) + "|" + e.name + "|" + e.coverFile + "|" + e.nfoFile);
+    }
+  }
+  f.close();
+}
+
+bool davLoadCache() {
+  if (!SD_MMC.exists(DAV_CACHE_FILE)) return false;
+  File f = SD_MMC.open(DAV_CACHE_FILE, "r");
+  if (!f) return false;
+
+  dav_entries.clear();
+
+  String line;
+  bool pathOk = false, hostOk = false;
+
+  while (f.available()) {
+    line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+
+    if (line.startsWith("PATH=")) {
+      pathOk = (line.substring(5) == "/");  // only cache root listing
+      continue;
+    }
+    if (line.startsWith("HOST=")) {
+      hostOk = (line.substring(5) == cfg_dav_host);
+      continue;
+    }
+    if (line.startsWith("COUNT=")) continue;  // informational only
+
+    if (!pathOk || !hostOk) {
+      // Cache is for a different server or path — discard
+      f.close();
+      dav_entries.clear();
+      return false;
+    }
+
+    if (line.startsWith("D|")) {
+      DAVFileEntry entry;
+      entry.name = line.substring(2);
+      entry.isDir = true;
+      entry.size = 0;
+      entry.hasCover = false;
+      entry.hasNfo = false;
+      dav_entries.push_back(entry);
+    } else if (line.startsWith("F|")) {
+      // F|size|name|coverFile|nfoFile
+      String rest = line.substring(2);
+      int p1 = rest.indexOf('|');
+      if (p1 < 0) continue;
+      int p2 = rest.indexOf('|', p1 + 1);
+      if (p2 < 0) continue;
+      int p3 = rest.indexOf('|', p2 + 1);
+
+      DAVFileEntry entry;
+      entry.isDir = false;
+      entry.size = rest.substring(0, p1).toInt();
+      entry.name = rest.substring(p1 + 1, p2);
+      entry.hasCover = false;
+      entry.hasNfo = false;
+      if (p3 >= 0) {
+        entry.coverFile = rest.substring(p2 + 1, p3);
+        entry.nfoFile = rest.substring(p3 + 1);
+        if (entry.coverFile.length() > 0) entry.hasCover = true;
+        if (entry.nfoFile.length() > 0) entry.hasNfo = true;
+      }
+      dav_entries.push_back(entry);
+    }
+  }
+  f.close();
+  return (dav_entries.size() > 0);
+}
+
+void davClearCache() {
+  if (SD_MMC.exists(DAV_CACHE_FILE)) {
+    SD_MMC.remove(DAV_CACHE_FILE);
+  }
+}
+
+// ── DAV Cover Cache (persistent on SD card) ────────────────────────────
+// Caches WebDAV cover art thumbnails locally so we don't re-download every time.
+// Stored in /DAV_COVERS/ with sanitized filenames based on the DAV path.
+
+#define DAV_COVER_DIR "/DAV_COVERS"
+
+// Convert a DAV path like "/GameFolder/GameFolder.jpg" to a local cache filename
+// Returns something like "/DAV_COVERS/GameFolder.jpg"
+String davCoverCachePath(const String &davPath) {
+  // Use the last two path components: folder + filename
+  // e.g. "/Games/Turrican/Turrican.jpg" → "Turrican_Turrican.jpg"
+  String p = davPath;
+  if (p.startsWith("/")) p = p.substring(1);
+  // Replace slashes with underscores for flat storage
+  p.replace("/", "_");
+  // Keep it short — limit to 60 chars
+  if (p.length() > 60) p = p.substring(p.length() - 60);
+  return String(DAV_COVER_DIR) + "/" + p;
+}
+
+// Check if a cover is cached on SD, if so read it into buf and return size
+// Returns 0 if not cached
+long davReadCachedCover(const String &davPath, uint8_t *buf, size_t maxSize) {
+  String cachePath = davCoverCachePath(davPath);
+  if (!SD_MMC.exists(cachePath.c_str())) return 0;
+  File f = SD_MMC.open(cachePath.c_str(), "r");
+  if (!f) return 0;
+  size_t sz = f.size();
+  if (sz > maxSize) { f.close(); return 0; }
+  size_t rd = f.read(buf, sz);
+  f.close();
+  return rd;
+}
+
+// Save a cover to the SD cache
+void davSaveCachedCover(const String &davPath, const uint8_t *buf, size_t size) {
+  // Create dir if needed
+  if (!SD_MMC.exists(DAV_COVER_DIR)) {
+    SD_MMC.mkdir(DAV_COVER_DIR);
+  }
+  String cachePath = davCoverCachePath(davPath);
+  File f = SD_MMC.open(cachePath.c_str(), "w");
+  if (!f) return;
+  f.write(buf, size);
+  f.close();
+}
+
+// ── Background cover pre-cacher ────────────────────────────────────────
+// Downloads one cover per loop iteration when idle, so covers are cached
+// on SD card before the user or web UI requests them.
+
+int dav_cover_precache_idx = -1;  // current index in dav_entries being pre-cached, -1 = idle
+bool dav_cover_precache_active = false;
+
+void davStartCoverPrecache() {
+  dav_cover_precache_idx = 0;
+  dav_cover_precache_active = true;
+  Serial.println("DAV cover pre-cache: starting (" + String(dav_entries.size()) + " entries)");
+}
+
+// Call this once per loop() iteration when idle (no touch activity).
+// Downloads ONE cover per call to keep touch responsive.
+void davPrecacheOneCover() {
+  if (!dav_cover_precache_active) return;
+  if (dav_cover_precache_idx < 0 || dav_cover_precache_idx >= (int)dav_entries.size()) {
+    dav_cover_precache_active = false;
+    dav_cover_precache_idx = -1;
+    Serial.println("DAV cover pre-cache: done");
+    return;
+  }
+
+  // Skip non-directories
+  while (dav_cover_precache_idx < (int)dav_entries.size() && !dav_entries[dav_cover_precache_idx].isDir) {
+    dav_cover_precache_idx++;
+  }
+  if (dav_cover_precache_idx >= (int)dav_entries.size()) {
+    dav_cover_precache_active = false;
+    Serial.println("DAV cover pre-cache: done");
+    return;
+  }
+
+  const DAVFileEntry &folder = dav_entries[dav_cover_precache_idx];
+  String basePath = dav_current_path;
+  if (!basePath.endsWith("/")) basePath += "/";
+  // Convention: cover = FolderName/FolderName.jpg (or .png)
+  String coverPath = basePath + folder.name + "/" + folder.name + ".jpg";
+
+  // Check if already cached
+  String cachePath = davCoverCachePath(coverPath);
+  if (!SD_MMC.exists(cachePath.c_str())) {
+    // Also check .png variant
+    String pngCoverPath = basePath + folder.name + "/" + folder.name + ".png";
+    String pngCachePath = davCoverCachePath(pngCoverPath);
+    if (!SD_MMC.exists(pngCachePath.c_str())) {
+      // Not cached — download .jpg first, fallback to .png
+      size_t maxCover = 100 * 1024;
+      uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
+      if (buf) {
+        long bytes = davClient.streamToBuffer(coverPath, buf, maxCover);
+        if (bytes > 0) {
+          davSaveCachedCover(coverPath, buf, bytes);
+        } else {
+          // Try .png
+          bytes = davClient.streamToBuffer(pngCoverPath, buf, maxCover);
+          if (bytes > 0) {
+            davSaveCachedCover(pngCoverPath, buf, bytes);
+          }
+        }
+        free(buf);
+      }
+    }
+  }
+
+  dav_cover_precache_idx++;
+}
+
+// ── davBrowsePath: fetch from network (with progress) or use cache ─────
+
 void davBrowsePath(const String &path) {
   dav_current_path = path;
   dav_scroll_offset = 0;
   dav_selected = -1;
+
+  // Try loading from SD cache first (root listing only)
+  if (path == "/" && davLoadCache()) {
+    dav_current_path = "/";
+    int folderCount = 0;
+    for (const auto &e : dav_entries) { if (e.isDir) folderCount++; }
+    // Quick loading screen to show we're using cache
+    drawDAVLoadingScreen("Loaded " + String(folderCount) + " games (cached)", 100);
+    delay(200);
+    buildDAVActiveLetters();
+    // Start background cover pre-caching (for any not yet cached)
+    davStartCoverPrecache();
+    drawDAVList();
+    return;
+  }
+
+  // No cache — do a full network fetch
   dav_entries.clear();
+  _davLoadBarPct = 0;
 
-  // Show loading message
-  gfx_fillScreen(TFT_BLACK);
-  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-  gfx_setTextSize(2);
-  gfx_setCursor(20, gH / 2 - 10);
-  gfx_print("Loading...");
-  gfx_flush();
+  // Phase 1: Connecting
+  davAnimateProgress("Connecting...", 5, 300);
 
-  // Connect if needed
   if (!davClient.isConnected()) {
     davClient.connect();
   }
+  davAnimateProgress("Connected!", 25, 500);
 
   if (!davClient.isConnected()) {
     gfx_fillScreen(TFT_BLACK);
@@ -2279,34 +2595,43 @@ void davBrowsePath(const String &path) {
     return;
   }
 
+  // Phase 2: Loading game list
+  davAnimateProgress("Loading game list...", 30, 300);
+
   davClient.listDir(path, dav_entries);
+
+  davAnimateProgress("Loading game list...", 60, 400);
+
+  // Phase 3: Processing results
+  int folderCount = 0;
+  for (const auto &e : dav_entries) { if (e.isDir) folderCount++; }
+
+  davAnimateProgress("Found " + String(folderCount) + " games", 85, 600);
+
+  buildDAVActiveLetters();
+
+  // Save to cache for next time
+  if (path == "/") {
+    davSaveCache();
+  }
+
+  // Phase 4: Ready
+  davAnimateProgress("Ready!", 100, 400);
+
+  // Start background cover pre-caching
+  davStartCoverPrecache();
+
   drawDAVList();
 }
 
 void drawDAVList() {
   gfx_fillScreen(TFT_BLACK);
 
-  // Title bar with path (same style as game list)
-  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-  gfx_setTextSize(2);
-  gfx_setCursor(8, 4);
-  gfx_print("WEBDAV");
-  gfx_setTextSize(1);
-  gfx_setTextColor(0x7BEF, TFT_BLACK);
-  String shortPath = dav_current_path;
-  if (shortPath.length() > 30) shortPath = "..." + shortPath.substring(shortPath.length() - 27);
-  gfx_setCursor(90, 8);
-  gfx_print(shortPath);
-
-  int listTop = 24;
-  int listBottom = gH - 46;
-  int itemH = LIST_ITEM_H;
-  int perPage = (listBottom - listTop) / itemH;
+  int perPage = items_per_page();
 
   // Clamp scroll
-  int maxOff = (int)dav_entries.size() - perPage;
-  if (maxOff < 0) maxOff = 0;
-  if (dav_scroll_offset > maxOff) dav_scroll_offset = maxOff;
+  if (dav_scroll_offset > (int)dav_entries.size() - perPage)
+    dav_scroll_offset = (int)dav_entries.size() - perPage;
   if (dav_scroll_offset < 0) dav_scroll_offset = 0;
 
   if (dav_entries.size() == 0) {
@@ -2316,148 +2641,211 @@ void drawDAVList() {
     gfx_print("Empty folder");
   }
 
+  // Draw visible entries (same layout as SD game list)
   for (int vi = 0; vi < perPage && (dav_scroll_offset + vi) < (int)dav_entries.size(); vi++) {
-    int i = dav_scroll_offset + vi;
-    const DAVFileEntry &e = dav_entries[i];
-    int y = listTop + vi * itemH;
+    int gi = dav_scroll_offset + vi;
+    const DAVFileEntry &e = dav_entries[gi];
+    int y = LIST_START_Y + vi * LIST_ITEM_H;
 
-    // Background — match game list style
-    gfx_fillRect(0, y, gW, itemH, TFT_BLACK);
-
-    // Thumbnail area (left side) — same dimensions as game list
+    // Thumbnail area
     int thumbX = 6;
     int thumbY2 = y + (LIST_ITEM_H - LIST_THUMB_H) / 2;
 
     if (e.isDir) {
-      // Folder — draw a folder-style thumbnail with name initial
+      // Folder — draw placeholder thumbnail with initial letter
       gfx_fillRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x1082);
       gfx_drawRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
-      // Draw folder tab at top
       gfx_fillRect(thumbX + 2, thumbY2, LIST_THUMB_W / 2, 6, TFT_YELLOW);
-      // Show cover indicator if folder has cover
       if (e.hasCover) {
         gfx_setTextColor(TFT_GREEN, 0x1082);
         gfx_setTextSize(1);
         gfx_setCursor(thumbX + 4, thumbY2 + LIST_THUMB_H - 12);
         gfx_print("IMG");
       }
-      // Show first letter of folder name large
       gfx_setTextColor(TFT_YELLOW, 0x1082);
       gfx_setTextSize(3);
-      char initial = e.name.charAt(0);
-      if (initial >= 'a' && initial <= 'z') initial -= 32;
+      char initial = toupper(e.name.charAt(0));
       gfx_setCursor(thumbX + (LIST_THUMB_W - 18) / 2, thumbY2 + 12);
       char buf[2] = { initial, 0 };
       gfx_print(buf);
     } else {
-      // Disk file — show extension icon with disk-image style
-      gfx_fillRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x1082);
+      // File — draw placeholder (shouldn't appear in game-folder view, but just in case)
       gfx_drawRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
-      // Draw a floppy disk icon shape
-      gfx_fillRect(thumbX + 8, thumbY2 + 4, LIST_THUMB_W - 16, 10, 0x4208);
-      gfx_fillRect(thumbX + 14, thumbY2 + LIST_THUMB_H - 18, LIST_THUMB_W - 28, 14, 0x2104);
-      // Show extension
-      gfx_setTextColor(TFT_GREEN, 0x1082);
+      gfx_setTextColor(0x4208, TFT_BLACK);
       gfx_setTextSize(1);
-      String ext = e.name;
-      int dot = ext.lastIndexOf('.');
-      if (dot > 0) ext = ext.substring(dot + 1);
-      ext.toUpperCase();
-      gfx_setCursor(thumbX + 4, thumbY2 + 20);
-      gfx_print(ext);
+      gfx_setCursor(thumbX + 12, thumbY2 + 18);
+      gfx_print("?");
     }
 
-    // Name — same style as game list
+    // Game name
     int textX = thumbX + LIST_THUMB_W + 8;
-    gfx_setTextColor(e.isDir ? TFT_YELLOW : TFT_WHITE, TFT_BLACK);
+    gfx_setTextColor(e.isDir ? TFT_WHITE : TFT_GREY, TFT_BLACK);
     gfx_setTextSize(2);
-    String dispName = truncateToWidth(e.name, gW - textX - 10);
+    String dispName = truncateToWidth(e.name, gW - textX - 54);
     gfx_setCursor(textX, y + 8);
     gfx_print(dispName);
 
-    // Meta info line (size for files, cover/nfo indicators for folders)
-    gfx_setTextSize(1);
-    gfx_setCursor(textX, y + 30);
-    if (e.isDir) {
-      if (e.hasCover || e.hasNfo) {
-        if (e.hasCover) {
-          gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-          gfx_print("Cover ");
-        }
-        if (e.hasNfo) {
-          gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-          gfx_print("NFO");
-        }
-      } else {
-        gfx_setTextColor(0x7BEF, TFT_BLACK);
-        gfx_print("Folder");
+    // Meta line: Cover/NFO indicators for folders
+    if (e.isDir && (e.hasCover || e.hasNfo)) {
+      gfx_setTextSize(1);
+      gfx_setCursor(textX, y + 30);
+      if (e.hasCover) {
+        gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+        gfx_print("Cover ");
       }
-    } else {
-      gfx_setTextColor(0x7BEF, TFT_BLACK);
-      if (e.size > 1048576) gfx_print(String(e.size / 1048576) + " MB");
-      else if (e.size > 0) gfx_print(String(e.size / 1024) + " KB");
+      if (e.hasNfo) {
+        gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+        gfx_print("NFO");
+      }
     }
 
     // Separator line
-    gfx_fillRect(6, y + itemH - 1, gW - 12, 1, 0x2104);
+    gfx_fillRect(6, y + LIST_ITEM_H - 1, gW - 12, 1, 0x2104);
   }
 
-  // Bottom buttons: BACK + (UP if not root)
-  int btnW = 148, btnH = 36, btnY = gH - 42;
-  drawThemedButton(10, btnY, btnW, btnH, "BTN_BACK", "BACK", TFT_CYAN);
-
-  if (dav_current_path != "/" && dav_current_path.length() > 1) {
-    drawThemedButton(gW - 10 - btnW, btnY, btnW, btnH, "BTN_UP", "UP", TFT_YELLOW);
-  }
-
-  // Scroll indicator
+  // A-Z alphabet bar (right edge) — shared with SD game list
   if ((int)dav_entries.size() > perPage) {
-    int barH = listBottom - listTop;
-    int thumbH2 = max(10, barH * perPage / (int)dav_entries.size());
-    int thumbY3 = listTop + (barH - thumbH2) * dav_scroll_offset / maxOff;
-    gfx_fillRect(gW - 4, listTop, 3, barH, 0x1082);
-    gfx_fillRect(gW - 4, thumbY3, 3, thumbH2, 0x7BEF);
+    drawAlphabetBar(dav_scroll_offset, (int)dav_entries.size());
   }
+
+  // Bottom bar: "Now Playing" left, buttons right — global, any source
+  int bottomBtnsW = 92;  // SD + Info buttons
+  if (nowPlaying.source != NP_NONE) {
+    uint16_t bgColor = (nowPlaying.source == NP_DAV) ? 0x0841 : 0x0320;
+    gfx_fillRect(0, gH - 46, gW - bottomBtnsW, 46, bgColor);
+    gfx_setTextSize(1);
+    gfx_setTextColor(TFT_GREEN, bgColor);
+    gfx_setCursor(8, gH - 42);
+    gfx_print(nowPlaying.source == NP_SD ? "NOW PLAYING (SD):" : "NOW PLAYING (DAV):");
+    gfx_setTextColor(TFT_WHITE, bgColor);
+    gfx_setTextSize(2);
+    gfx_setCursor(8, gH - 28);
+    gfx_print(truncateToWidth(nowPlaying.name, gW - bottomBtnsW - 16));
+  }
+
+  // SD button (bottom-right) — to go back to SD game list
+  int btnSize = 40;
+  drawThemedButton(gW - 88, gH - 42, btnSize, 36, "BTN_SD", "SD", TFT_CYAN);
+
+  // Info button
+  drawThemedButton(gW - 44, gH - 42, btnSize, 36, "BTN_INFO", "i", TFT_YELLOW);
 
   gfx_flush();
+}
+
+// Open a DAV folder directly into detail view (skip file listing step)
+void davOpenFolderDetail(int folderIndex) {
+  if (folderIndex < 0 || folderIndex >= (int)dav_entries.size()) return;
+  const DAVFileEntry &folder = dav_entries[folderIndex];
+  if (!folder.isDir) return;
+
+  dav_detail_needs_full_load = false;  // full load — clear lightweight flag
+
+  dav_detail_index = folderIndex;
+  dav_detail_name = folder.name;
+
+  // Build folder path
+  String folderPath = dav_current_path;
+  if (!folderPath.endsWith("/")) folderPath += "/";
+  folderPath += folder.name;
+  dav_detail_folder_path = folderPath;
+
+  // Show loading
+  showBusyIndicator("Loading...");
+
+  // PROPFIND the folder contents to find ADF files, cover, NFO
+  std::vector<DAVFileEntry> folderContents;
+  davClient.listDir(folderPath, folderContents);
+
+  dav_detail_disks.clear();
+  dav_detail_cover_path = "";
+  dav_detail_nfo_text = "";
+  dav_detail_disk_sel = 0;
+
+  String dirPath = folderPath;
+  if (!dirPath.endsWith("/")) dirPath += "/";
+
+  for (int i = 0; i < (int)folderContents.size(); i++) {
+    const DAVFileEntry &f = folderContents[i];
+    if (f.isDir) continue;
+    String lname = f.name;
+    lname.toLowerCase();
+    if (lname.endsWith(".adf") || lname.endsWith(".dsk") || lname.endsWith(".adz") || lname.endsWith(".img")) {
+      dav_detail_disks.push_back(f.name);
+    }
+    if (f.coverFile.length() > 0 && dav_detail_cover_path.length() == 0) {
+      dav_detail_cover_path = dirPath + f.coverFile;
+    }
+    if (f.nfoFile.length() > 0 && dav_detail_nfo_text.length() == 0) {
+      uint8_t nfoBuf[1024];
+      long nfoBytes = davClient.streamToBuffer(dirPath + f.nfoFile, nfoBuf, sizeof(nfoBuf) - 1);
+      if (nfoBytes > 0) {
+        nfoBuf[nfoBytes] = 0;
+        dav_detail_nfo_text = String((char *)nfoBuf);
+      }
+    }
+  }
+
+  // If we found disks, set the first one as default path for INSERT
+  if (dav_detail_disks.size() > 0) {
+    dav_detail_path = dirPath + dav_detail_disks[0];
+  } else {
+    dav_detail_path = "";
+  }
+
+  hideBusyIndicator();
+  current_screen = SCR_WEBDAV_DETAIL;
+  drawDAVDetail();
 }
 
 void drawDAVDetail() {
   gfx_fillScreen(TFT_BLACK);
 
-  // Title
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_setTextSize(2);
-  String dispName = dav_detail_name;
-  int dotPos = dispName.lastIndexOf('.');
-  if (dotPos > 0) dispName = dispName.substring(0, dotPos);
-  gfx_setCursor(20, 8);
-  gfx_print(truncateToWidth(dispName, gW - 40));
+  // Layout matches SD drawDetailsFromNFO: no title bar, cover from top
+  bool multiDisk = (dav_detail_disks.size() > 1);
+  int diskRowH = multiDisk ? 34 : 0;
+  int btnTop = gH - 42;
+  int diskTop = multiDisk ? (btnTop - diskRowH) : btnTop;
+  int contentBottom = diskTop - 3;
 
-  // Cover image from WebDAV (download to PSRAM temp buffer and display)
-  int imgTop = 32;
-  int imgW = gW - 60;
-  int imgH = gH - 130;
+  // Cover art — starts from very top (like SD detail)
+  int imgTop = 4;
+  int imgW = gW - 60;  // leave room for nav arrows
+
+  String title = "", blurb = "";
+  if (dav_detail_nfo_text.length() > 0) {
+    parseNFO(dav_detail_nfo_text, title, blurb);
+  }
+  int textSpace = 0;
+  if (title.length() > 0) textSpace += 18;
+  if (blurb.length() > 0) textSpace += 14;
+
+  int imgH = contentBottom - imgTop - textSpace - 4;
+  if (imgH < 60) imgH = 60;
+
   bool coverDrawn = false;
-
-  if (dav_detail_cover_path.length() > 0) {
-    // Try to stream cover from WebDAV into PSRAM for rendering
+  if (dav_detail_cover_path.length() > 0 && !dav_detail_needs_full_load) {
     size_t maxCover = 100 * 1024;
     uint8_t *coverBuf = (uint8_t *)ps_malloc(maxCover);
     if (coverBuf) {
-      long coverBytes = davClient.streamToBuffer(dav_detail_cover_path, coverBuf, maxCover);
+      // Try SD cache first (instant), then WebDAV (slow)
+      long coverBytes = davReadCachedCover(dav_detail_cover_path, coverBuf, maxCover);
+      if (coverBytes <= 0) {
+        // Not cached — download from WebDAV and save to cache
+        coverBytes = davClient.streamToBuffer(dav_detail_cover_path, coverBuf, maxCover);
+        if (coverBytes > 0) {
+          davSaveCachedCover(dav_detail_cover_path, coverBuf, coverBytes);
+        }
+      }
       if (coverBytes > 0) {
-        // Write to temp file on SD for jpg/png decoder
         String tmpPath = "/tmp_dav_cover.jpg";
         String lp = dav_detail_cover_path;
         lp.toLowerCase();
         if (lp.endsWith(".png")) tmpPath = "/tmp_dav_cover.png";
-
         File tmpFile = SD_MMC.open(tmpPath.c_str(), "w");
         if (tmpFile) {
           tmpFile.write(coverBuf, coverBytes);
           tmpFile.close();
-
           if (tmpPath.endsWith(".png")) {
             coverDrawn = drawPngFile(tmpPath.c_str(), (gW - imgW) / 2, imgTop);
           } else {
@@ -2479,34 +2867,100 @@ void drawDAVDetail() {
     gfx_print("No Cover");
   }
 
-  // NFO text (first 2 lines)
-  if (dav_detail_nfo_text.length() > 0) {
-    String title = "", blurb = "";
-    parseNFO(dav_detail_nfo_text, title, blurb);
-    int textY = imgTop + imgH + 4;
-    if (title.length() > 0) {
-      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-      gfx_setTextSize(2);
-      gfx_setCursor(20, textY);
-      gfx_print(truncateToWidth(title, gW - 40));
-      textY += 18;
-    }
-    if (blurb.length() > 0) {
-      gfx_setTextSize(1);
-      gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-      gfx_setCursor(20, textY);
-      gfx_print(truncateToWidth(blurb, gW - 40));
+  // Title and blurb below cover (like SD detail)
+  int textY = imgTop + imgH + 3;
+  if (title.length() > 0) {
+    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+    gfx_setTextSize(2);
+    gfx_setCursor(20, textY);
+    gfx_print(truncateToWidth(title, gW - 40));
+    textY += 18;
+  }
+  if (blurb.length() > 0) {
+    gfx_setTextSize(1);
+    drawWrappedText(blurb, 20, textY, gW - 40, TFT_WHITE);
+  }
+
+  // Disk selector row (if multi-disk) — matches SD drawDiskSelector style
+  // Only highlight the disk that is ACTUALLY loaded (not just selected)
+  bool isThisGameLoaded = (nowPlaying.source == NP_DAV && nowPlaying.davFolderIndex == dav_detail_index);
+  int loadedDiskIdx = -1;  // which disk in dav_detail_disks is currently loaded
+  if (isThisGameLoaded && nowPlaying.path.length() > 0) {
+    String loadedFile = nowPlaying.path;
+    int sl = loadedFile.lastIndexOf('/');
+    if (sl >= 0) loadedFile = loadedFile.substring(sl + 1);
+    for (int i = 0; i < (int)dav_detail_disks.size(); i++) {
+      if (dav_detail_disks[i] == loadedFile) { loadedDiskIdx = i; break; }
     }
   }
 
-  // Bottom buttons: BACK + INSERT/EJECT
-  int btnW = 148, btnH = 36, btnY = gH - 42;
-  drawThemedButton(10, btnY, btnW, btnH, "BTN_BACK", "BACK", TFT_CYAN);
+  if (multiDisk) {
+    int dbtnW = 44, dbtnH = 28, dgap = 4;
+    int numDisks = dav_detail_disks.size();
+    int totalW = numDisks * dbtnW + (numDisks - 1) * dgap;
+    int startX = (gW - totalW) / 2;
+    gfx_setTextColor(TFT_GREY, TFT_BLACK);
+    gfx_setTextSize(1);
+    gfx_setCursor(startX - 35, diskTop + 10);
+    gfx_print("DISK:");
+    for (int i = 0; i < numDisks; i++) {
+      int bx = startX + i * (dbtnW + dgap);
+      bool isSel = (i == dav_detail_disk_sel);
+      bool isDiskLoaded = (i == loadedDiskIdx);
+      if (isDiskLoaded) {
+        // Green = actually loaded & playing
+        gfx_fillRect(bx, diskTop, dbtnW, dbtnH, TFT_GREEN);
+        gfx_drawRect(bx, diskTop, dbtnW, dbtnH, TFT_WHITE);
+        gfx_setTextColor(TFT_BLACK, TFT_GREEN);
+      } else if (isSel) {
+        // Orange = selected but not loaded yet
+        gfx_fillRect(bx, diskTop, dbtnW, dbtnH, 0xFC00);
+        gfx_drawRect(bx, diskTop, dbtnW, dbtnH, TFT_WHITE);
+        gfx_setTextColor(TFT_BLACK, 0xFC00);
+      } else {
+        gfx_fillRect(bx, diskTop, dbtnW, dbtnH, 0x1082);
+        gfx_drawRect(bx, diskTop, dbtnW, dbtnH, TFT_GREY);
+        gfx_setTextColor(TFT_WHITE, 0x1082);
+      }
+      gfx_setTextSize(2);
+      String label = String(i + 1);
+      int tw = gfx_textWidth(label);
+      gfx_setCursor(bx + (dbtnW - tw) / 2, diskTop + (dbtnH - 16) / 2);
+      gfx_print(label);
+    }
+  }
 
-  if (dav_disk_loaded && dav_detail_path == dav_detail_path) {
-    drawThemedButton(gW - 10 - btnW, btnY, btnW, btnH, "BTN_UNLOAD", "EJECT", TFT_RED);
+  // Navigation arrows (left/right) to go to prev/next game folder
+  int arrowY = imgTop + imgH / 2 - 8;
+  gfx_setTextSize(2);
+  // Find prev/next folder indices
+  int prevFolder = -1, nextFolder = -1;
+  for (int i = dav_detail_index - 1; i >= 0; i--) {
+    if (dav_entries[i].isDir) { prevFolder = i; break; }
+  }
+  for (int i = dav_detail_index + 1; i < (int)dav_entries.size(); i++) {
+    if (dav_entries[i].isDir) { nextFolder = i; break; }
+  }
+  if (prevFolder >= 0) {
+    gfx_setTextColor(TFT_GREY, TFT_BLACK);
+    gfx_setCursor(4, arrowY);
+    gfx_print("<");
+  }
+  if (nextFolder >= 0) {
+    gfx_setTextColor(TFT_GREY, TFT_BLACK);
+    gfx_setCursor(gW - 16, arrowY);
+    gfx_print(">");
+  }
+
+  // Bottom buttons: BACK + INSERT/EJECT (matches SD detail)
+  int detBtnW = 148, detBtnH = 36;
+  drawThemedButton(10, btnTop, detBtnW, detBtnH, "BTN_BACK", "BACK", TFT_CYAN);
+
+  // Only show EJECT if THIS game's disk is actually loaded
+  if (isThisGameLoaded) {
+    drawThemedButton(gW - 10 - detBtnW, btnTop, detBtnW, detBtnH, "BTN_UNLOAD", "EJECT", TFT_RED);
   } else {
-    drawThemedButton(gW - 10 - btnW, btnY, btnW, btnH, "BTN_LOAD", "INSERT", TFT_GREEN);
+    drawThemedButton(gW - 10 - detBtnW, btnTop, detBtnW, detBtnH, "BTN_LOAD", "INSERT", TFT_GREEN);
   }
 
   gfx_flush();
@@ -2562,14 +3016,17 @@ void drawInfoScreen() {
             String((g_mode == MODE_ADF) ? "ADF" : "DSK"));
   y += lineH;
 
-  // --- Currently loaded file ---
+  // --- Currently loaded file (global nowPlaying) ---
   gfx_setTextColor(TFT_GREEN, TFT_BLACK);
   gfx_setCursor(20, y);
   gfx_print("Loaded: ");
-  gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-  if (cfg_lastfile.length() > 0) {
-    gfx_print(basenameNoExt(filenameOnly(cfg_lastfile)));
+  if (nowPlaying.source != NP_NONE) {
+    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+    gfx_print(nowPlaying.name);
+    gfx_setTextColor(0x7BEF, TFT_BLACK);  // dim grey
+    gfx_print(nowPlaying.source == NP_DAV ? " (DAV)" : " (SD)");
   } else {
+    gfx_setTextColor(0x7BEF, TFT_BLACK);
     gfx_print("(none)");
   }
   y += lineH;
@@ -2681,12 +3138,8 @@ void drawInfoScreen() {
 }
 
 // ============================================================================
-// ALPHABET BAR constants (used by game list)
+// ALPHABET BAR (used by game list) — constants defined above with list layout
 // ============================================================================
-#define ALPHA_BAR_W  16       // width of the alphabet strip
-#define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
-
-// List layout constants already defined above (before WebDAV section)
 
 int items_per_page() {
   return (LIST_BOTTOM - LIST_START_Y) / LIST_ITEM_H;
@@ -2697,11 +3150,11 @@ int items_per_page() {
 // ============================================================================
 // ALPHA_BAR_W and ALPHA_BAR_X are defined earlier
 
-// Active letters in the alphabet bar (only letters that have games)
-char active_letters[26];    // letters with games (e.g. "ABCDFGKLMPRST")
+// Shared alphabet bar state — used for whichever list is active
+char active_letters[26];    // letters present (e.g. "ABCDFGKLMPRST")
 int  active_letter_count = 0;
 
-// Build the list of active letters from game_list (call after sorting)
+// Build the active letters list from game_list (SD games)
 void buildActiveLetters() {
   bool seen[26] = {false};
   for (int i = 0; i < (int)game_list.size(); i++) {
@@ -2710,50 +3163,68 @@ void buildActiveLetters() {
   }
   active_letter_count = 0;
   for (int i = 0; i < 26; i++) {
-    if (seen[i]) {
-      active_letters[active_letter_count++] = 'A' + i;
-    }
+    if (seen[i]) active_letters[active_letter_count++] = 'A' + i;
   }
 }
 
-// Find the first game_list index that starts with given letter (case-insensitive)
-int findFirstGameWithLetter(char letter) {
+// Build the active letters list from dav_entries (WebDAV folders)
+void buildDAVActiveLetters() {
+  bool seen[26] = {false};
+  for (int i = 0; i < (int)dav_entries.size(); i++) {
+    if (!dav_entries[i].isDir) continue;
+    char c = toupper(dav_entries[i].name.charAt(0));
+    if (c >= 'A' && c <= 'Z') seen[c - 'A'] = true;
+  }
+  active_letter_count = 0;
+  for (int i = 0; i < 26; i++) {
+    if (seen[i]) active_letters[active_letter_count++] = 'A' + i;
+  }
+}
+
+// Generic: find first entry index starting with letter
+// getNameFn returns the name for a given index
+int findFirstWithLetter(char letter, int count, String (*getNameFn)(int)) {
   letter = toupper(letter);
-  for (int i = 0; i < (int)game_list.size(); i++) {
-    char first = toupper(game_list[i].name.charAt(0));
+  for (int i = 0; i < count; i++) {
+    char first = toupper(getNameFn(i).charAt(0));
     if (first >= letter) return i;
   }
-  return (int)game_list.size() - 1;
+  return count - 1;
 }
 
-// Get the current leading letter for the first visible game
-char getCurrentLetter() {
-  if (scroll_offset >= 0 && scroll_offset < (int)game_list.size()) {
-    return toupper(game_list[scroll_offset].name.charAt(0));
-  }
-  return 'A';
-}
+// Name getters for the two list types
+String _sdGameName(int i) { return game_list[i].name; }
+String _davEntryName(int i) { return dav_entries[i].name; }
 
-void drawAlphabetBar() {
+// Draw the alphabet bar for any list — pass current scrollOffset and total item count
+void drawAlphabetBar(int scrollOff, int totalItems) {
   if (active_letter_count == 0) return;
 
   int barTop = LIST_START_Y;
   int barH = LIST_BOTTOM - LIST_START_Y;
-  char curLetter = getCurrentLetter();
+  int perPage = items_per_page();
 
-  int letterCount = active_letter_count;
+  // Determine current letter from first visible item
+  char curLetter = 'A';
+  if (current_screen == SCR_WEBDAV) {
+    if (scrollOff >= 0 && scrollOff < (int)dav_entries.size())
+      curLetter = toupper(dav_entries[scrollOff].name.charAt(0));
+  } else {
+    if (scrollOff >= 0 && scrollOff < (int)game_list.size())
+      curLetter = toupper(game_list[scrollOff].name.charAt(0));
+  }
 
   // Background strip
   gfx_fillRect(ALPHA_BAR_X, barTop, ALPHA_BAR_W, barH, 0x1082);
 
-  int letterH = barH / letterCount;
-  if (letterH < 10) letterH = 10;  // minimum height per letter
+  int letterH = barH / active_letter_count;
+  if (letterH < 10) letterH = 10;
   gfx_setTextSize(1);
 
-  for (int i = 0; i < letterCount; i++) {
+  for (int i = 0; i < active_letter_count; i++) {
     char letter = active_letters[i];
     int ly = barTop + i * letterH;
-    if (ly + letterH > LIST_BOTTOM) break;  // don't draw outside bar
+    if (ly + letterH > LIST_BOTTOM) break;
 
     if (letter == curLetter) {
       gfx_fillRect(ALPHA_BAR_X, ly, ALPHA_BAR_W, letterH, 0x03E0);
@@ -2769,15 +3240,16 @@ void drawAlphabetBar() {
   }
 
   // Scrollbar position indicator
-  int maxOff = (int)game_list.size() - items_per_page();
+  int maxOff = totalItems - perPage;
   if (maxOff > 0) {
-    int thumbH = max(6, barH * items_per_page() / (int)game_list.size());
-    int thumbY = barTop + (barH - thumbH) * scroll_offset / maxOff;
+    int thumbH = max(6, barH * perPage / totalItems);
+    int thumbY = barTop + (barH - thumbH) * scrollOff / maxOff;
     gfx_fillRect(ALPHA_BAR_X - 3, thumbY, 2, thumbH, TFT_CYAN);
   }
 }
 
-// Handle touch/drag on the alphabet bar — returns true if handled
+// Handle touch on the alphabet bar — works for both SD and DAV lists
+// Returns true if handled. Updates the appropriate scroll offset and redraws.
 bool handleAlphabetTouch(uint16_t px, uint16_t py) {
   if (px < ALPHA_BAR_X || py < LIST_START_Y || py >= LIST_BOTTOM) return false;
   if (active_letter_count == 0) return false;
@@ -2792,14 +3264,21 @@ bool handleAlphabetTouch(uint16_t px, uint16_t py) {
 
   char letter = active_letters[idx];
 
-  // Jump to first game starting with this letter
-  int gameIdx = findFirstGameWithLetter(letter);
-  scroll_offset = gameIdx;
-  int maxOff = (int)game_list.size() - items_per_page();
-  if (maxOff < 0) maxOff = 0;
-  if (scroll_offset > maxOff) scroll_offset = maxOff;
-
-  drawList();
+  if (current_screen == SCR_WEBDAV) {
+    int target = findFirstWithLetter(letter, (int)dav_entries.size(), _davEntryName);
+    dav_scroll_offset = target;
+    int maxOff = (int)dav_entries.size() - items_per_page();
+    if (maxOff < 0) maxOff = 0;
+    if (dav_scroll_offset > maxOff) dav_scroll_offset = maxOff;
+    drawDAVList();
+  } else {
+    int target = findFirstWithLetter(letter, (int)game_list.size(), _sdGameName);
+    scroll_offset = target;
+    int maxOff = (int)game_list.size() - items_per_page();
+    if (maxOff < 0) maxOff = 0;
+    if (scroll_offset > maxOff) scroll_offset = maxOff;
+    drawList();
+  }
   return true;
 }
 
@@ -2871,22 +3350,22 @@ void drawList() {
 
   // A-Z alphabet slider (right edge) — replaces old scroll buttons
   if ((int)game_list.size() > perPage) {
-    drawAlphabetBar();
+    drawAlphabetBar(scroll_offset, (int)game_list.size());
   }
 
-  // Bottom bar: "Now Playing" (clickable) left, buttons right
+  // Bottom bar: "Now Playing" (clickable) left, buttons right — global, any source
   int bottomBtnsW = cfg_dav_enabled ? 92 : 44;  // 2 buttons or 1
-  if (loaded_disk_index >= 0 && loaded_disk_index < (int)file_list.size()) {
-    gfx_fillRect(0, gH - 46, gW - bottomBtnsW - 4, 46, 0x0320);
+  if (nowPlaying.source != NP_NONE) {
+    uint16_t bgColor = (nowPlaying.source == NP_DAV) ? 0x0841 : 0x0320;
+    gfx_fillRect(0, gH - 46, gW - bottomBtnsW - 4, 46, bgColor);
     gfx_setTextSize(1);
-    gfx_setTextColor(TFT_GREEN, 0x0320);
+    gfx_setTextColor(TFT_GREEN, bgColor);
     gfx_setCursor(8, gH - 43);
-    gfx_print("NOW PLAYING:");
+    gfx_print(nowPlaying.source == NP_DAV ? "NOW PLAYING (DAV):" : "NOW PLAYING:");
     gfx_setTextSize(2);
-    gfx_setTextColor(TFT_WHITE, 0x0320);
-    String loadedName = getGameBaseName(file_list[loaded_disk_index]);
+    gfx_setTextColor(TFT_WHITE, bgColor);
     gfx_setCursor(8, gH - 28);
-    gfx_print(truncateToWidth(loadedName, gW - bottomBtnsW - 16));
+    gfx_print(truncateToWidth(nowPlaying.name, gW - bottomBtnsW - 16));
   } else {
     gfx_setTextSize(1);
     gfx_setTextColor(TFT_GREY, TFT_BLACK);
@@ -3458,8 +3937,14 @@ void doUnload() {
   if (cfg_remote_enabled && remote_connected) {
     remoteEject();
     loaded_disk_index = -1;
+    dav_disk_loaded = false;
     cfg_lastfile = "";
     saveConfig();
+    nowPlaying.source = NP_NONE;
+    nowPlaying.name = "";
+    nowPlaying.path = "";
+    nowPlaying.sdIndex = -1;
+    nowPlaying.davFolderIndex = -1;
     Serial.println("Remote: drive ejected on dongle");
     return;
   }
@@ -3476,7 +3961,15 @@ void doUnload() {
   // Clear last file from config so it won't auto-load next boot
   cfg_lastfile = "";
   loaded_disk_index = -1;
+  dav_disk_loaded = false;
   saveConfig();
+
+  // Clear global now playing
+  nowPlaying.source = NP_NONE;
+  nowPlaying.name = "";
+  nowPlaying.path = "";
+  nowPlaying.sdIndex = -1;
+  nowPlaying.davFolderIndex = -1;
 
   Serial.println("Drive unloaded");
 }
@@ -3494,6 +3987,12 @@ void doLoadSelected() {
       cfg_lastfile = file_list[selected_index];
       cfg_lastmode = (g_mode == MODE_ADF) ? "ADF" : "DSK";
       saveConfig();
+      // Update global now playing
+      nowPlaying.source = NP_SD;
+      nowPlaying.name = getGameBaseName(file_list[selected_index]);
+      nowPlaying.path = file_list[selected_index];
+      nowPlaying.sdIndex = selected_index;
+      nowPlaying.davFolderIndex = -1;
     }
     return;
   }
@@ -3512,6 +4011,12 @@ void doLoadSelected() {
     cfg_lastfile = file_list[selected_index];
     cfg_lastmode = (g_mode == MODE_ADF) ? "ADF" : "DSK";
     saveConfig();
+    // Update global now playing
+    nowPlaying.source = NP_SD;
+    nowPlaying.name = getGameBaseName(file_list[selected_index]);
+    nowPlaying.path = file_list[selected_index];
+    nowPlaying.sdIndex = selected_index;
+    nowPlaying.davFolderIndex = -1;
   }
 }
 
@@ -3775,6 +4280,104 @@ void loop() {
   // Process incoming HTTP requests (non-blocking)
   handleWebServer();
 
+  // ── Deferred web-triggered SD load ──
+  // HTTP handler sets the index, main loop does the actual work
+  if (web_pending_sd_load >= 0) {
+    int targetIdx = web_pending_sd_load;
+    web_pending_sd_load = -1;
+
+    selected_index = targetIdx;
+    doLoadSelected();
+
+    if (loaded_disk_index == targetIdx) {
+      detail_filename = file_list[targetIdx];
+      current_screen = SCR_DETAILS;
+      drawDetailsFromNFO(detail_filename);
+    }
+  }
+
+  // ── Deferred web-triggered DAV load ──
+  if (web_pending_dav_path.length() > 0) {
+    String remotePath = web_pending_dav_path;
+    String displayName = web_pending_dav_name;
+    web_pending_dav_path = "";
+    web_pending_dav_name = "";
+
+    size_t loaded = loadFileFromDAV(remotePath, displayName);
+    if (loaded > 0) {
+      loaded_disk_index = -2;
+      dav_disk_loaded = true;
+
+      nowPlaying.source = NP_DAV;
+      nowPlaying.name = displayName;
+      nowPlaying.path = remotePath;
+      nowPlaying.sdIndex = -1;
+
+      // Find folder index for touchscreen navigation
+      String folderName = remotePath;
+      int ls = folderName.lastIndexOf('/');
+      if (ls > 0) folderName = folderName.substring(0, ls);
+      ls = folderName.lastIndexOf('/');
+      if (ls >= 0) folderName = folderName.substring(ls + 1);
+
+      nowPlaying.davFolderIndex = -1;
+      for (int i = 0; i < (int)dav_entries.size(); i++) {
+        if (dav_entries[i].isDir && dav_entries[i].name == folderName) {
+          nowPlaying.davFolderIndex = i;
+          break;
+        }
+      }
+
+      dav_pending_detail_nav = nowPlaying.davFolderIndex;
+    }
+  }
+
+  // Check if web API requested navigation to a DAV detail page
+  // Use lightweight nav — NO blocking PROPFIND/cover/NFO downloads
+  if (dav_pending_detail_nav >= 0) {
+    int navIdx = dav_pending_detail_nav;
+    dav_pending_detail_nav = -1;
+
+    // If dav_entries is empty, try loading from cache only (no network!)
+    if (dav_entries.size() == 0) {
+      if (davLoadCache()) {
+        dav_current_path = "/";
+        buildDAVActiveLetters();
+      }
+    }
+
+    if (navIdx >= 0 && navIdx < (int)dav_entries.size() && dav_entries[navIdx].isDir) {
+      // Lightweight detail setup — just set state from what we already know
+      const DAVFileEntry &folder = dav_entries[navIdx];
+      dav_detail_index = navIdx;
+      dav_detail_name = folder.name;
+      String folderPath = dav_current_path;
+      if (!folderPath.endsWith("/")) folderPath += "/";
+      folderPath += folder.name;
+      dav_detail_folder_path = folderPath;
+
+      // We know the loaded file from nowPlaying — set it as the only disk
+      dav_detail_disks.clear();
+      dav_detail_cover_path = "";
+      dav_detail_nfo_text = "";
+      dav_detail_disk_sel = 0;
+      if (nowPlaying.path.length() > 0) {
+        String diskFile = nowPlaying.path;
+        int sl = diskFile.lastIndexOf('/');
+        if (sl >= 0) diskFile = diskFile.substring(sl + 1);
+        dav_detail_disks.push_back(diskFile);
+        String dirPath = folderPath;
+        if (!dirPath.endsWith("/")) dirPath += "/";
+        dav_detail_path = dirPath + diskFile;
+      }
+
+      // Switch screen and draw — NO network calls
+      current_screen = SCR_WEBDAV_DETAIL;
+      dav_detail_needs_full_load = true;  // flag: load cover/NFO/disks on next user interaction
+      drawDAVDetail();
+    }
+  }
+
   uint16_t px = 0, py = 0;
   bool haveTouch = touchRead(&px, &py);
 
@@ -3863,9 +4466,9 @@ void loop() {
           }
         }
       }
-      // WebDAV list: live drag-scrolling (same logic, different offset/list)
+      // WebDAV list: live drag-scrolling (same as SD list, uses LIST_START_Y/LIST_BOTTOM)
       else if (touch_start_screen == SCR_WEBDAV &&
-               touch_start_y >= 24 && touch_start_y < (gH - 46)) {
+               touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM) {
         if (!drag_scrolling && touch_max_dy > DRAG_THRESHOLD) {
           drag_scrolling = true;
           drag_last_y = py;
@@ -3889,7 +4492,7 @@ void loop() {
             scrollChanged = true;
           }
           if (scrollChanged) {
-            int davPerPage = (gH - 46 - 24) / LIST_ITEM_H;
+            int davPerPage = items_per_page();
             int maxOff = (int)dav_entries.size() - davPerPage;
             if (maxOff < 0) maxOff = 0;
             if (dav_scroll_offset > maxOff) dav_scroll_offset = maxOff;
@@ -3943,8 +4546,9 @@ void loop() {
                           touch_start_y >= LIST_START_Y &&
                           touch_start_y < LIST_BOTTOM);
     bool wasInDAVListArea = (touch_start_screen == SCR_WEBDAV &&
-                             touch_start_y >= 24 &&
-                             touch_start_y < (gH - 46));
+                             touch_start_x < ALPHA_BAR_X &&
+                             touch_start_y >= LIST_START_Y &&
+                             touch_start_y < LIST_BOTTOM);
     bool hadAnyMovement = (touch_max_dy > TAP_MAX_MOVE || touch_max_dx > TAP_MAX_MOVE);
 
     if (drag_scrolling || ((wasInListArea || wasInDAVListArea) && hadAnyMovement)) {
@@ -3963,7 +4567,7 @@ void loop() {
           if (wasInDAVListArea) {
             if (dy > 0) dav_scroll_offset -= scrollItems;
             else        dav_scroll_offset += scrollItems;
-            int davPerPage = (gH - 46 - 24) / LIST_ITEM_H;
+            int davPerPage = items_per_page();
             int maxOff = (int)dav_entries.size() - davPerPage;
             if (maxOff < 0) maxOff = 0;
             if (dav_scroll_offset > maxOff) dav_scroll_offset = maxOff;
@@ -4013,7 +4617,7 @@ void loop() {
         drawList();
       } else if (current_screen == SCR_WEBDAV) {
         dav_scroll_offset += (kinetic_velocity > 0) ? 1 : -1;
-        int davPerPage = (gH - 46 - 24) / LIST_ITEM_H;
+        int davPerPage = items_per_page();
         int maxOff = (int)dav_entries.size() - davPerPage;
         if (maxOff < 0) maxOff = 0;
         if (dav_scroll_offset > maxOff) { dav_scroll_offset = maxOff; kinetic_velocity = 0; }
@@ -4029,6 +4633,14 @@ void loop() {
 
       kinetic_last = millis();
     }
+  }
+
+  // Background cover pre-caching: download one cover per idle loop iteration
+  // Only run when truly idle: no touch, no pending loads, no kinetic scroll
+  if (dav_cover_precache_active && !touch_active && kinetic_velocity == 0
+      && web_pending_sd_load < 0 && web_pending_dav_path.length() == 0
+      && dav_pending_detail_nav < 0 && davClient.isConnected()) {
+    davPrecacheOneCover();
   }
 
   delay(10);
@@ -4064,20 +4676,31 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
-    // "Now Playing" bar tap → go to detail page of loaded game
-    if (loaded_disk_index >= 0 && py >= gH - 46 && px < gW - 48) {
-      selected_index = loaded_disk_index;
-      game_selected = findGameIndex(loaded_disk_index);
-      detail_filename = file_list[selected_index];
-      current_screen = SCR_DETAILS;
-      drawDetailsFromNFO(detail_filename);
+    // "Now Playing" bar tap → go to detail page of loaded game (any source)
+    if (nowPlaying.source != NP_NONE && py >= gH - 46 && px < gW - 48) {
+      if (nowPlaying.source == NP_SD && nowPlaying.sdIndex >= 0) {
+        selected_index = nowPlaying.sdIndex;
+        game_selected = findGameIndex(nowPlaying.sdIndex);
+        detail_filename = file_list[selected_index];
+        current_screen = SCR_DETAILS;
+        drawDetailsFromNFO(detail_filename);
+      } else if (nowPlaying.source == NP_DAV && nowPlaying.davFolderIndex >= 0) {
+        current_screen = SCR_WEBDAV;
+        davOpenFolderDetail(nowPlaying.davFolderIndex);
+      }
       return;
     }
 
     // DAV button (if enabled, second from right)
     if (cfg_dav_enabled && px >= gW - 92 && px < gW - 48 && py >= gH - 42) {
       current_screen = SCR_WEBDAV;
-      davBrowsePath("/");
+      if (dav_entries.size() > 0) {
+        // Use cached entries — just redraw, no PROPFIND
+        buildDAVActiveLetters();
+        drawDAVList();
+      } else {
+        davBrowsePath("/");
+      }
       return;
     }
 
@@ -4261,76 +4884,58 @@ void handleTap(uint16_t px, uint16_t py) {
   }
 
   // ══════════════════════════════════════
-  // WEBDAV LIST SCREEN
+  // WEBDAV LIST SCREEN (game-list style)
   // ══════════════════════════════════════
   else if (current_screen == SCR_WEBDAV) {
 
-    // BACK button (bottom-left)
-    if (px >= 10 && px <= 158 && py >= gH - 42) {
+    // Alphabet bar touch (right edge)
+    if (handleAlphabetTouch(px, py)) return;
+
+    // SD button (bottom-right area, go back to SD game list)
+    if (px >= gW - 88 && px < gW - 44 && py >= gH - 42) {
       current_screen = SCR_SELECTION;
+      buildActiveLetters();  // rebuild shared alphabet for SD games
       drawList();
       return;
     }
 
-    // UP button (bottom-right, go to parent dir)
-    if (dav_current_path != "/" && dav_current_path.length() > 1 &&
-        px >= gW - 158 && px <= gW - 10 && py >= gH - 42) {
-      String parent = dav_current_path;
-      if (parent.endsWith("/")) parent = parent.substring(0, parent.length() - 1);
-      int ls = parent.lastIndexOf('/');
-      parent = (ls > 0) ? parent.substring(0, ls + 1) : "/";
-      davBrowsePath(parent);
+    // Info button (bottom-right)
+    if (px >= gW - 44 && py >= gH - 42) {
+      current_screen = SCR_INFO;
+      drawInfoScreen();
       return;
     }
 
-    // Tap on list item
-    int davListTop = 24;
-    int davListBottom = gH - 46;
-    int davItemH = LIST_ITEM_H;
+    // "Now playing" bar tap (bottom-left area) — global, any source
+    if (nowPlaying.source != NP_NONE && px < gW - 92 && py >= gH - 46) {
+      if (nowPlaying.source == NP_DAV && nowPlaying.davFolderIndex >= 0) {
+        davOpenFolderDetail(nowPlaying.davFolderIndex);
+      } else if (nowPlaying.source == NP_SD && nowPlaying.sdIndex >= 0) {
+        selected_index = nowPlaying.sdIndex;
+        game_selected = findGameIndex(nowPlaying.sdIndex);
+        detail_filename = file_list[selected_index];
+        current_screen = SCR_DETAILS;
+        drawDetailsFromNFO(detail_filename);
+      }
+      return;
+    }
 
-    if (py >= davListTop && py < davListBottom) {
-      int idx = (py - davListTop) / davItemH + dav_scroll_offset;
+    // Game list area — tap folder → open detail directly
+    if (py >= LIST_START_Y && py < LIST_BOTTOM && px < ALPHA_BAR_X) {
+      int idx = (py - LIST_START_Y) / LIST_ITEM_H + dav_scroll_offset;
       if (idx >= 0 && idx < (int)dav_entries.size()) {
         const DAVFileEntry &e = dav_entries[idx];
         if (e.isDir) {
-          // Browse into directory
-          String newPath = dav_current_path;
-          if (!newPath.endsWith("/")) newPath += "/";
-          newPath += e.name;
-          davBrowsePath(newPath);
-        } else {
-          // Open detail view for disk image
-          dav_detail_name = e.name;
-          String dirPath = dav_current_path;
-          if (!dirPath.endsWith("/")) dirPath += "/";
-          dav_detail_path = dirPath + e.name;
-
-          // Find cover and NFO in same directory
-          dav_detail_cover_path = "";
-          dav_detail_nfo_text = "";
-          for (int j = 0; j < (int)dav_entries.size(); j++) {
-            if (dav_entries[j].coverFile.length() > 0 && dav_detail_cover_path.length() == 0)
-              dav_detail_cover_path = dirPath + dav_entries[j].coverFile;
-            if (dav_entries[j].nfoFile.length() > 0 && dav_detail_nfo_text.length() == 0) {
-              // Fetch NFO text
-              uint8_t nfoBuf[1024];
-              long nfoBytes = davClient.streamToBuffer(dirPath + dav_entries[j].nfoFile, nfoBuf, sizeof(nfoBuf) - 1);
-              if (nfoBytes > 0) {
-                nfoBuf[nfoBytes] = 0;
-                dav_detail_nfo_text = String((char *)nfoBuf);
-              }
-            }
-          }
-
-          current_screen = SCR_WEBDAV_DETAIL;
-          drawDAVDetail();
+          // Open folder detail directly (skip file listing step)
+          davOpenFolderDetail(idx);
         }
       }
+      return;
     }
   }
 
   // ══════════════════════════════════════
-  // WEBDAV DETAIL SCREEN
+  // WEBDAV DETAIL SCREEN (matches SD detail)
   // ══════════════════════════════════════
   else if (current_screen == SCR_WEBDAV_DETAIL) {
 
@@ -4343,7 +4948,8 @@ void handleTap(uint16_t px, uint16_t py) {
 
     // INSERT/EJECT button (bottom-right)
     if (px >= gW - 158 && px <= gW - 10 && py >= gH - 42) {
-      if (dav_disk_loaded) {
+      bool isThisLoaded = (nowPlaying.source == NP_DAV && nowPlaying.davFolderIndex == dav_detail_index);
+      if (isThisLoaded) {
         // EJECT
         showBusyIndicator("EJECTING...");
         waitForRelease();
@@ -4352,23 +4958,80 @@ void handleTap(uint16_t px, uint16_t py) {
         loaded_disk_index = -1;
         hideBusyIndicator();
         drawDAVDetail();
-      } else {
-        // INSERT — load from WebDAV
+      } else if (dav_detail_path.length() > 0) {
+        // INSERT — load selected disk from WebDAV
         showBusyIndicator("LOADING FROM WEBDAV...");
         waitForRelease();
         String dispName = dav_detail_name;
-        int dot = dispName.lastIndexOf('.');
-        if (dot > 0) dispName = dispName.substring(0, dot);
         size_t loaded = loadFileFromDAV(dav_detail_path, dispName);
         hideBusyIndicator();
         if (loaded > 0) {
           dav_disk_loaded = true;
-          loaded_disk_index = -2;  // -2 = DAV-loaded
+          loaded_disk_index = -2;
+          nowPlaying.source = NP_DAV;
+          nowPlaying.name = dav_detail_name;
+          nowPlaying.path = dav_detail_path;
+          nowPlaying.sdIndex = -1;
+          nowPlaying.davFolderIndex = dav_detail_index;
         }
         current_screen = SCR_WEBDAV_DETAIL;
         drawDAVDetail();
       }
       return;
+    }
+
+    // Left/right edge tap: navigate to prev/next game folder
+    if (py >= LIST_START_Y && py < gH - 48) {
+      if (px <= 40) {
+        // Previous folder
+        for (int i = dav_detail_index - 1; i >= 0; i--) {
+          if (dav_entries[i].isDir) { davOpenFolderDetail(i); return; }
+        }
+        return;
+      }
+      if (px >= gW - 40) {
+        // Next folder
+        for (int i = dav_detail_index + 1; i < (int)dav_entries.size(); i++) {
+          if (dav_entries[i].isDir) { davOpenFolderDetail(i); return; }
+        }
+        return;
+      }
+    }
+
+    // Disk selector buttons (multi-disk DAV games)
+    if (dav_detail_disks.size() > 1) {
+      int diskRowH = 34;
+      int diskTop = gH - 42 - diskRowH;
+      if (py >= diskTop && py <= diskTop + 28) {
+        int dbtnW = 44, dgap = 4;
+        int numDisks = dav_detail_disks.size();
+        int totalW = numDisks * dbtnW + (numDisks - 1) * dgap;
+        int startX = (gW - totalW) / 2;
+        int hitIdx = (px - startX) / (dbtnW + dgap);
+        int btnLeft = startX + hitIdx * (dbtnW + dgap);
+        if (hitIdx >= 0 && hitIdx < numDisks &&
+            px >= btnLeft && px <= btnLeft + dbtnW) {
+          dav_detail_disk_sel = hitIdx;
+          String dirPath = dav_detail_folder_path;
+          if (!dirPath.endsWith("/")) dirPath += "/";
+          dav_detail_path = dirPath + dav_detail_disks[hitIdx];
+          // Auto-load selected disk
+          showBusyIndicator("LOADING DISK...");
+          waitForRelease();
+          size_t loaded = loadFileFromDAV(dav_detail_path, dav_detail_name);
+          hideBusyIndicator();
+          if (loaded > 0) {
+            dav_disk_loaded = true;
+            loaded_disk_index = -2;
+            nowPlaying.source = NP_DAV;
+            nowPlaying.name = dav_detail_name;
+            nowPlaying.path = dav_detail_path;
+            nowPlaying.sdIndex = -1;
+            nowPlaying.davFolderIndex = dav_detail_index;
+          }
+          drawDAVDetail();
+        }
+      }
     }
   }
 }
