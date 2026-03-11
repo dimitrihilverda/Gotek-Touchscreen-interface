@@ -506,14 +506,23 @@ async function davBrowse(path) {
     (d.entries || []).forEach(e => {
       const isDisk = isDiskImage(e.name);
       const fullPath = path + (path.endsWith('/') ? '' : '/') + e.name;
-      const coverUrl = (!e.dir && dirCover) ? (API + '/api/dav/cover?path=' + encodeURIComponent(path + (path.endsWith('/') ? '' : '/') + dirCover)) : '';
+      // Convention-based cover: for folders try FolderName/FolderName.jpg, for files use dir-level cover
+      let coverUrl = '';
+      if (e.dir) {
+        coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + e.name + '.jpg');
+      } else if (dirCover) {
+        coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(path + (path.endsWith('/') ? '' : '/') + dirCover);
+      } else {
+        // Try convention: filename without ext + .jpg
+        const baseName = e.name.replace(/\.[^.]+$/, '');
+        coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(path + (path.endsWith('/') ? '' : '/') + baseName + '.jpg');
+      }
 
       html += '<div class="game-item" onclick="' + (e.dir ? "davBrowse('" + esc(fullPath).replace(/'/g,"\\'") + "')" : '') + '">';
-      if (coverUrl && isDisk) {
-        html += '<div class="icon cover"><img src="' + coverUrl + '" onerror="this.parentElement.className=\'icon disk\';this.parentElement.innerHTML=\'' + e.name.split('.').pop().toUpperCase().slice(0,3) + '\'"></div>';
-      } else {
-        html += '<div class="icon ' + (e.dir ? 'folder' : 'disk') + '">' + (e.dir ? 'DIR' : e.name.split('.').pop().toUpperCase().slice(0,3)) + '</div>';
-      }
+      html += '<div class="icon cover"><img src="' + coverUrl + '" onerror="' +
+        'if(this.src.endsWith(\'.jpg\')){this.src=this.src.replace(/\\.jpg$/,\'.png\')}' +
+        'else{this.parentElement.className=\'icon ' + (e.dir ? 'folder' : 'disk') + '\';this.parentElement.innerHTML=\'' + (e.dir ? 'DIR' : e.name.split('.').pop().toUpperCase().slice(0,3)) + '\'}' +
+      '"></div>';
       html += '<div class="meta"><div class="name">' + esc(e.name) + '</div>';
       if (!e.dir && e.size > 0) html += '<div class="size">' + formatSize(e.size) + '</div>';
       html += '</div>';

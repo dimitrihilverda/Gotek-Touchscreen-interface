@@ -1295,8 +1295,13 @@ async function davBrowse(path) {
     for (const entry of entries) {
       let fullPath = path.endsWith('/') ? path + entry.name : path + '/' + entry.name;
       if (entry.dir) {
+        // Try convention-based cover: FolderName/FolderName.jpg (then .png)
+        let folderCoverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + entry.name + '.jpg');
         html += '<div class="game-item" onclick="davBrowse(\'' + fullPath.replace(/'/g, "\\'") + '\')">' +
-          '<div class="game-cover empty">&#128193;</div>' +
+          '<img class="game-cover" src="' + folderCoverUrl + '" loading="lazy" onerror="' +
+            'if(this.src.endsWith(\'.jpg\')){this.src=this.src.replace(/\\.jpg$/,\'.png\')}' +
+            'else{this.outerHTML=\'<div class=&quot;game-cover empty&quot;>&#128193;</div>\'}' +
+          '">' +
           '<div class="game-info">' +
             '<div class="game-name">' + esc(entry.name) + '</div>' +
             '<div class="game-meta"><span class="badge" style="background:#888;color:#fff">Folder</span></div>' +
@@ -1307,11 +1312,17 @@ async function davBrowse(path) {
                       entry.size > 1024 ? (entry.size / 1024).toFixed(0) + ' KB' : entry.size + ' B';
         let ext = entry.name.split('.').pop().toUpperCase();
         let isDisk = ['ADF','DSK','ADZ','IMG'].includes(ext);
-        let coverHtml = coverUrl
-          ? '<img class="game-cover" src="' + coverUrl + '" loading="lazy" onerror="this.outerHTML=\'<div class=game-cover>&#128190;</div>\'">'
-          : '<div class="game-cover empty">&#128190;</div>';
+        // For files: use dir-level cover, or try convention (filename without ext + .jpg)
+        let fileCoverUrl = coverUrl;
+        if (!fileCoverUrl) {
+          let baseName = entry.name.replace(/\.[^.]+$/, '');
+          fileCoverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(path + (path.endsWith('/') ? '' : '/') + baseName + '.jpg');
+        }
         html += '<div class="game-item" style="cursor:default">' +
-          coverHtml +
+          '<img class="game-cover" src="' + fileCoverUrl + '" loading="lazy" onerror="' +
+            'if(this.src.endsWith(\'.jpg\')){this.src=this.src.replace(/\\.jpg$/,\'.png\')}' +
+            'else{this.outerHTML=\'<div class=&quot;game-cover empty&quot;>&#128190;</div>\'}' +
+          '">' +
           '<div class="game-info">' +
             '<div class="game-name">' + esc(entry.name) + '</div>' +
             '<div class="game-meta">' +

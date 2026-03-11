@@ -2286,7 +2286,7 @@ void davBrowsePath(const String &path) {
 void drawDAVList() {
   gfx_fillScreen(TFT_BLACK);
 
-  // Title bar with path
+  // Title bar with path (same style as game list)
   gfx_setTextColor(TFT_CYAN, TFT_BLACK);
   gfx_setTextSize(2);
   gfx_setCursor(8, 4);
@@ -2321,49 +2321,84 @@ void drawDAVList() {
     const DAVFileEntry &e = dav_entries[i];
     int y = listTop + vi * itemH;
 
-    // Background
+    // Background — match game list style
     gfx_fillRect(0, y, gW, itemH, TFT_BLACK);
 
-    // Icon area (left side)
-    int iconX = 8;
+    // Thumbnail area (left side) — same dimensions as game list
+    int thumbX = 6;
+    int thumbY2 = y + (LIST_ITEM_H - LIST_THUMB_H) / 2;
+
     if (e.isDir) {
-      // Folder icon
-      gfx_fillRect(iconX, y + 8, LIST_THUMB_W, LIST_THUMB_H - 16, 0x4208);
-      gfx_setTextColor(TFT_YELLOW, 0x4208);
-      gfx_setTextSize(2);
-      gfx_setCursor(iconX + 12, y + 14);
-      gfx_print("D");
+      // Folder — draw a folder-style thumbnail with name initial
+      gfx_fillRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x1082);
+      gfx_drawRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
+      // Draw folder tab at top
+      gfx_fillRect(thumbX + 2, thumbY2, LIST_THUMB_W / 2, 6, TFT_YELLOW);
+      // Show cover indicator if folder has cover
+      if (e.hasCover) {
+        gfx_setTextColor(TFT_GREEN, 0x1082);
+        gfx_setTextSize(1);
+        gfx_setCursor(thumbX + 4, thumbY2 + LIST_THUMB_H - 12);
+        gfx_print("IMG");
+      }
+      // Show first letter of folder name large
+      gfx_setTextColor(TFT_YELLOW, 0x1082);
+      gfx_setTextSize(3);
+      char initial = e.name.charAt(0);
+      if (initial >= 'a' && initial <= 'z') initial -= 32;
+      gfx_setCursor(thumbX + (LIST_THUMB_W - 18) / 2, thumbY2 + 12);
+      char buf[2] = { initial, 0 };
+      gfx_print(buf);
     } else {
-      // Disk image icon
-      gfx_fillRect(iconX, y + 8, LIST_THUMB_W, LIST_THUMB_H - 16, 0x1082);
+      // Disk file — show extension icon with disk-image style
+      gfx_fillRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x1082);
+      gfx_drawRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
+      // Draw a floppy disk icon shape
+      gfx_fillRect(thumbX + 8, thumbY2 + 4, LIST_THUMB_W - 16, 10, 0x4208);
+      gfx_fillRect(thumbX + 14, thumbY2 + LIST_THUMB_H - 18, LIST_THUMB_W - 28, 14, 0x2104);
+      // Show extension
       gfx_setTextColor(TFT_GREEN, 0x1082);
       gfx_setTextSize(1);
       String ext = e.name;
       int dot = ext.lastIndexOf('.');
       if (dot > 0) ext = ext.substring(dot + 1);
       ext.toUpperCase();
-      gfx_setCursor(iconX + 6, y + 16);
+      gfx_setCursor(thumbX + 4, thumbY2 + 20);
       gfx_print(ext);
     }
 
-    // Name
-    int textX = iconX + LIST_THUMB_W + 8;
+    // Name — same style as game list
+    int textX = thumbX + LIST_THUMB_W + 8;
     gfx_setTextColor(e.isDir ? TFT_YELLOW : TFT_WHITE, TFT_BLACK);
     gfx_setTextSize(2);
     String dispName = truncateToWidth(e.name, gW - textX - 10);
     gfx_setCursor(textX, y + 8);
     gfx_print(dispName);
 
-    // Size for files
-    if (!e.isDir && e.size > 0) {
-      gfx_setTextSize(1);
+    // Meta info line (size for files, cover/nfo indicators for folders)
+    gfx_setTextSize(1);
+    gfx_setCursor(textX, y + 30);
+    if (e.isDir) {
+      if (e.hasCover || e.hasNfo) {
+        if (e.hasCover) {
+          gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+          gfx_print("Cover ");
+        }
+        if (e.hasNfo) {
+          gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+          gfx_print("NFO");
+        }
+      } else {
+        gfx_setTextColor(0x7BEF, TFT_BLACK);
+        gfx_print("Folder");
+      }
+    } else {
       gfx_setTextColor(0x7BEF, TFT_BLACK);
-      gfx_setCursor(textX, y + 30);
       if (e.size > 1048576) gfx_print(String(e.size / 1048576) + " MB");
-      else gfx_print(String(e.size / 1024) + " KB");
+      else if (e.size > 0) gfx_print(String(e.size / 1024) + " KB");
     }
 
-    // Separator
+    // Separator line
     gfx_fillRect(6, y + itemH - 1, gW - 12, 1, 0x2104);
   }
 
@@ -2378,10 +2413,10 @@ void drawDAVList() {
   // Scroll indicator
   if ((int)dav_entries.size() > perPage) {
     int barH = listBottom - listTop;
-    int thumbH = max(10, barH * perPage / (int)dav_entries.size());
-    int thumbY = listTop + (barH - thumbH) * dav_scroll_offset / maxOff;
+    int thumbH2 = max(10, barH * perPage / (int)dav_entries.size());
+    int thumbY3 = listTop + (barH - thumbH2) * dav_scroll_offset / maxOff;
     gfx_fillRect(gW - 4, listTop, 3, barH, 0x1082);
-    gfx_fillRect(gW - 4, thumbY, 3, thumbH, 0x7BEF);
+    gfx_fillRect(gW - 4, thumbY3, 3, thumbH2, 0x7BEF);
   }
 
   gfx_flush();
