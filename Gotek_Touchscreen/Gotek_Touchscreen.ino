@@ -2624,7 +2624,9 @@ void davSaveCache() {
   f.println("V=2");
   for (const auto &e : dav_entries) {
     if (!e.isDir) continue;  // only cache root-level folders
-    String line = "D|" + e.name + "|" + e.coverPath + "|" + e.nfoPath;
+    // Format: D|indexed|name|coverPath|nfoPath|disk1|disk2|...
+    // indexed=1 means background indexer has run PROPFIND on this folder
+    String line = String("D|") + (e.indexed ? "1" : "0") + "|" + e.name + "|" + e.coverPath + "|" + e.nfoPath;
     for (const auto &dp : e.diskPaths) line += "|" + dp;
     f.println(line);
   }
@@ -2676,6 +2678,16 @@ bool davLoadCache() {
     if (!hostOk || !v2) continue;
 
     if (line.startsWith("D|")) {
+      // Sanity check: if any path field contains %25 the cache is URL-double-encoded
+      // (old bug where paths were URL-encoded before storage). Discard and rebuild.
+      if (line.indexOf("%25") >= 0) {
+        f.close();
+        dav_entries.clear();
+        SD_MMC.remove(DAV_CACHE_FILE);
+        Serial.println("DAV cache: corrupt (double URL-encoded paths), discarded");
+        return false;
+      }
+
       // D|name|coverPath|nfoPath|disk1|disk2|...
       String rest = line.substring(2);
 
@@ -2691,15 +2703,31 @@ bool davLoadCache() {
 
       if (parts.size() == 0) continue;
       DAVFileEntry entry;
-      entry.name      = parts[0];
-      entry.isDir     = true;
-      entry.size      = 0;
-      entry.coverPath = parts.size() > 1 ? parts[1] : "";
-      entry.nfoPath   = parts.size() > 2 ? parts[2] : "";
+      entry.isDir = true;
+      entry.size  = 0;
+
+      // Detect format: new format has indexed flag as first field ("0" or "1")
+      // Old format has name as first field (never "0" or "1" alone)
+      int nameIdx;
+      bool indexedFlag = false;
+      if (parts[0] == "0" || parts[0] == "1") {
+        indexedFlag = (parts[0] == "1");
+        nameIdx = 1;
+      } else {
+        nameIdx = 0;  // old format without indexed flag
+      }
+
+      if ((int)parts.size() <= nameIdx) continue;
+      entry.name      = parts[nameIdx];
+      entry.coverPath = (int)parts.size() > nameIdx+1 ? parts[nameIdx+1] : "";
+      entry.nfoPath   = (int)parts.size() > nameIdx+2 ? parts[nameIdx+2] : "";
       entry.hasCover  = entry.coverPath.length() > 0;
       entry.hasNfo    = entry.nfoPath.length() > 0;
-      entry.indexed   = entry.coverPath.length() > 0 || parts.size() > 3;
-      for (size_t i = 3; i < parts.size(); i++) {
+      // In new format: use the explicit flag. Old format: infer from presence of paths.
+      entry.indexed   = (parts[0] == "0" || parts[0] == "1")
+                        ? indexedFlag
+                        : (entry.coverPath.length() > 0 || (int)parts.size() > nameIdx+3);
+      for (int i = nameIdx+3; i < (int)parts.size(); i++) {
         if (parts[i].length() > 0) entry.diskPaths.push_back(parts[i]);
       }
       dav_entries.push_back(entry);
