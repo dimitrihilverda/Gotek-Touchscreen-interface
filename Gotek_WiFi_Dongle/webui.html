@@ -1,497 +1,2857 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Gotek WiFi Dongle</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#1a1a2e;--panel:#16213e;--accent:#0f3460;--blue:#00a8cc;--green:#00cc66;--red:#e94560;--orange:#ff8c00;--text:#eee;--dim:#888;--input-bg:#0d1b2a}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-.header{background:linear-gradient(135deg,#0f3460,#00a8cc);padding:16px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.5)}
-.header h1{font-size:20px;font-weight:700;letter-spacing:2px}
-.header .sub{font-size:12px;opacity:.7;margin-top:2px;font-family:monospace}
-.tabs{display:flex;background:var(--accent);border-bottom:2px solid #2a2a4a}
-.tab{flex:1;padding:10px 0;text-align:center;cursor:pointer;font-size:13px;font-weight:600;color:var(--dim);transition:all .2s;border-bottom:2px solid transparent}
-.tab:hover{color:var(--text)}
-.tab.active{color:var(--blue);border-bottom-color:var(--blue)}
-.page{display:none;padding:12px;max-width:520px;margin:0 auto}
-.page.active{display:block}
-.card{background:var(--panel);border:1px solid #2a2a4a;border-radius:10px;padding:16px;margin-bottom:12px}
-.card h2{font-size:14px;color:var(--blue);margin-bottom:10px;text-transform:uppercase;letter-spacing:1px}
-.status{display:flex;align-items:center;gap:8px;padding:10px;background:var(--input-bg);border-radius:6px;margin-bottom:10px}
-.dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
-.dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
-.dot.off{background:var(--red)}
-.status .info{flex:1}
-.status .name{font-weight:600;font-size:14px}
-.status .detail{font-size:11px;color:var(--dim);margin-top:2px}
-.drop-zone{border:2px dashed #3a3a6a;border-radius:10px;padding:30px 16px;text-align:center;cursor:pointer;transition:all .2s}
-.drop-zone:hover,.drop-zone.over{border-color:var(--blue);background:rgba(0,168,204,.08)}
-.drop-zone .icon{font-size:40px;margin-bottom:6px}
-.drop-zone p{font-size:13px;color:var(--dim)}
-.drop-zone input{display:none}
-.progress{display:none;margin-top:10px}
-.progress-bar{height:5px;background:#2a2a4a;border-radius:3px;overflow:hidden}
-.progress-fill{height:100%;background:linear-gradient(90deg,var(--blue),var(--green));width:0;transition:width .3s;border-radius:3px}
-.progress-text{font-size:11px;color:var(--dim);margin-top:3px;text-align:center}
-.btn{display:inline-block;padding:10px 16px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
-.btn:active{transform:scale(.98)}
-.btn-full{display:block;width:100%}
-.btn-eject{background:var(--red);color:#fff}
-.btn-eject:hover{background:#ff2255}
-.btn-eject:disabled{background:#444;color:#888;cursor:not-allowed}
-.btn-primary{background:var(--blue);color:#fff}
-.btn-primary:hover{background:#00bfdd}
-.btn-primary:disabled{background:#444;color:#888;cursor:not-allowed}
-.btn-danger{background:var(--red);color:#fff;font-size:11px;padding:4px 10px}
-.btn-success{background:var(--green);color:#fff;font-size:11px;padding:4px 10px}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-.info-item{background:var(--input-bg);border-radius:5px;padding:8px}
-.info-item .label{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
-.info-item .value{font-size:14px;font-weight:700;margin-top:1px}
-.msg{padding:8px;border-radius:5px;font-size:12px;margin-top:8px;display:none}
-.msg.ok{display:block;background:rgba(0,204,102,.15);color:var(--green);border:1px solid rgba(0,204,102,.3)}
-.msg.err{display:block;background:rgba(233,69,96,.15);color:var(--red);border:1px solid rgba(233,69,96,.3)}
-.form-group{margin-bottom:10px}
-.form-group label{display:block;font-size:12px;color:var(--dim);margin-bottom:3px}
-.form-group input,.form-group select{width:100%;padding:8px 10px;background:var(--input-bg);border:1px solid #2a2a4a;border-radius:5px;color:var(--text);font-size:13px}
-.form-group input:focus{border-color:var(--blue);outline:none}
-.form-row{display:flex;gap:8px}
-.form-row .form-group{flex:1}
-.toggle{display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:10px}
-.toggle input{display:none}
-.toggle .slider{width:40px;height:22px;background:#444;border-radius:11px;position:relative;transition:.2s}
-.toggle .slider::after{content:'';width:18px;height:18px;background:#fff;border-radius:50%;position:absolute;top:2px;left:2px;transition:.2s}
-.toggle input:checked+.slider{background:var(--green)}
-.toggle input:checked+.slider::after{left:20px}
-.pwd-wrap{position:relative}
-.pwd-wrap input{padding-right:36px}
-.pwd-toggle{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--dim);cursor:pointer;font-size:16px;padding:2px}
-.ftp-status{padding:8px 12px;border-radius:6px;font-size:12px;margin-bottom:8px}
-.ftp-status.disconnected{background:rgba(233,69,96,.1);border:1px solid rgba(233,69,96,.2);color:var(--red)}
-.ftp-status.connected{background:rgba(0,204,102,.1);border:1px solid rgba(0,204,102,.2);color:var(--green)}
-.active-indicator{display:inline-block;width:8px;height:8px;background:var(--green);border-radius:50%;margin-right:6px;box-shadow:0 0 6px var(--green)}
-.browse-path{font-size:12px;color:var(--dim);margin-bottom:8px;font-family:monospace;word-break:break-all}
-.file-list{max-height:400px;overflow-y:auto}
-.game-item{display:flex;align-items:center;padding:8px;background:var(--input-bg);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:background .15s}
-.game-item:hover{background:#1a2a4a}
-.game-item .icon{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:4px;margin-right:10px;flex-shrink:0;font-size:14px;font-weight:700}
-.game-item .icon.folder{background:#3a3000;color:var(--orange)}
-.game-item .icon.disk{background:#002a1a;color:var(--green)}
-.game-item .icon.cover{border-radius:4px}
-.game-item .icon.cover img{width:36px;height:36px;object-fit:cover;border-radius:4px}
-.game-item .meta{flex:1;min-width:0}
-.game-item .meta .name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.game-item .meta .size{font-size:10px;color:var(--dim)}
-.game-item .actions{display:flex;gap:4px;flex-shrink:0}
-.section-title{font-size:12px;color:var(--blue);text-transform:uppercase;letter-spacing:1px;margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid #2a2a4a}
-details summary{cursor:pointer;font-size:11px;color:var(--dim)}
-details pre{font-size:10px;color:var(--dim);background:var(--input-bg);padding:6px;border-radius:4px;margin-top:4px;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
-.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:8px;font-size:13px;z-index:999;opacity:0;transition:opacity .3s;pointer-events:none}
-.toast.show{opacity:1}
-.toast.ok{background:var(--green);color:#000}
-.toast.error{background:var(--red);color:#fff}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gotek Touchscreen Interface</title>
+  <link rel="icon" id="favicon" type="image/svg+xml">
+  <style>
+    /* ──────────────────────────────────────────────────────────────────
+       CSS CUSTOM PROPERTIES & THEME SYSTEM
+       ────────────────────────────────────────────────────────────────── */
+
+    @layer reset, theme, base, components, layout, responsive;
+
+    @layer reset {
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+    }
+
+    @layer theme {
+      :root {
+        /* Default theme: AMIGA_WB2 */
+        --c-bg: #6680aa;
+        --c-surface: #aaaaaa;
+        --c-surface2: #c0c0c0;
+        --c-accent: #0055aa;
+        --c-accent2: #ff8800;
+        --c-text: #000000;
+        --c-text-inv: #ffffff;
+        --c-ok: #00aa00;
+        --c-warn: #ff8800;
+        --c-err: #cc0000;
+        --c-border: #888888;
+        --c-text-muted: #666666;
+
+        /* Semantic aliases */
+        --c-primary: var(--c-accent);
+        --c-primary-dark: #003d77;
+        --c-success: var(--c-ok);
+        --c-warning: var(--c-warn);
+        --c-error: var(--c-err);
+        --c-link: var(--c-accent);
+
+        /* Typography */
+        --font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        --font-mono: 'Monaco', 'Courier New', monospace;
+
+        /* Spacing */
+        --spacing-xs: 4px;
+        --spacing-sm: 8px;
+        --spacing-md: 12px;
+        --spacing-lg: 16px;
+        --spacing-xl: 24px;
+        --spacing-2xl: 32px;
+
+        /* Shadows */
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+        --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+        --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.15);
+
+        /* Radius */
+        --radius-sm: 4px;
+        --radius-md: 8px;
+        --radius-lg: 12px;
+
+        /* Z-index */
+        --z-nav: 1000;
+        --z-modal: 2000;
+        --z-loading: 3000;
+        --z-toast: 4000;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+        }
+      }
+    }
+
+    @layer base {
+      html, body {
+        width: 100%;
+        height: 100%;
+        font-family: var(--font-family);
+        background-color: var(--c-bg);
+        color: var(--c-text);
+        line-height: 1.5;
+      }
+
+      body {
+        scroll-behavior: smooth;
+        overflow-x: hidden;
+      }
+
+      a {
+        color: var(--c-link);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      input, textarea, select {
+        font-family: inherit;
+        border: 1px solid var(--c-border);
+        padding: var(--spacing-sm);
+        border-radius: var(--radius-md);
+        background-color: var(--c-surface2);
+        color: var(--c-text);
+      }
+
+      input:focus, textarea:focus, select:focus {
+        outline: 2px solid var(--c-accent);
+        outline-offset: 2px;
+      }
+
+      input[type="checkbox"], input[type="radio"] {
+        cursor: pointer;
+        width: 20px;
+        height: 20px;
+        accent-color: var(--c-accent);
+      }
+
+      button {
+        cursor: pointer;
+        font-family: inherit;
+        border: none;
+        border-radius: var(--radius-md);
+        padding: var(--spacing-sm) var(--spacing-md);
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        font-weight: 500;
+        transition: all 200ms ease;
+        min-height: 48px;
+        min-width: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--spacing-sm);
+      }
+
+      button:hover {
+        background-color: var(--c-primary-dark);
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-md);
+      }
+
+      button:active {
+        transform: translateY(0);
+        box-shadow: var(--shadow-sm);
+      }
+
+      button:focus-visible {
+        outline: 2px solid var(--c-accent2);
+        outline-offset: 2px;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: var(--spacing-xs);
+        margin-top: var(--spacing-md);
+      }
+
+    }
+
+    @layer components {
+      /* Navigation Tabs */
+      .tab {
+        cursor: pointer;
+        user-select: none;
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--spacing-sm);
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-radius: var(--radius-md);
+        transition: all 200ms ease;
+        font-size: clamp(12px, 2vw, 14px);
+        white-space: nowrap;
+        color: var(--c-text);
+        position: relative;
+      }
+
+      .tab.active {
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        font-weight: 600;
+      }
+
+      .tab:focus-visible {
+        outline: 2px solid var(--c-accent2);
+        outline-offset: 2px;
+      }
+
+      /* Cards */
+      .card {
+        background-color: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-md);
+        box-shadow: var(--shadow-sm);
+        transition: box-shadow 200ms ease;
+      }
+
+      .card:hover {
+        box-shadow: var(--shadow-md);
+      }
+
+      /* Buttons */
+      .btn {
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-radius: var(--radius-md);
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        border: none;
+        cursor: pointer;
+        font-weight: 500;
+        transition: all 200ms ease;
+        min-height: 48px;
+        font-size: clamp(12px, 2vw, 14px);
+      }
+
+      .btn:hover {
+        background-color: var(--c-primary-dark);
+        box-shadow: var(--shadow-md);
+      }
+
+      .btn:active {
+        transform: scale(0.98);
+      }
+
+      .btn.btn-sm {
+        padding: 4px 8px;
+        font-size: 11px;
+        min-height: 36px;
+      }
+
+      .btn-danger {
+        background-color: var(--c-error) !important;
+      }
+
+      .btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      /* Badges */
+      .badge {
+        display: inline-block;
+        padding: 2px 6px;
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        border-radius: var(--radius-sm);
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .badge-disks {
+        background-color: var(--c-accent2);
+      }
+
+      .badge-nfo {
+        background-color: #4466aa;
+      }
+
+      .badge-cover {
+        background-color: #66aa44;
+      }
+
+      .badge-net {
+        background-color: #aa6644;
+      }
+
+      /* Active indicator (pulsing dot) */
+      .active-indicator {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        background-color: var(--c-ok);
+        border-radius: 50%;
+        margin-right: var(--spacing-xs);
+        animation: pulse 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+
+      /* Forms */
+      .form-group {
+        margin-bottom: var(--spacing-md);
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-xs);
+      }
+
+      /* Config sections — card-like grouping */
+      .cfg-section {
+        background: var(--c-surface2);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-lg);
+        margin-bottom: var(--spacing-lg);
+      }
+      .cfg-section-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--c-accent);
+        margin-bottom: var(--spacing-md);
+        padding-bottom: var(--spacing-xs);
+        border-bottom: 1px solid var(--c-border);
+      }
+
+      /* Enabled toggle bar — sits above the fields grid, never mixed in */
+      .cfg-enabled-row {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+        margin-bottom: var(--spacing-md);
+        padding: var(--spacing-sm) var(--spacing-md);
+        background: color-mix(in srgb, var(--c-accent) 8%, transparent);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+      }
+      .cfg-enabled-row label {
+        flex: 1;
+        font-weight: 600;
+        font-size: 13px;
+        margin: 0;
+      }
+      .cfg-enabled-select {
+        width: auto;
+        min-width: 80px;
+        flex-shrink: 0;
+      }
+
+      /* form-row: always 1 column on mobile, explicit variants for wider */
+      .form-row {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: var(--spacing-md);
+        align-items: start; /* prevent tall cells (scan button, net-row) from stretching siblings */
+      }
+      /* 2-col on ≥480px */
+      @media (min-width: 480px) {
+        .form-row.form-row-2 { grid-template-columns: repeat(2, 1fr); }
+        .form-row.form-row-3 { grid-template-columns: repeat(2, 1fr); }
+      }
+      /* 3-col on ≥768px */
+      @media (min-width: 768px) {
+        .form-row.form-row-3 { grid-template-columns: repeat(3, 1fr); }
+      }
+
+      /* Collapsible edit section in game modal */
+      .modal-edit-section {
+        margin-top: var(--spacing-md);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+        background: var(--c-surface2);
+        overflow: hidden;
+      }
+      .modal-edit-section summary {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+        padding: var(--spacing-sm) var(--spacing-md);
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--c-text-muted);
+        background: transparent;
+        border: none;
+        list-style: none;
+        user-select: none;
+        transition: background 150ms;
+      }
+      .modal-edit-section summary::-webkit-details-marker { display: none; }
+      .modal-edit-section summary::before {
+        content: '▶';
+        font-size: 10px;
+        transition: transform 150ms;
+        color: var(--c-accent);
+      }
+      .modal-edit-section[open] summary::before { transform: rotate(90deg); }
+      .modal-edit-section summary:hover { background: color-mix(in srgb, var(--c-accent) 8%, transparent); }
+      .modal-edit-body {
+        padding: var(--spacing-md);
+        border-top: 1px solid var(--c-border);
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-md);
+      }
+      .modal-edit-row {
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-xs);
+      }
+      .modal-edit-row label { font-size: 12px; font-weight: 600; color: var(--c-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+      .modal-edit-row input, .modal-edit-row textarea {
+        background: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+        color: var(--c-text);
+        padding: var(--spacing-sm) var(--spacing-md);
+        font-size: 13px;
+      }
+      .modal-edit-row textarea { resize: vertical; min-height: 90px; font-family: var(--font-mono); }
+      .modal-delete-wrap { border-top: 1px solid var(--c-err); padding-top: var(--spacing-md); }
+
+      /* Alpha filter buttons */
+      .alpha-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 32px;
+        min-height: 32px;
+        padding: 4px 8px;
+        background-color: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        user-select: none;
+        transition: all 150ms ease;
+        font-weight: 600;
+        font-size: clamp(11px, 1.5vw, 13px);
+        margin: 2px;
+      }
+
+      .alpha-btn:hover:not(.disabled) {
+        background-color: var(--c-surface2);
+        box-shadow: var(--shadow-sm);
+      }
+
+      .alpha-btn:focus-visible {
+        outline: 2px solid var(--c-accent2);
+      }
+
+      .alpha-btn.active {
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        font-weight: 700;
+      }
+
+      .alpha-btn.disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      /* Game item */
+      .game-item {
+        display: flex;
+        gap: var(--spacing-md);
+        padding: var(--spacing-md);
+        background-color: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        cursor: pointer;
+        transition: all 200ms ease;
+        min-height: 80px;
+        align-items: stretch;
+      }
+
+      .game-item:hover {
+        background-color: var(--c-surface2);
+        box-shadow: var(--shadow-md);
+        transform: translateY(-2px);
+      }
+
+      .game-item:focus-visible {
+        outline: 2px solid var(--c-accent2);
+      }
+
+      .game-item.active {
+        border-color: var(--c-ok);
+        background-color: rgba(0, 170, 0, 0.08);
+      }
+
+      .game-cover {
+        width: 56px;
+        height: 56px;
+        border-radius: var(--radius-md);
+        object-fit: cover;
+        background-color: var(--c-border);
+        flex-shrink: 0;
+      }
+
+      .game-cover.empty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        color: #666;
+        background-color: var(--c-border);
+      }
+
+      .game-info {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-width: 0;
+      }
+
+      .game-name {
+        font-weight: 600;
+        font-size: clamp(12px, 2vw, 14px);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-bottom: 4px;
+      }
+
+      .game-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        align-items: center;
+      }
+
+      /* FTP/DAV items */
+      .ftp-item {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+        padding: var(--spacing-md);
+        background-color: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        cursor: pointer;
+        transition: all 200ms ease;
+        user-select: none;
+      }
+
+      .ftp-item:hover {
+        background-color: var(--c-surface2);
+        box-shadow: var(--shadow-md);
+      }
+
+      .ftp-item.dir {
+        font-weight: 500;
+      }
+
+      .ftp-icon {
+        font-size: 24px;
+        flex-shrink: 0;
+      }
+
+      .ftp-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .ftp-size {
+        font-size: 11px;
+        color: #666;
+        min-width: 60px;
+        text-align: right;
+      }
+
+      .dl-btn {
+        padding: 4px 8px;
+        font-size: 11px;
+        background-color: var(--c-accent2);
+        flex-shrink: 0;
+      }
+
+      /* Status indicators */
+      .ftp-status {
+        padding: var(--spacing-md);
+        border-radius: var(--radius-lg);
+        font-size: 13px;
+        margin-bottom: var(--spacing-md);
+        border-left: 4px solid var(--c-border);
+      }
+
+      .ftp-status.connected {
+        background-color: rgba(0, 170, 0, 0.1);
+        border-left-color: var(--c-ok);
+        color: var(--c-ok);
+      }
+
+      .ftp-status.disconnected {
+        background-color: rgba(255, 136, 0, 0.1);
+        border-left-color: var(--c-warn);
+        color: var(--c-warn);
+      }
+
+      .ftp-status.error {
+        background-color: rgba(204, 0, 0, 0.1);
+        border-left-color: var(--c-err);
+        color: var(--c-err);
+      }
+
+      /* Breadcrumb */
+      .ftp-breadcrumb {
+        padding: var(--spacing-md) 0;
+        font-size: 12px;
+        word-break: break-all;
+      }
+
+      .ftp-breadcrumb a {
+        color: var(--c-link);
+        cursor: pointer;
+      }
+
+      .ftp-breadcrumb a:hover {
+        text-decoration: underline;
+      }
+
+      /* Progress bar */
+      .progress-bar {
+        width: 100%;
+        height: 32px;
+        background-color: var(--c-border);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        display: none;
+        margin: var(--spacing-md) 0;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--c-accent), var(--c-accent2));
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--c-text-inv);
+        font-size: 12px;
+        font-weight: 600;
+        transition: width 200ms ease;
+        width: 0%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding: 0 var(--spacing-sm);
+      }
+
+      /* Upload zone */
+      .upload-zone {
+        border: 2px dashed var(--c-border);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-xl);
+        text-align: center;
+        cursor: pointer;
+        transition: all 200ms ease;
+        background-color: rgba(0, 0, 0, 0.02);
+        min-height: 120px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: var(--spacing-md);
+      }
+
+      .upload-zone:hover {
+        border-color: var(--c-accent);
+        background-color: rgba(0, 85, 170, 0.05);
+      }
+
+      .upload-zone.dragover {
+        border-color: var(--c-accent2);
+        background-color: rgba(255, 136, 0, 0.1);
+        transform: scale(1.02);
+      }
+
+      #upload-input {
+        display: none;
+      }
+
+      /* Spinner */
+      .spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid var(--c-border);
+        border-top-color: var(--c-accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* Toast notifications */
+      .toast {
+        position: fixed;
+        bottom: 100px;
+        left: var(--spacing-md);
+        right: var(--spacing-md);
+        padding: var(--spacing-md) var(--spacing-lg);
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-lg);
+        z-index: var(--z-toast);
+        animation: slideUp 300ms ease forwards;
+        font-weight: 500;
+        max-width: 90vw;
+        word-wrap: break-word;
+      }
+
+      @keyframes slideUp {
+        from {
+          transform: translateY(120px);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0);
+          opacity: 1;
+        }
+      }
+
+      .toast.success {
+        background-color: var(--c-ok);
+      }
+
+      .toast.error {
+        background-color: var(--c-err);
+      }
+
+      /* Password toggle */
+      .pass-wrap {
+        position: relative;
+        display: flex;
+        gap: var(--spacing-xs);
+      }
+
+      .pass-wrap input {
+        flex: 1;
+      }
+
+      .pass-toggle {
+        padding: var(--spacing-sm);
+        background-color: var(--c-surface2);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        min-height: 36px;
+        min-width: 36px;
+      }
+
+      /* Stats grid — 2 cols mobile, 3 cols tablet, 4 cols desktop */
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: var(--spacing-md);
+      }
+      @media (min-width: 600px) {
+        .stats-grid { grid-template-columns: repeat(3, 1fr); }
+      }
+      @media (min-width: 900px) {
+        .stats-grid { grid-template-columns: repeat(4, 1fr); }
+      }
+
+      .stat {
+        background-color: var(--c-surface2);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-md);
+        text-align: center;
+      }
+
+      .stat .label {
+        font-size: 11px;
+        color: #666;
+        font-weight: 600;
+        margin-bottom: 4px;
+        text-transform: uppercase;
+      }
+
+      .stat .value {
+        font-size: clamp(12px, 2vw, 16px);
+        font-weight: 700;
+      }
+
+      .stat .value.ok {
+        color: var(--c-ok);
+      }
+
+      .stat .value.warn {
+        color: var(--c-warn);
+      }
+
+      /* Theme cards */
+      .theme-card {
+        border: 3px solid transparent;
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-lg);
+        text-align: center;
+        cursor: pointer;
+        transition: all 150ms ease;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: var(--spacing-xs);
+        box-shadow: var(--shadow-md);
+      }
+      .theme-card:active { transform: scale(0.97); }
+      .theme-card.active { border-width: 3px; box-shadow: 0 0 0 2px rgba(255,255,255,.3), var(--shadow-md); }
+
+      .theme-swatch {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
+        color: #fff;
+        margin-bottom: var(--spacing-xs);
+        box-shadow: 0 2px 4px rgba(0,0,0,.3);
+      }
+
+      .theme-name {
+        font-weight: 700;
+        font-size: 14px;
+        letter-spacing: .5px;
+      }
+
+      /* WiFi list */
+      .wifi-list {
+        background-color: var(--c-surface2);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        max-height: 200px;
+        overflow-y: auto;
+      }
+
+      .wifi-list > div {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-bottom: 1px solid var(--c-border);
+        cursor: pointer;
+        transition: background-color 150ms ease;
+      }
+
+      .wifi-list > div:hover {
+        background-color: var(--c-surface);
+      }
+
+      .wifi-list > div:last-child {
+        border-bottom: none;
+      }
+
+      .wifi-signal {
+        font-size: 11px;
+        color: #666;
+        font-weight: 500;
+      }
+
+      /* Network status */
+      .net-row {
+        padding: var(--spacing-md);
+        background-color: var(--c-surface2);
+        border-radius: var(--radius-lg);
+        margin-bottom: var(--spacing-md);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      /* Hidden state */
+      .hidden {
+        display: none !important;
+      }
+
+      /* Loading state */
+      .loading-msg {
+        text-align: center;
+        color: var(--c-text-inv);
+        font-weight: 500;
+        white-space: pre-line;
+      }
+    }
+
+    @layer layout {
+      body {
+        display: grid;
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr auto;
+        min-height: 100vh;
+      }
+
+      #app-main {
+        overflow-y: auto;
+        overflow-x: hidden;
+        grid-column: 1;
+        grid-row: 1;
+        padding-bottom: 80px;
+      }
+
+      #app-nav {
+        grid-column: 1;
+        grid-row: 2;
+        background-color: var(--c-surface);
+        border-top: 1px solid var(--c-border);
+        display: flex;
+        justify-content: space-around;
+        align-items: center;
+        height: auto;
+        padding: var(--spacing-sm) var(--spacing-xs);
+        gap: var(--spacing-xs);
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: var(--z-nav);
+        flex-wrap: wrap;
+        max-height: 80px;
+      }
+
+      .view {
+        display: none;
+        width: 100%;
+        animation: fadeIn 200ms ease;
+      }
+
+      .view.active,
+      .view:not(.hidden) {
+        display: block;
+      }
+
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      /* View content container */
+      .view-content {
+        padding: var(--spacing-lg);
+        max-width: 100%;
+      }
+
+      .view-header {
+        margin-bottom: var(--spacing-lg);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--spacing-md);
+      }
+
+      .view-header h1 {
+        font-size: clamp(18px, 4vw, 24px);
+        margin: 0;
+      }
+
+      .view-header-actions {
+        display: flex;
+        gap: var(--spacing-sm);
+        flex-wrap: wrap;
+      }
+
+      /* Search bar */
+      .search-box {
+        width: 100%;
+        max-width: 400px;
+        padding: var(--spacing-sm) var(--spacing-md);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        background-color: var(--c-surface2);
+        color: var(--c-text);
+        font-size: 14px;
+      }
+
+      .search-box:focus {
+        outline: 2px solid var(--c-accent);
+      }
+
+      /* Modal */
+      .modal {
+        position: fixed;
+        inset: 0;
+        background-color: rgba(0, 0, 0, 0.5);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: var(--z-modal);
+        padding: var(--spacing-md);
+        overflow-y: auto;
+      }
+
+      .modal.show {
+        display: flex;
+      }
+
+      .modal-content {
+        background-color: var(--c-surface);
+        border-radius: var(--radius-lg);
+        max-width: 95vw;
+        max-height: 95vh;
+        overflow-y: auto;
+        padding: var(--spacing-lg);
+        box-shadow: var(--shadow-lg);
+        border: 1px solid var(--c-border);
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-md);
+      }
+
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--spacing-md);
+      }
+
+      .modal-title {
+        font-size: clamp(16px, 3vw, 20px);
+        font-weight: 700;
+        margin: 0;
+      }
+
+      .modal-close {
+        background: none;
+        border: none;
+        font-size: 24px;
+        cursor: pointer;
+        padding: 0;
+        min-height: auto;
+        min-width: auto;
+        color: var(--c-text);
+      }
+
+      .modal-close:hover {
+        color: var(--c-accent);
+      }
+
+      .modal-cover-wrap {
+        text-align: center;
+        margin-bottom: var(--spacing-md);
+      }
+
+      .modal-cover-wrap img {
+        max-width: 100%;
+        max-height: 300px;
+        border-radius: var(--radius-lg);
+      }
+
+      .modal-actions {
+        display: flex;
+        gap: var(--spacing-sm);
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+
+      .modal-actions button {
+        flex: 1;
+        min-width: 100px;
+      }
+
+      /* Loading overlay */
+      #loading-overlay {
+        position: fixed;
+        inset: 0;
+        background: linear-gradient(135deg, var(--c-bg), var(--c-accent));
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: var(--z-loading);
+        flex-direction: column;
+        gap: var(--spacing-xl);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 200ms ease;
+      }
+
+      #loading-overlay.show {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      /* IP display */
+      .ip-display {
+        font-size: 12px;
+        color: #666;
+        margin-top: var(--spacing-md);
+        font-family: var(--font-mono);
+        word-break: break-all;
+      }
+
+      /* Cover URL section — hidden by default, shown by JS if internet available */
+      #cover-url-section {
+        display: none;
+      }
+
+      /* Now playing card */
+      .now-playing-card {
+        background: linear-gradient(135deg, rgba(0, 170, 0, 0.1), rgba(0, 170, 0, 0.05));
+        border: 2px solid var(--c-ok);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-md);
+        margin-bottom: var(--spacing-lg);
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+        flex-wrap: wrap;
+      }
+
+      .now-playing-card strong {
+        flex: 1;
+        min-width: 150px;
+      }
+
+      .now-playing-card span {
+        font-size: 13px;
+      }
+    }
+
+    @layer responsive {
+      /* Desktop: 768px+ */
+      @media (min-width: 768px) {
+        body {
+          grid-template-columns: 220px 1fr;
+          grid-template-rows: 1fr;
+        }
+
+        #app-nav {
+          grid-column: 1;
+          grid-row: 1;
+          flex-direction: column;
+          position: static;
+          height: 100vh;
+          max-height: 100vh;
+          border-top: none;
+          border-right: 1px solid var(--c-border);
+          padding: var(--spacing-lg) var(--spacing-md);
+          gap: var(--spacing-md);
+          align-items: stretch;
+          overflow-y: auto;
+          flex-wrap: nowrap;
+          bottom: auto;
+          left: auto;
+          right: auto;
+        }
+
+        #app-nav::before {
+          content: 'GOTEK UI';
+          display: block;
+          text-align: center;
+          font-weight: 700;
+          font-size: 13px;
+          margin-bottom: var(--spacing-lg);
+          padding-bottom: var(--spacing-md);
+          border-bottom: 1px solid var(--c-border);
+        }
+
+        #app-nav .ip-display {
+          margin-top: auto;
+          padding-top: var(--spacing-md);
+          border-top: 1px solid var(--c-border);
+          text-align: center;
+        }
+
+        .tab {
+          justify-content: flex-start;
+          width: 100%;
+          padding: var(--spacing-md);
+        }
+
+        .tab.active {
+          background-color: var(--c-accent);
+        }
+
+        #app-main {
+          grid-column: 2;
+          grid-row: 1;
+          padding: var(--spacing-lg);
+          padding-bottom: var(--spacing-lg);
+        }
+
+        .view-content {
+          padding: 0;
+        }
+
+        .modal-content {
+          max-width: 700px;
+          max-height: 90vh;
+        }
+
+        .toast {
+          bottom: var(--spacing-lg);
+          left: var(--spacing-lg);
+          right: auto;
+          max-width: 400px;
+        }
+
+      }
+
+
+      /* Very small mobile: < 360px */
+      @media (max-width: 359px) {
+        .tab {
+          padding: 4px;
+          font-size: 10px;
+        }
+
+        .badge {
+          font-size: 9px;
+        }
+
+        .btn.btn-sm {
+          padding: 2px 4px;
+          font-size: 9px;
+        }
+      }
+    }
+  </style>
 </head>
 <body>
+  <div id="app-main">
+    <!-- ────────────────────── Dashboard ────────────────────── -->
+    <div class="view" id="view-dashboard">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>Dashboard</h1>
+        </div>
 
-<div class="header">
-  <h1>GOTEK WiFi DONGLE</h1>
-  <div class="sub" id="headerIp">connecting...</div>
-</div>
+        <div class="ip-display" id="ip-display">Loading...</div>
 
-<div class="tabs">
-  <div class="tab active" onclick="showPage('home')">Home</div>
-  <div class="tab" onclick="showPage('ftp')">FTP</div>
-  <div class="tab" onclick="showPage('dav')">WebDAV</div>
-  <div class="tab" onclick="showPage('cfg')">Settings</div>
-</div>
-
-<!-- ══════════════════════════════════════ -->
-<!-- HOME TAB -->
-<!-- ══════════════════════════════════════ -->
-<div class="page active" id="page-home">
-  <div class="card">
-    <h2>Current Disk</h2>
-    <div class="status">
-      <div class="dot" id="statusDot"></div>
-      <div class="info">
-        <div class="name" id="statusName">No disk loaded</div>
-        <div class="detail" id="statusDetail">Upload a disk image to begin</div>
+        <div class="stats-grid" id="stats-grid"></div>
       </div>
     </div>
-    <button class="btn btn-eject btn-full" id="btnEject" disabled onclick="ejectDisk()">EJECT</button>
-  </div>
 
-  <div class="card">
-    <h2>Upload Disk Image</h2>
-    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-      <div class="icon">💾</div>
-      <p>Tap to select or drag & drop<br>ADF / DSK / IMG (max 1.44 MB)</p>
-      <input type="file" id="fileInput" accept=".adf,.dsk,.img">
-    </div>
-    <div class="progress" id="progress">
-      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-      <div class="progress-text" id="progressText">Uploading...</div>
-    </div>
-    <div class="msg" id="msg"></div>
-  </div>
+    <!-- ────────────────────── Games ────────────────────── -->
+    <div class="view hidden" id="view-games">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>Games <span id="game-count">(0 games)</span></h1>
+          <div class="view-header-actions">
+            <input type="text" id="game-search" class="search-box" placeholder="Search games...">
+            <button class="btn" onclick="rescanGames()">Rescan</button>
+          </div>
+        </div>
 
-  <div class="card">
-    <h2>System</h2>
-    <div class="info-grid">
-      <div class="info-item"><div class="label">Firmware</div><div class="value" id="infoFw">-</div></div>
-      <div class="info-item"><div class="label">Free RAM</div><div class="value" id="infoRam">-</div></div>
-      <div class="info-item"><div class="label">AP IP</div><div class="value" id="infoApIp">-</div></div>
-      <div class="info-item"><div class="label">Network IP</div><div class="value" id="infoStaIp">-</div></div>
-    </div>
-  </div>
-</div>
+        <div class="now-playing-card" id="now-playing-card" style="display: none;">
+          <span id="now-playing"></span>
+        </div>
 
-<!-- ══════════════════════════════════════ -->
-<!-- FTP TAB -->
-<!-- ══════════════════════════════════════ -->
-<div class="page" id="page-ftp">
-  <div class="card">
-    <h2>FTP Server</h2>
-    <div class="ftp-status disconnected" id="ftp-status-bar">Not connected</div>
-    <div style="display:flex;gap:6px">
-      <button class="btn btn-primary" style="flex:1" onclick="ftpConnect()">Connect</button>
-      <button class="btn btn-danger" style="padding:10px 16px" onclick="ftpDisconnect()">Disconnect</button>
-    </div>
-  </div>
-  <div class="card" id="ftp-browse" style="display:none">
-    <h2>Browse</h2>
-    <div class="browse-path" id="ftp-path">/</div>
-    <div class="file-list" id="ftp-list"></div>
-    <button class="btn btn-primary btn-full" style="margin-top:8px" onclick="ftpUp()">Up</button>
-  </div>
-</div>
+        <div style="margin-bottom: var(--spacing-md);">
+          <label>Filter by Letter</label>
+          <div id="alpha-filter" style="display: flex; flex-wrap: wrap; gap: 4px;"></div>
+        </div>
 
-<!-- ══════════════════════════════════════ -->
-<!-- WEBDAV TAB -->
-<!-- ══════════════════════════════════════ -->
-<div class="page" id="page-dav">
-  <div class="card">
-    <h2>WebDAV Server</h2>
-    <div class="ftp-status disconnected" id="dav-status-bar">Not connected</div>
-    <div style="display:flex;gap:6px">
-      <button class="btn btn-primary" style="flex:1" onclick="davConnect()">Connect</button>
-      <button class="btn btn-danger" style="padding:10px 16px" onclick="davDisconnect()">Disconnect</button>
-    </div>
-    <details id="dav-debug-wrap" style="margin-top:6px;display:none">
-      <summary>Debug Log</summary>
-      <pre id="dav-debug"></pre>
-    </details>
-  </div>
-  <div class="card" id="dav-browse" style="display:none">
-    <h2>Browse</h2>
-    <div class="browse-path" id="dav-path">/</div>
-    <div class="file-list" id="dav-list"></div>
-    <button class="btn btn-primary btn-full" style="margin-top:8px" onclick="davUp()">Up</button>
-  </div>
-</div>
-
-<!-- ══════════════════════════════════════ -->
-<!-- SETTINGS TAB -->
-<!-- ══════════════════════════════════════ -->
-<div class="page" id="page-cfg">
-  <div class="card">
-    <h2>WiFi Access Point</h2>
-    <div class="form-group"><label>SSID</label><input id="cfg-ap-ssid"></div>
-    <div class="form-group"><label>Password</label>
-      <div class="pwd-wrap"><input type="password" id="cfg-ap-pass"><button class="pwd-toggle" onclick="togglePwd(this)">👁</button></div>
-    </div>
-    <div class="form-group"><label>Channel</label><input type="number" id="cfg-ap-chan" min="1" max="13"></div>
-  </div>
-
-  <div class="card">
-    <h2>WiFi Client (connect to network)</h2>
-    <label class="toggle"><input type="checkbox" id="cfg-sta-en"><span class="slider"></span><span>Enable WiFi Client</span></label>
-    <div class="form-group"><label>SSID</label><input id="cfg-sta-ssid"></div>
-    <div class="form-group"><label>Password</label>
-      <div class="pwd-wrap"><input type="password" id="cfg-sta-pass"><button class="pwd-toggle" onclick="togglePwd(this)">👁</button></div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>FTP Server</h2>
-    <label class="toggle"><input type="checkbox" id="cfg-ftp-en"><span class="slider"></span><span>Enable FTP</span></label>
-    <div class="form-row">
-      <div class="form-group"><label>Host</label><input id="cfg-ftp-host"></div>
-      <div class="form-group" style="max-width:80px"><label>Port</label><input type="number" id="cfg-ftp-port"></div>
-    </div>
-    <div class="form-row">
-      <div class="form-group"><label>Username</label><input id="cfg-ftp-user"></div>
-      <div class="form-group"><label>Password</label>
-        <div class="pwd-wrap"><input type="password" id="cfg-ftp-pass"><button class="pwd-toggle" onclick="togglePwd(this)">👁</button></div>
+        <div id="game-list"></div>
       </div>
     </div>
-    <div class="form-group"><label>Base Path</label><input id="cfg-ftp-path"></div>
-  </div>
 
-  <div class="card">
-    <h2>WebDAV Server</h2>
-    <label class="toggle"><input type="checkbox" id="cfg-dav-en"><span class="slider"></span><span>Enable WebDAV</span></label>
-    <div class="form-row">
-      <div class="form-group"><label>Host</label><input id="cfg-dav-host"></div>
-      <div class="form-group" style="max-width:80px"><label>Port</label><input type="number" id="cfg-dav-port"></div>
-    </div>
-    <div class="form-row">
-      <div class="form-group"><label>Username</label><input id="cfg-dav-user"></div>
-      <div class="form-group"><label>Password</label>
-        <div class="pwd-wrap"><input type="password" id="cfg-dav-pass"><button class="pwd-toggle" onclick="togglePwd(this)">👁</button></div>
+    <!-- ────────────────────── Upload Zone ────────────────────── -->
+    <div style="display: none;">
+      <div id="upload-zone" class="upload-zone">
+        <span>📁</span>
+        <span>Drag files here or click to browse</span>
+      </div>
+      <input type="file" id="upload-input" multiple>
+      <div class="progress-bar" id="upload-progress">
+        <div class="progress-fill" id="upload-fill"></div>
       </div>
     </div>
-    <div class="form-group"><label>Base Path</label><input id="cfg-dav-path"></div>
-    <label class="toggle"><input type="checkbox" id="cfg-dav-https"><span class="slider"></span><span>Use HTTPS</span></label>
+
+    <!-- ────────────────────── FTP ────────────────────── -->
+    <div class="view hidden" id="view-ftp">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>FTP Browser</h1>
+          <div class="view-header-actions">
+            <button class="btn" id="ftp-connect-btn" onclick="ftpConnect()" style="display: none;">Connect</button>
+            <button class="btn" id="ftp-disconnect-btn" onclick="ftpDisconnect()" style="display: none;">Disconnect</button>
+            <button class="btn" onclick="ftpRefresh()">Refresh</button>
+          </div>
+        </div>
+
+        <div class="ftp-status" id="ftp-status-bar">Initializing...</div>
+        <div id="ftp-no-config" style="padding: var(--spacing-md); color: #888; display: none;">FTP is not enabled or configured. Check Config tab.</div>
+        <div id="ftp-breadcrumb" class="ftp-breadcrumb"></div>
+        <div style="display: none;" id="ftp-loading"><span class="spinner"></span> Loading...</div>
+        <div id="ftp-list"></div>
+      </div>
+    </div>
+
+    <!-- ────────────────────── WebDAV ────────────────────── -->
+    <div class="view hidden" id="view-webdav">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>WebDAV <span id="dav-game-count">(0 games)</span></h1>
+          <div class="view-header-actions">
+            <button class="btn" id="dav-connect-btn" onclick="davConnect()" style="display: none;">Connect</button>
+            <button class="btn" id="dav-disconnect-btn" onclick="davDisconnect()" style="display: none;">Disconnect</button>
+            <button class="btn" onclick="davRefresh()">Refresh</button>
+          </div>
+        </div>
+
+        <div class="ftp-status" id="dav-status-bar">Initializing...</div>
+        <div id="dav-no-config" style="padding: var(--spacing-md); color: #888; display: none;">WebDAV is not enabled or configured. Check Config tab.</div>
+
+        <div class="now-playing-card" id="dav-now-playing-card" style="display: none;">
+          <span id="dav-now-playing"></span>
+        </div>
+
+        <div id="dav-game-card" style="display: none;">
+          <div style="margin-bottom: var(--spacing-md);">
+            <input type="text" id="dav-search" class="search-box" placeholder="Search games...">
+          </div>
+
+          <div style="margin-bottom: var(--spacing-md);">
+            <label>Filter by Letter</label>
+            <div id="dav-alpha-filter" style="display: flex; flex-wrap: wrap; gap: 4px;"></div>
+          </div>
+        </div>
+
+        <div style="display: none;" id="dav-loading"><span class="spinner"></span> Loading...</div>
+        <div id="dav-list"></div>
+      </div>
+    </div>
+
+    <!-- ────────────────────── Themes ────────────────────── -->
+    <div class="view hidden" id="view-themes">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>Themes</h1>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--spacing-md);" id="theme-grid"></div>
+      </div>
+    </div>
+
+    <!-- ────────────────────── Config ────────────────────── -->
+    <div class="view hidden" id="view-config">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>Configuration</h1>
+        </div>
+
+        <form id="config-form">
+
+          <!-- System -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">System</div>
+            <div class="form-row form-row-3">
+              <div class="form-group">
+                <label for="cfg-display">Display Type</label>
+                <select id="cfg-display" name="DISPLAY">
+                  <option value="JC3248">JC3248W535C</option>
+                  <option value="WAVESHARE">Waveshare 2.8"</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="cfg-lastmode">Default Mode</label>
+                <select id="cfg-lastmode" name="LASTMODE">
+                  <option value="ADF">ADF (Amiga)</option>
+                  <option value="DSK">DSK (ZX/CPC)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="cfg-theme">Theme</label>
+                <select id="cfg-theme" name="THEME"></select>
+              </div>
+            </div>
+          </div>
+
+          <!-- WiFi AP -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">WiFi Access Point</div>
+            <div class="cfg-enabled-row">
+              <label for="cfg-wifi-enabled">Enabled</label>
+              <select id="cfg-wifi-enabled" name="WIFI_ENABLED" class="cfg-enabled-select">
+                <option value="1">Yes</option>
+                <option value="0">No</option>
+              </select>
+            </div>
+            <div class="form-row form-row-2">
+              <div class="form-group">
+                <label for="cfg-wifi-ssid">SSID</label>
+                <input type="text" id="cfg-wifi-ssid" name="WIFI_SSID" placeholder="Gotek-Setup">
+              </div>
+              <div class="form-group">
+                <label for="cfg-wifi-channel">Channel (1–13)</label>
+                <input type="number" id="cfg-wifi-channel" name="WIFI_CHANNEL" min="1" max="13" placeholder="6">
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="cfg-wifi-pass">Password <small style="font-weight:400;color:var(--c-text-muted)">(leave empty for open)</small></label>
+              <div class="pass-wrap">
+                <input type="password" id="cfg-wifi-pass" name="WIFI_PASS">
+                <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- WiFi Client -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">WiFi Client <small style="font-weight:400;font-size:13px">connect to your home network</small></div>
+            <div class="cfg-enabled-row">
+              <label for="cfg-wifi-client-enabled">Enabled</label>
+              <select id="cfg-wifi-client-enabled" name="WIFI_CLIENT_ENABLED" class="cfg-enabled-select">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfg-wifi-client-ssid">Network SSID</label>
+              <div class="net-row">
+                <input type="text" id="cfg-wifi-client-ssid" name="WIFI_CLIENT_SSID" placeholder="MyNetwork">
+                <button type="button" class="btn btn-sm" onclick="scanNetworks()">Scan</button>
+              </div>
+              <div id="wifi-scan-list" class="wifi-list hidden"></div>
+            </div>
+            <div class="form-group">
+              <label for="cfg-wifi-client-pass">Password</label>
+              <div class="pass-wrap">
+                <input type="password" id="cfg-wifi-client-pass" name="WIFI_CLIENT_PASS">
+                <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+              </div>
+            </div>
+            <div style="display:flex;gap:var(--spacing-sm);flex-wrap:wrap;margin-top:var(--spacing-sm)">
+              <button type="button" class="btn btn-sm" onclick="checkWiFiStatus()">Check WiFi Status</button>
+            </div>
+            <div id="wifi-status-box" style="display:none;margin-top:var(--spacing-md);padding:var(--spacing-sm) var(--spacing-md);background:var(--c-surface2);border:1px solid var(--c-border);border-radius:var(--radius-md);font-size:13px"></div>
+          </div>
+
+          <!-- FTP -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">FTP Source <small style="font-weight:400;font-size:13px">plain FTP only, no SFTP</small></div>
+            <div class="cfg-enabled-row">
+              <label for="cfg-ftp-enabled">Enabled</label>
+              <select id="cfg-ftp-enabled" name="FTP_ENABLED" class="cfg-enabled-select">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </div>
+            <div class="form-row form-row-3">
+              <div class="form-group">
+                <label for="cfg-ftp-host">Host</label>
+                <input type="text" id="cfg-ftp-host" name="FTP_HOST" placeholder="192.168.1.100">
+              </div>
+              <div class="form-group">
+                <label for="cfg-ftp-port">Port</label>
+                <input type="number" id="cfg-ftp-port" name="FTP_PORT" placeholder="21">
+              </div>
+              <div class="form-group">
+                <label for="cfg-ftp-user">Username</label>
+                <input type="text" id="cfg-ftp-user" name="FTP_USER" placeholder="anonymous">
+              </div>
+            </div>
+            <div class="form-row form-row-2">
+              <div class="form-group">
+                <label for="cfg-ftp-path">Base Path</label>
+                <input type="text" id="cfg-ftp-path" name="FTP_PATH" placeholder="/">
+              </div>
+              <div class="form-group">
+                <label for="cfg-ftp-pass">Password</label>
+                <div class="pass-wrap">
+                  <input type="password" id="cfg-ftp-pass" name="FTP_PASS">
+                  <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- WebDAV -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">WebDAV Source <small style="font-weight:400;font-size:13px">Nextcloud, Stackstorage, etc.</small></div>
+            <div class="cfg-enabled-row">
+              <label for="cfg-dav-enabled">Enabled</label>
+              <select id="cfg-dav-enabled" name="DAV_ENABLED" class="cfg-enabled-select">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </div>
+            <div class="form-row form-row-3">
+              <div class="form-group">
+                <label for="cfg-dav-host">Host</label>
+                <input type="text" id="cfg-dav-host" name="DAV_HOST" placeholder="username.stackstorage.com">
+              </div>
+              <div class="form-group">
+                <label for="cfg-dav-port">Port</label>
+                <input type="number" id="cfg-dav-port" name="DAV_PORT" placeholder="443">
+              </div>
+              <div class="form-group">
+                <label for="cfg-dav-https">Protocol</label>
+                <select id="cfg-dav-https" name="DAV_HTTPS">
+                  <option value="1">HTTPS (443)</option>
+                  <option value="0">HTTP (80)</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row form-row-3">
+              <div class="form-group">
+                <label for="cfg-dav-user">Username</label>
+                <input type="text" id="cfg-dav-user" name="DAV_USER">
+              </div>
+              <div class="form-group">
+                <label for="cfg-dav-path">Base Path</label>
+                <input type="text" id="cfg-dav-path" name="DAV_PATH" placeholder="/remote.php/webdav/">
+              </div>
+              <div class="form-group">
+                <label for="cfg-dav-pass">Password</label>
+                <div class="pass-wrap">
+                  <input type="password" id="cfg-dav-pass" name="DAV_PASS">
+                  <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Logging -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">Logging</div>
+            <div class="cfg-enabled-row">
+              <label for="cfg-log-enabled">Write log to SD card (/LOG.TXT)</label>
+              <select id="cfg-log-enabled" name="LOG_ENABLED" class="cfg-enabled-select">
+                <option value="0">Off</option>
+                <option value="1">On</option>
+              </select>
+            </div>
+            <p style="margin:var(--spacing-sm) 0 0;font-size:12px;color:var(--c-text-muted)">When On, the Log tab is visible and events are written to /LOG.TXT on the SD card. Saving this setting takes effect immediately.</p>
+          </div>
+
+          <button type="submit" class="btn btn-primary" style="width:100%;min-height:48px;margin-top:var(--spacing-md)">Save Configuration</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ────────────────────── Log ────────────────────── -->
+    <div class="view hidden" id="view-log">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>System Log</h1>
+          <div class="view-header-actions">
+            <label style="display: flex; align-items: center; gap: var(--spacing-sm); margin: 0; font-weight: normal;">
+              <input type="checkbox" id="log-auto-scroll" checked> Auto-scroll
+            </label>
+            <button class="btn" onclick="clearLog()">Clear</button>
+          </div>
+        </div>
+
+        <div id="log-content" style="
+          background-color: var(--c-surface2);
+          border: 1px solid var(--c-border);
+          border-radius: var(--radius-lg);
+          padding: var(--spacing-md);
+          font-family: var(--font-mono);
+          font-size: 12px;
+          line-height: 1.4;
+          max-height: 500px;
+          overflow-y: auto;
+          white-space: pre-wrap;
+          word-wrap: break-word;
+          color: #444;
+        "></div>
+      </div>
+    </div>
   </div>
 
-  <button class="btn btn-primary btn-full" onclick="saveSettings()">Save Settings</button>
-  <div class="msg" id="cfg-msg" style="margin-bottom:20px"></div>
-</div>
+  <!-- ────────────────────── Navigation ────────────────────── -->
+  <nav id="app-nav">
+    <div class="tab active" data-view="dashboard">🏠 Home</div>
+    <div class="tab" data-view="games">🎮 Games</div>
+    <div id="tab-webdav" class="tab" data-view="webdav">☁️ WebDAV</div>
+    <div id="tab-ftp" class="tab" data-view="ftp">📁 FTP</div>
+    <div class="tab" data-view="themes">🎨 Themes</div>
+    <div class="tab" data-view="config">⚙️ Config</div>
+    <div id="tab-log" class="tab" data-view="log">📋 Log</div>
+    <div class="ip-display" id="ip-display-nav"></div>
+  </nav>
 
-<div class="toast" id="toast"></div>
+  <!-- ────────────────────── Game Detail Modal ────────────────────── -->
+  <div class="modal" id="modal-game-detail">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modal-game-title">Game</h2>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+
+      <div class="modal-cover-wrap" id="modal-game-cover-wrap">
+        <img id="modal-game-cover" style="display: none;">
+      </div>
+
+      <div id="modal-load-status"></div>
+
+      <div>
+        <label for="modal-disk-select">Select Disk</label>
+        <select id="modal-disk-select"></select>
+      </div>
+
+      <div id="modal-game-disks"></div>
+
+      <div class="modal-actions">
+        <button id="modal-load-btn" class="btn">Load</button>
+        <button id="modal-eject-btn" class="btn">Eject</button>
+      </div>
+
+      <!-- Collapsible edit / manage section -->
+      <details class="modal-edit-section" id="modal-edit-section">
+        <summary>✏️ Edit / Manage</summary>
+        <div class="modal-edit-body">
+
+          <div class="modal-edit-row">
+            <label for="modal-cover-input">Upload Cover Art</label>
+            <div style="display: flex; gap: var(--spacing-sm); align-items: center; flex-wrap: wrap;">
+              <input type="file" id="modal-cover-input" accept="image/*" style="flex: 1; min-width: 0;">
+              <button id="modal-cover-upload-btn" class="btn" disabled>Upload</button>
+            </div>
+            <div id="cover-upload-status" style="font-size: 12px; color: var(--c-text-muted);"></div>
+          </div>
+
+          <div class="modal-edit-row" id="cover-url-section">
+            <label for="modal-cover-url">Or Download Cover from URL</label>
+            <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
+              <input type="url" id="modal-cover-url" placeholder="https://...">
+              <button id="modal-cover-url-btn" class="btn">Download</button>
+            </div>
+            <div id="cover-url-status" style="font-size: 12px; color: var(--c-text-muted);"></div>
+          </div>
+
+          <div class="modal-edit-row">
+            <label for="modal-nfo-editor">NFO / Description</label>
+            <textarea id="modal-nfo-editor"></textarea>
+            <button id="modal-save-nfo" class="btn" style="width: 100%; margin-top: 2px;">Save NFO</button>
+          </div>
+
+          <div class="modal-delete-wrap">
+            <button id="modal-delete-btn" class="btn btn-danger" style="width: 100%;">🗑 Delete Game</button>
+          </div>
+
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <!-- ────────────────────── WebDAV Folder Modal ────────────────────── -->
+  <div class="modal" id="modal-dav-detail">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="dav-modal-title">Folder</h2>
+        <button class="modal-close" onclick="davCloseFolderModal()">✕</button>
+      </div>
+
+      <div class="modal-cover-wrap">
+        <img id="dav-modal-cover" style="display: none;">
+      </div>
+
+      <div id="dav-modal-load-status"></div>
+
+      <div>
+        <label for="dav-modal-disk-select">Select Disk</label>
+        <select id="dav-modal-disk-select"></select>
+      </div>
+
+      <div id="dav-modal-disks"></div>
+
+      <div class="modal-actions">
+        <button id="dav-modal-load-btn" class="btn">Load</button>
+        <button id="dav-modal-eject-btn" class="btn" onclick="davEject()">Eject</button>
+      </div>
+
+      <div id="dav-modal-nfo"></div>
+    </div>
+  </div>
+
+  <!-- ────────────────────── Loading Overlay ────────────────────── -->
+  <div id="loading-overlay">
+    <div class="spinner"></div>
+    <div class="loading-msg" id="loading-msg">Loading...</div>
+  </div>
 
 <script>
-const $ = id => document.getElementById(id);
-const API = location.origin;
-let ftpCurrentPath = '/';
-let davCurrentPath = '/';
-let davLoadedFile = '';
+// Gotek Setup — SPA Controller
 
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+const API = '';
+let currentGame = null;
+let systemInfo = {};
 
-function showPage(id) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  $('page-' + id).classList.add('active');
-  const tabs = document.querySelectorAll('.tab');
-  const names = ['home','ftp','dav','cfg'];
-  tabs[names.indexOf(id)].classList.add('active');
-  if (id === 'ftp') ftpLoadStatus();
-  if (id === 'dav') davLoadStatus();
-  if (id === 'cfg') loadSettings();
+// ═══════════════ THEME SYSTEM ═══════════════
+
+const THEME_PALETTES = {
+  'AMIGA_WB2': {
+    '--c-bg': '#6680aa',
+    '--c-surface': '#aaaaaa',
+    '--c-surface2': '#c0c0c0',
+    '--c-accent': '#0055aa',
+    '--c-accent2': '#ff8800',
+    '--c-text': '#000000',
+    '--c-text-inv': '#ffffff',
+    '--c-ok': '#00aa00',
+    '--c-warn': '#ff8800',
+    '--c-err': '#cc0000',
+    '--c-border': '#888888',
+    '--c-text-muted': '#555555'
+  },
+  'CYBERPUNK': {
+    '--c-bg': '#0d0d1a',
+    '--c-surface': '#1a1a2e',
+    '--c-surface2': '#16213e',
+    '--c-accent': '#00f5ff',
+    '--c-accent2': '#ff0080',
+    '--c-text': '#e0e0ff',
+    '--c-text-inv': '#000000',
+    '--c-ok': '#00ff88',
+    '--c-warn': '#ffaa00',
+    '--c-err': '#ff3366',
+    '--c-border': '#334466',
+    '--c-text-muted': '#8888aa'
+  },
+  'STEAMPUNK': {
+    '--c-bg': '#2c1810',
+    '--c-surface': '#3d2414',
+    '--c-surface2': '#4a2d18',
+    '--c-accent': '#c8860a',
+    '--c-text': '#e8d5b0',
+    '--c-text-inv': '#1a0a00',
+    '--c-accent2': '#8b4513',
+    '--c-ok': '#5a8a3a',
+    '--c-warn': '#c8860a',
+    '--c-err': '#aa2222',
+    '--c-border': '#7a5530',
+    '--c-text-muted': '#a08060'
+  }
+};
+
+function applyTheme(name) {
+  const palette = THEME_PALETTES[name] || THEME_PALETTES['AMIGA_WB2'];
+  Object.entries(palette).forEach(([key, value]) => {
+    document.documentElement.style.setProperty(key, value);
+  });
+  updateFavicon(palette['--c-accent'] || '#0055aa', palette['--c-bg'] || '#6680aa');
 }
 
-function toast(msg, type) {
-  const t = $('toast');
-  t.textContent = msg;
-  t.className = 'toast show ' + (type || 'ok');
-  setTimeout(() => t.className = 'toast', 3000);
+function updateFavicon(accent, bg) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+    <rect width="32" height="32" rx="6" fill="${bg}"/>
+    <text x="16" y="24" font-family="Georgia,serif" font-size="22" font-weight="bold"
+      fill="${accent}" text-anchor="middle">&#937;</text>
+  </svg>`;
+  const url = 'data:image/svg+xml,' + encodeURIComponent(svg);
+  let link = document.getElementById('favicon');
+  if (!link) {
+    link = document.createElement('link');
+    link.id = 'favicon';
+    link.rel = 'icon';
+    link.type = 'image/svg+xml';
+    document.head.appendChild(link);
+  }
+  link.href = url;
 }
 
-function togglePwd(btn) {
+// Navigation
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
+    tab.classList.add('active');
+    document.getElementById('view-' + tab.dataset.view).classList.remove('hidden');
+
+    if (tab.dataset.view === 'dashboard') loadDashboard();
+    if (tab.dataset.view === 'config') loadConfig();
+    if (tab.dataset.view === 'games') loadGames();
+    if (tab.dataset.view === 'ftp') ftpLoadStatus();
+    if (tab.dataset.view === 'webdav') davLoadStatus();
+    if (tab.dataset.view === 'themes') loadThemes();
+    if (tab.dataset.view === 'log') startLogPolling(); else stopLogPolling();
+  });
+});
+
+// Password visibility toggle
+function togglePass(btn) {
   const inp = btn.parentElement.querySelector('input');
-  inp.type = inp.type === 'password' ? 'text' : 'password';
+  if (inp.type === 'password') { inp.type = 'text'; btn.innerHTML = '&#128064;'; }
+  else { inp.type = 'password'; btn.innerHTML = '&#128065;'; }
 }
 
-async function api(url, opts) {
-  const r = await fetch(API + url, opts);
-  return r.json().catch(() => ({}));
+// Toast notifications
+function toast(msg, type = 'success') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
 }
 
-function isDiskImage(name) {
-  const ext = name.split('.').pop().toLowerCase();
-  return ['adf','dsk','img','adz'].includes(ext);
-}
-
-function formatSize(s) {
-  return s > 1048576 ? (s/1048576).toFixed(1)+' MB' : (s/1024).toFixed(0)+' KB';
-}
-
-// ══════════════════════════════════════
-// HOME / STATUS
-// ══════════════════════════════════════
-async function updateStatus() {
+// API helpers
+async function api(path, opts = {}) {
   try {
-    const d = await api('/api/status');
-    $('statusDot').className = 'dot ' + (d.loaded ? 'on' : 'off');
-    $('statusName').textContent = d.loaded ? d.filename : 'No disk loaded';
-    $('statusDetail').textContent = d.loaded ? formatSize(d.size)+' — USB active' : 'Upload a disk image to begin';
-    $('btnEject').disabled = !d.loaded;
-    $('infoFw').textContent = d.firmware;
-    $('infoRam').textContent = formatSize(d.free_psram);
-    $('infoApIp').textContent = d.wifi_ap_ip || '-';
-    $('infoStaIp').textContent = d.wifi_sta_connected ? d.wifi_sta_ip : 'Not connected';
-    $('headerIp').textContent = d.wifi_sta_connected ? d.wifi_sta_ip : d.wifi_ap_ip;
-  } catch(e) {}
-}
-
-async function uploadFile(file) {
-  if (file.size > 1474560) { toast('File too large! Max 1.44 MB', 'error'); return; }
-  const ext = file.name.split('.').pop().toLowerCase();
-  if (!['adf','dsk','img'].includes(ext)) { toast('Use .adf, .dsk, or .img', 'error'); return; }
-
-  $('progress').style.display = 'block';
-  $('progressFill').style.width = '0%';
-  $('progressText').textContent = 'Uploading ' + file.name + '...';
-  $('msg').style.display = 'none';
-
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/load');
-  xhr.upload.onprogress = e => {
-    if (e.lengthComputable) {
-      const pct = (e.loaded/e.total*100).toFixed(0);
-      $('progressFill').style.width = pct + '%';
-      $('progressText').textContent = 'Uploading... ' + pct + '%';
+    const res = await fetch(API + path, opts);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'HTTP ' + res.status);
     }
-  };
-  xhr.onload = () => {
-    $('progress').style.display = 'none';
-    try {
-      const d = JSON.parse(xhr.responseText);
-      if (d.status === 'ok') {
-        $('msg').textContent = 'Loaded: ' + d.filename + ' (' + formatSize(d.size) + ')';
-        $('msg').className = 'msg ok';
-      } else {
-        $('msg').textContent = d.error || 'Upload failed';
-        $('msg').className = 'msg err';
+    return await res.json();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+    throw e;
+  }
+}
+
+// ═══════════════ DASHBOARD ═══════════════
+
+async function loadDashboard() {
+  const d = await api('/api/system/info');
+  systemInfo = d;
+  applyTheme(d.theme);
+
+  // Update tab visibility based on feature flags
+  const ftpTab = document.getElementById('tab-ftp');
+  const davTab = document.getElementById('tab-webdav');
+  if (ftpTab) ftpTab.style.display = d.ftp_enabled ? '' : 'none';
+  if (davTab) davTab.style.display = d.dav_enabled ? '' : 'none';
+  // Log tab is always visible regardless of LOG_ENABLED flag
+
+  const ipEl = document.getElementById('ip-display');
+  let ipText = d.wifi_ip || '?';
+  if (d.internet) ipText += ' | Net: ' + d.internet_ip;
+  ipEl.textContent = ipText;
+
+  const grid = document.getElementById('stats-grid');
+  const stats = [
+    stat('Firmware', d.firmware),
+    stat('Free Heap', Math.round(d.heap_free / 1024) + ' KB', d.heap_free > 50000 ? 'ok' : 'warn'),
+    stat('Free PSRAM', Math.round(d.psram_free / 1024) + ' KB', d.psram_free > 1000000 ? 'ok' : 'warn'),
+    stat('SD Card', d.sd_used_mb + ' / ' + d.sd_total_mb + ' MB'),
+    stat('Games', d.game_count + ' (' + d.file_count + ' files)'),
+    stat('Loaded', d.loaded_game || 'none', d.loaded_game !== 'none' ? 'ok' : ''),
+    stat('Mode', d.mode),
+    stat('Theme', d.theme),
+    stat('AP Clients', d.wifi_clients),
+    stat('Internet', d.internet ? d.internet_ssid : 'Offline', d.internet ? 'ok' : 'warn')
+  ];
+  grid.innerHTML = stats.join('');
+}
+
+function stat(label, value, cls = '') {
+  return `<div class="stat"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
+}
+
+// ═══════════════ CONFIG ═══════════════
+
+async function loadConfig() {
+  const cfg = await api('/api/config');
+  document.getElementById('cfg-display').value = cfg.DISPLAY || 'JC3248';
+  document.getElementById('cfg-lastmode').value = cfg.LASTMODE || 'ADF';
+  document.getElementById('cfg-wifi-enabled').value = cfg.WIFI_ENABLED || '1';
+  document.getElementById('cfg-wifi-ssid').value = cfg.WIFI_SSID || '';
+  document.getElementById('cfg-wifi-pass').value = cfg.WIFI_PASS || '';
+  document.getElementById('cfg-wifi-channel').value = cfg.WIFI_CHANNEL || '6';
+  document.getElementById('cfg-wifi-client-enabled').value = cfg.WIFI_CLIENT_ENABLED || '0';
+  document.getElementById('cfg-wifi-client-ssid').value = cfg.WIFI_CLIENT_SSID || '';
+  document.getElementById('cfg-wifi-client-pass').value = cfg.WIFI_CLIENT_PASS || '';
+  document.getElementById('cfg-ftp-enabled').value = cfg.FTP_ENABLED || '0';
+  document.getElementById('cfg-ftp-host').value = cfg.FTP_HOST || '';
+  document.getElementById('cfg-ftp-port').value = cfg.FTP_PORT || '21';
+  document.getElementById('cfg-ftp-user').value = cfg.FTP_USER || 'anonymous';
+  document.getElementById('cfg-ftp-pass').value = cfg.FTP_PASS || '';
+  document.getElementById('cfg-ftp-path').value = cfg.FTP_PATH || '/';
+  document.getElementById('cfg-dav-enabled').value = cfg.DAV_ENABLED || '0';
+  document.getElementById('cfg-dav-host').value = cfg.DAV_HOST || '';
+  document.getElementById('cfg-dav-port').value = cfg.DAV_PORT || '443';
+  document.getElementById('cfg-dav-https').value = cfg.DAV_HTTPS || '1';
+  document.getElementById('cfg-dav-user').value = cfg.DAV_USER || '';
+  document.getElementById('cfg-dav-pass').value = cfg.DAV_PASS || '';
+  document.getElementById('cfg-dav-path').value = cfg.DAV_PATH || '/remote.php/webdav/';
+  const logEnabled = (cfg.LOG_ENABLED || '0') === '1';
+  document.getElementById('cfg-log-enabled').value = logEnabled ? '1' : '0';
+  const logTab = document.getElementById('tab-log');
+  if (logTab) logTab.style.display = logEnabled ? '' : 'none';
+
+  // Load themes for dropdown
+  const themes = await api('/api/themes/list');
+  const sel = document.getElementById('cfg-theme');
+  sel.innerHTML = themes.themes.map(t =>
+    `<option value="${t}" ${t === cfg.THEME ? 'selected' : ''}>${t}</option>`
+  ).join('');
+}
+
+document.getElementById('config-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  const params = new URLSearchParams(form);
+  await fetch(API + '/api/config', { method: 'POST', body: params });
+  toast('Configuration saved! Reboot device for WiFi changes to take effect.');
+
+  // Log tab visibility follows LOG_ENABLED immediately (no reboot needed)
+  const logEnabled = document.getElementById('cfg-log-enabled').value === '1';
+  const logTab = document.getElementById('tab-log');
+  if (logTab) logTab.style.display = logEnabled ? '' : 'none';
+});
+
+// WiFi scan
+async function scanNetworks() {
+  const listEl = document.getElementById('wifi-scan-list');
+  listEl.classList.remove('hidden');
+  listEl.innerHTML = '<div style="padding:8px;color:#555">Scanning...</div>';
+
+  try {
+    const data = await api('/api/wifi/scan');
+    if (data.networks.length === 0) {
+      listEl.innerHTML = '<div style="padding:8px;color:#555">No networks found</div>';
+      return;
+    }
+    listEl.innerHTML = data.networks
+      .sort((a, b) => b.rssi - a.rssi)
+      .map(n => {
+        const bars = n.rssi > -50 ? '████' : n.rssi > -65 ? '███░' : n.rssi > -75 ? '██░░' : '█░░░';
+        return `<div onclick="selectNetwork('${esc(n.ssid)}')"><span>${esc(n.ssid)} ${n.encrypted ? '🔒' : ''}</span><span class="wifi-signal">${bars} ${n.rssi}dBm</span></div>`;
+      }).join('');
+  } catch (e) {
+    listEl.innerHTML = '<div style="padding:8px;color:var(--c-err)">Scan failed — is WiFi client mode enabled?</div>';
+  }
+}
+
+function selectNetwork(ssid) {
+  document.getElementById('cfg-wifi-client-ssid').value = ssid;
+  document.getElementById('cfg-wifi-client-enabled').value = '1';
+  document.getElementById('wifi-scan-list').classList.add('hidden');
+}
+
+// WiFi status check
+async function checkWiFiStatus() {
+  const box = document.getElementById('wifi-status-box');
+  box.style.display = 'block';
+  box.innerHTML = 'Checking...';
+
+  try {
+    const s = await api('/api/wifi/status');
+    let html = '<strong>AP:</strong> ' + (s.ap_active ? s.ap_ip + ' (' + s.ap_clients + ' clients)' : 'Off');
+    html += '<br><strong>Internet:</strong> ';
+    if (s.sta_connected) {
+      html += '<span style="color:var(--c-ok)">' + s.sta_ip + ' — connected to ' + esc(s.sta_ssid) + '</span>';
+    } else if (s.sta_ssid) {
+      html += '<span style="color:var(--c-warn)">Connecting to ' + esc(s.sta_ssid) + '...</span>';
+    } else {
+      html += '<span style="color:#888">Not configured</span>';
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<span style="color:var(--c-err)">Failed to get status</span>';
+  }
+}
+
+// ═══════════════ GAMES ═══════════════
+
+let lastGameData = null;
+let activeAlpha = '';  // active letter filter, '' = all
+
+async function loadGames(forceReload) {
+  // If we already have data and user hasn't explicitly refreshed,
+  // just re-render what we have so letter selection is preserved
+  if (lastGameData && !forceReload) {
+    _renderGamesUI(lastGameData);
+    return;
+  }
+  const data = await api('/api/games/list');
+  lastGameData = data;
+  // Only reset search/alpha on a fresh load
+  document.getElementById('game-search').value = '';
+  activeAlpha = '';
+  _renderGamesUI(data);
+}
+
+function _renderGamesUI(data) {
+  // Now Playing bar
+  const npCard = document.getElementById('now-playing-card');
+  const npEl = document.getElementById('now-playing');
+  if (data.loaded_game) {
+    npCard.style.display = 'block';
+    npEl.innerHTML = `
+      <span class="active-indicator"></span>
+      <strong>${esc(data.loaded_game)}</strong>
+      <span style="color:var(--c-text-muted);font-size:13px">${esc(data.loaded_file)}</span>
+      <button class="btn btn-sm" onclick="ejectDisk()">Eject</button>
+    `;
+  } else {
+    npCard.style.display = 'none';
+  }
+
+  // Build A-Z filter
+  buildAlphaFilter(data.games);
+
+  // Re-render current selection if a letter is active, else show prompt
+  if (activeAlpha || document.getElementById('game-search').value) {
+    filterGames();
+  } else {
+    const list = document.getElementById('game-list');
+    list.innerHTML = '<p style="color:var(--c-text-muted);padding:12px;font-size:13px">Choose a letter or search to browse games.</p>';
+  }
+}
+
+function buildAlphaFilter(games) {
+  const letters = new Set();
+  games.forEach(g => {
+    const c = g.name.charAt(0).toUpperCase();
+    if (c >= 'A' && c <= 'Z') letters.add(c);
+    else letters.add('#');
+  });
+  const bar = document.getElementById('alpha-filter');
+  let html = '';
+  for (let i = 0; i < 26; i++) {
+    const l = String.fromCharCode(65 + i);
+    const has = letters.has(l);
+    html += `<span class="alpha-btn${!has ? ' disabled' : ''}${activeAlpha === l ? ' active' : ''}" onclick="setAlpha('${l}')">${l}</span>`;
+  }
+  if (letters.has('#')) {
+    html += `<span class="alpha-btn${activeAlpha === '#' ? ' active' : ''}" onclick="setAlpha('#')">#</span>`;
+  }
+  bar.innerHTML = html;
+}
+
+function setAlpha(letter) {
+  activeAlpha = letter;
+  document.getElementById('game-search').value = '';
+  filterGames();
+}
+
+function filterGames() {
+  if (!lastGameData) return;
+  const search = document.getElementById('game-search').value.toLowerCase().trim();
+  if (search) activeAlpha = '';  // clear letter filter when typing
+
+  let filtered = lastGameData.games;
+  if (search) {
+    filtered = filtered.filter(g => g.name.toLowerCase().includes(search));
+  } else if (activeAlpha) {
+    filtered = filtered.filter(g => {
+      const c = g.name.charAt(0).toUpperCase();
+      if (activeAlpha === '#') return !(c >= 'A' && c <= 'Z');
+      return c === activeAlpha;
+    });
+  }
+
+  buildAlphaFilter(lastGameData.games);
+  renderGameList(filtered, lastGameData.mode);
+}
+
+function renderGameList(games, mode) {
+  document.getElementById('game-count').textContent = '(' + games.length + ' games)';
+  const list = document.getElementById('game-list');
+
+  if (games.length === 0) {
+    list.innerHTML = '<p style="color:#555;padding:20px;text-align:center">No games found.</p>';
+    return;
+  }
+
+  list.innerHTML = games.map(g => `
+    <div class="game-item ${g.loaded ? 'active' : ''}" data-mode="${mode}" data-name="${encodeURIComponent(g.name)}">
+      ${g.has_cover
+        ? `<img class="game-cover" src="${API}/api/games/${mode.toLowerCase()}/${encodeURIComponent(g.name)}/cover" loading="lazy">`
+        : `<div class="game-cover empty">No Art</div>`
       }
-    } catch(e) { $('msg').textContent = 'Upload failed'; $('msg').className = 'msg err'; }
-    updateStatus();
-  };
-  xhr.onerror = () => { $('progress').style.display = 'none'; toast('Connection error', 'error'); };
-  xhr.setRequestHeader('X-Filename', file.name);
-  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-  xhr.send(file);
+      <div class="game-info">
+        <div class="game-name">${g.loaded ? '<span class="active-indicator"></span>' : ''}${esc(g.name)}</div>
+        <div class="game-meta">
+          ${g.loaded ? '<span class="badge" style="background:var(--c-ok);color:#fff">PLAYING</span> ' : ''}
+          ${g.disks > 1 ? `<span class="badge badge-disks">${g.disks} disks</span> ` : ''}
+          ${g.has_nfo ? '<span class="badge badge-nfo">NFO</span> ' : ''}
+          ${g.has_cover ? '<span class="badge badge-cover">Cover</span>' : ''}
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.game-item').forEach(el => {
+    el.addEventListener('click', () => {
+      openGameDetail(el.dataset.mode, decodeURIComponent(el.dataset.name));
+    });
+  });
 }
 
+async function rescanGames() {
+  lastGameData = null; // force fresh load
+  await api('/api/rescan', { method: 'POST' });
+  toast('SD card rescanned!');
+  loadGames();
+}
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+// Game Detail Modal
+
+async function openGameDetail(mode, name) {
+  const m = mode.toLowerCase();
+  const d = await api(`/api/games/${m}/${encodeURIComponent(name)}`);
+  // Use d.name from API response (guaranteed clean, no HTML escaping)
+  currentGame = { mode: m, name: d.name, folder: d.folder };
+
+  document.getElementById('modal-game-title').textContent = d.name;
+  const coverImg = document.getElementById('modal-game-cover');
+  if (d.has_cover) {
+    const coverUrl = `${API}/api/games/${currentGame.mode}/${encodeURIComponent(d.name)}/cover?t=${Date.now()}`;
+    coverImg.onerror = () => { console.log('Cover failed: ' + coverUrl); coverImg.style.display = 'none'; };
+    coverImg.src = coverUrl;
+    coverImg.style.display = 'block';
+  } else {
+    coverImg.style.display = 'none';
+  }
+
+  // Show/hide cover URL section based on internet availability
+  const urlSection = document.getElementById('cover-url-section');
+  urlSection.style.display = systemInfo.internet ? 'flex' : 'none';
+  document.getElementById('modal-cover-url').value = '';
+  document.getElementById('cover-url-status').textContent = '';
+
+  // Disk selector for loading
+  const diskSel = document.getElementById('modal-disk-select');
+  diskSel.innerHTML = d.disks.map((dk, i) =>
+    `<option value="${i + 1}">${esc(dk.file)} (${Math.round(dk.size/1024)} KB)</option>`
+  ).join('');
+
+  // Show active status
+  const loadStatus = document.getElementById('modal-load-status');
+  const isLoaded = lastGameData && lastGameData.loaded_game === name;
+  if (isLoaded) {
+    loadStatus.innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Active: ' + esc(lastGameData.loaded_file) + '</span>';
+  } else {
+    loadStatus.textContent = '';
+  }
+
+  // Disks list
+  const disksEl = document.getElementById('modal-game-disks');
+  disksEl.innerHTML = '<label>Disk Files</label>' + d.disks.map((dk, i) =>
+    `<div style="padding:4px 0;font-size:13px;color:#333">${esc(dk.file)} <span style="color:#888">(${Math.round(dk.size/1024)} KB)</span></div>`
+  ).join('');
+
+  document.getElementById('modal-nfo-editor').value = d.nfo || '';
+  document.getElementById('modal-game-detail').classList.add('show');
+}
+
+function closeModal() {
+  document.getElementById('modal-game-detail').classList.remove('show');
+  currentGame = null;
+}
+
+// Save NFO
+document.getElementById('modal-save-nfo').addEventListener('click', async () => {
+  if (!currentGame) return;
+  const content = document.getElementById('modal-nfo-editor').value;
+  const params = new URLSearchParams({ content });
+  await fetch(API + `/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/nfo`, {
+    method: 'POST', body: params
+  });
+  toast('NFO saved!');
+});
+
+// Delete game
+document.getElementById('modal-delete-btn').addEventListener('click', async () => {
+  if (!currentGame) return;
+  if (!confirm('Delete "' + currentGame.name + '" and all its files?')) return;
+  await api(`/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}`, { method: 'DELETE' });
+  toast('Game deleted!');
+  closeModal();
+  loadGames();
+});
+
+// Load disk
+document.getElementById('modal-load-btn').addEventListener('click', async () => {
+  if (!currentGame) return;
+  const diskNum = document.getElementById('modal-disk-select').value;
+  const statusEl = document.getElementById('modal-load-status');
+  statusEl.innerHTML = '<span style="color:var(--c-warn)">Loading...</span>';
+
+  try {
+    const params = new URLSearchParams({ disk: diskNum });
+    const res = await api(`/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/load`, {
+      method: 'POST', body: params
+    });
+    statusEl.innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Active: ' + esc(res.file) + '</span>';
+    toast(res.game + ' loaded!');
+    lastGameData = null; loadGames();  // refresh list
+  } catch (e) {
+    statusEl.innerHTML = '<span style="color:var(--c-err)">Failed to load</span>';
+  }
+});
+
+// Eject disk (from modal)
+document.getElementById('modal-eject-btn').addEventListener('click', async () => {
+  await ejectDisk();
+  document.getElementById('modal-load-status').textContent = 'Ejected';
+});
+
+// Eject disk (global)
 async function ejectDisk() {
-  try { await api('/api/eject', {method:'POST'}); toast('Disk ejected'); updateStatus(); }
-  catch(e) { toast('Eject failed', 'error'); }
+  try {
+    await api('/api/disk/unload', { method: 'POST' });
+    toast('Disk ejected');
+    loadGames();
+  } catch (e) {
+    toast('Eject failed', 'error');
+  }
 }
 
-// Drag & drop
-const dz = $('dropZone');
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('over'));
-dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]); });
-$('fileInput').addEventListener('change', e => { if (e.target.files.length) uploadFile(e.target.files[0]); e.target.value = ''; });
+// Resize image client-side before upload (ESP32 can't handle large files)
+function resizeImage(file, maxW = 320, maxH = 400, quality = 0.85) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width, h = img.height;
+      if (w > maxW || h > maxH) {
+        const ratio = Math.min(maxW / w, maxH / h);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      canvas.toBlob(blob => resolve(new File([blob], file.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' })), 'image/jpeg', quality);
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
 
-// ══════════════════════════════════════
-// FTP
-// ══════════════════════════════════════
+// Cover file upload — enable button when file selected
+document.getElementById('modal-cover-input').addEventListener('change', (e) => {
+  document.getElementById('modal-cover-upload-btn').disabled = !e.target.files.length;
+});
+
+document.getElementById('modal-cover-upload-btn').addEventListener('click', async () => {
+  if (!currentGame) return;
+  const fileInput = document.getElementById('modal-cover-input');
+  if (!fileInput.files.length) { toast('Select an image first', 'error'); return; }
+
+  const statusEl = document.getElementById('cover-upload-status');
+  statusEl.textContent = 'Resizing...';
+  statusEl.style.color = '#555';
+
+  try {
+    const resized = await resizeImage(fileInput.files[0]);
+    statusEl.textContent = 'Uploading (' + Math.round(resized.size / 1024) + ' KB)...';
+    const form = new FormData();
+    form.append('cover', resized);
+    const folderParam = currentGame.folder ? `?folder=${encodeURIComponent(currentGame.folder)}` : '';
+    const res = await fetch(API + `/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/cover${folderParam}`, {
+      method: 'POST', body: form
+    });
+    const data = await res.json();
+    if (res.ok) {
+      statusEl.textContent = 'Uploaded! ' + Math.round(data.bytes / 1024) + ' KB';
+      statusEl.style.color = 'var(--c-ok)';
+      toast('Cover uploaded!');
+      document.getElementById('modal-game-cover').src =
+        `${API}/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/cover?t=${Date.now()}`;
+      document.getElementById('modal-game-cover').style.display = 'block';
+    } else {
+      statusEl.textContent = data.error || 'Upload failed';
+      statusEl.style.color = 'var(--c-err)';
+      toast(data.error || 'Upload failed', 'error');
+    }
+  } catch (err) {
+    statusEl.textContent = 'Upload error';
+    statusEl.style.color = 'var(--c-err)';
+    toast('Upload failed: ' + err.message, 'error');
+  }
+  fileInput.value = '';
+  document.getElementById('modal-cover-upload-btn').disabled = true;
+});
+
+// Cover URL download
+document.getElementById('modal-cover-url-btn').addEventListener('click', async () => {
+  if (!currentGame) return;
+  const url = document.getElementById('modal-cover-url').value.trim();
+  if (!url) { toast('Enter a URL first', 'error'); return; }
+
+  const statusEl = document.getElementById('cover-url-status');
+  statusEl.textContent = 'Downloading...';
+  statusEl.style.color = '#555';
+
+  try {
+    const params = new URLSearchParams({ url, folder: currentGame.folder });
+    const res = await fetch(API + `/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/cover-url`, {
+      method: 'POST', body: params
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      statusEl.textContent = 'Saved! ' + Math.round(data.bytes / 1024) + ' KB';
+      statusEl.style.color = 'var(--c-ok)';
+      toast('Cover downloaded!');
+      document.getElementById('modal-game-cover').src =
+        `${API}/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/cover?t=${Date.now()}`;
+      document.getElementById('modal-game-cover').style.display = 'block';
+    } else {
+      statusEl.textContent = data.error || 'Download failed';
+      statusEl.style.color = 'var(--c-err)';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.style.color = 'var(--c-err)';
+  }
+});
+
+// File Upload (drag & drop + click)
+
+const uploadZone = document.getElementById('upload-zone');
+const uploadInput = document.getElementById('upload-input');
+
+uploadZone.addEventListener('click', () => uploadInput.click());
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('dragover');
+  handleUploadFiles(e.dataTransfer.files);
+});
+uploadInput.addEventListener('change', e => handleUploadFiles(e.target.files));
+
+async function handleUploadFiles(files) {
+  if (!files.length) return;
+
+  const progressBar = document.getElementById('upload-progress');
+  const progressFill = document.getElementById('upload-fill');
+  progressBar.style.display = 'block';
+
+  for (const file of files) {
+    const form = new FormData();
+    form.append('file', file, file.name);
+
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', API + '/api/games/upload');
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round(e.loaded / e.total * 100);
+          progressFill.style.width = pct + '%';
+          progressFill.textContent = file.name + ' \u2014 ' + pct + '%';
+        }
+      };
+
+      await new Promise((resolve, reject) => {
+        xhr.onload = () => { resolve(); };
+        xhr.onerror = () => { reject(new Error('Upload failed')); };
+        xhr.send(form);
+      });
+
+      toast(file.name + ' uploaded!');
+    } catch (e) {
+      toast('Failed to upload ' + file.name, 'error');
+    }
+  }
+
+  progressFill.style.width = '100%';
+  progressFill.textContent = 'Done!';
+  setTimeout(() => { progressBar.style.display = 'none'; }, 2000);
+  loadGames();
+}
+
+// ═══════════════ THEMES ═══════════════
+
+// Theme preview palettes for the theme cards themselves
+const THEME_PREVIEWS = {
+  'AMIGA_WB2':  { bg: '#aaaaaa', accent: '#0055aa', text: '#000000', badge: 'WB2' },
+  'CYBERPUNK':  { bg: '#0d0d1a', accent: '#00f5ff', text: '#e0e0ff', badge: 'CYB' },
+  'STEAMPUNK':  { bg: '#3d2414', accent: '#c8860a', text: '#e8d5b0', badge: 'STP' },
+};
+
+async function loadThemes() {
+  const data = await api('/api/themes/list');
+  const grid = document.getElementById('theme-grid');
+  grid.innerHTML = data.themes.map(t => {
+    const p = THEME_PREVIEWS[t] || { bg: '#888', accent: '#0055aa', text: '#fff', badge: t.slice(0,3) };
+    const isActive = t === data.active;
+    return `
+    <div class="theme-card ${isActive ? 'active' : ''}" onclick="activateTheme('${esc(t)}')"
+      style="background:${p.bg};border-color:${isActive ? p.accent : 'transparent'};color:${p.text}">
+      <div class="theme-swatch" style="background:${p.accent}">${p.badge}</div>
+      <div class="theme-name" style="color:${p.text}">${esc(t.replace(/_/g,' '))}</div>
+      <div style="font-size:11px;margin-top:4px;opacity:.7;color:${p.text}">${isActive ? '✓ Active' : 'Tap to activate'}</div>
+    </div>`;
+  }).join('');
+}
+
+async function activateTheme(name) {
+  // Apply CSS instantly — don't wait for server round-trip
+  applyTheme(name);
+  try {
+    await api(`/api/themes/${encodeURIComponent(name)}/activate`, { method: 'POST' });
+    toast('Theme: ' + name.replace(/_/g, ' '));
+    loadThemes();
+  } catch(e) {
+    // revert on failure
+    applyTheme(systemInfo.theme || 'AMIGA_WB2');
+  }
+}
+
+// ── FTP Functions ──
+
+let ftpCurrentPath = '/';
+let ftpConnected = false;
+
 async function ftpLoadStatus() {
   try {
-    const s = await api('/api/ftp/status');
-    const bar = $('ftp-status-bar');
-    if (s.connected) {
+    const status = await api('/api/ftp/status');
+    ftpConnected = status.connected;
+    const bar = document.getElementById('ftp-status-bar');
+    const noConfig = document.getElementById('ftp-no-config');
+    const connectBtn = document.getElementById('ftp-connect-btn');
+    const disconnectBtn = document.getElementById('ftp-disconnect-btn');
+
+    if (!status.enabled || !status.host) {
+      bar.className = 'ftp-status error';
+      bar.textContent = 'FTP not configured';
+      noConfig.style.display = '';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = 'none';
+      return;
+    }
+
+    noConfig.style.display = 'none';
+
+    if (!status.wifi_connected) {
+      bar.className = 'ftp-status disconnected';
+      bar.textContent = 'WiFi client not connected — enable WIFI_CLIENT_ENABLED in Config';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = 'none';
+      return;
+    }
+
+    if (status.connected) {
       bar.className = 'ftp-status connected';
-      bar.innerHTML = '<span class="active-indicator"></span>Connected to ' + esc(s.host);
-      $('ftp-browse').style.display = '';
-      ftpBrowse(ftpCurrentPath);
+      bar.textContent = 'Connected to ' + status.host + ':' + status.port + ' as ' + status.user;
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = '';
     } else {
       bar.className = 'ftp-status disconnected';
-      bar.textContent = s.wifi_connected ? 'Not connected — tap Connect' : 'WiFi client not connected (enable in Settings)';
-      $('ftp-browse').style.display = 'none';
+      bar.textContent = 'Disconnected — ' + status.host + ':' + status.port;
+      connectBtn.style.display = '';
+      disconnectBtn.style.display = 'none';
     }
-  } catch(e) {}
+  } catch (e) {
+    document.getElementById('ftp-status-bar').className = 'ftp-status error';
+    document.getElementById('ftp-status-bar').textContent = 'Failed to get FTP status';
+  }
 }
 
 async function ftpConnect() {
+  const btn = document.getElementById('ftp-connect-btn');
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+  document.getElementById('ftp-loading').style.display = '';
+
   try {
-    const bar = $('ftp-status-bar');
-    bar.textContent = 'Connecting...';
-    const r = await api('/api/ftp/connect', {method:'POST'});
-    if (r.error) { toast('FTP: ' + r.error, 'error'); }
-    ftpLoadStatus();
-  } catch(e) { toast('Connection failed', 'error'); }
+    await api('/api/ftp/connect', { method: 'POST' });
+    ftpConnected = true;
+    toast('FTP connected!');
+    ftpCurrentPath = '/';
+    await ftpLoadStatus();
+    await ftpBrowse('/');
+  } catch (e) {
+    toast('FTP connection failed', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+    document.getElementById('ftp-loading').style.display = 'none';
+  }
 }
 
 async function ftpDisconnect() {
-  await api('/api/ftp/disconnect', {method:'POST'});
-  ftpLoadStatus();
+  try {
+    await api('/api/ftp/disconnect', { method: 'POST' });
+    ftpConnected = false;
+    document.getElementById('ftp-list').innerHTML = '';
+    document.getElementById('ftp-breadcrumb').innerHTML = '';
+    await ftpLoadStatus();
+    toast('FTP disconnected');
+  } catch (e) { /* ignore */ }
+}
+
+async function ftpRefresh() {
+  if (ftpConnected) {
+    await ftpBrowse(ftpCurrentPath);
+  } else {
+    await ftpLoadStatus();
+  }
 }
 
 async function ftpBrowse(path) {
   ftpCurrentPath = path;
-  $('ftp-path').textContent = path;
-  $('ftp-list').innerHTML = '<div style="text-align:center;color:var(--dim);padding:20px">Loading...</div>';
+  const list = document.getElementById('ftp-list');
+  const loading = document.getElementById('ftp-loading');
+  loading.style.display = '';
+  list.innerHTML = '';
+  ftpUpdateBreadcrumb(path);
+
   try {
-    const d = await api('/api/ftp/list?path=' + encodeURIComponent(path));
-    if (d.error) { $('ftp-list').innerHTML = '<div class="msg err" style="display:block">' + esc(d.error) + '</div>'; return; }
-    let html = '';
-    (d.entries || []).forEach(e => {
-      const isDisk = isDiskImage(e.name);
-      html += '<div class="game-item" onclick="' + (e.dir ? "ftpBrowse('" + esc(path + (path.endsWith('/') ? '' : '/') + e.name).replace(/'/g,"\\'") + "')" : '') + '">';
-      html += '<div class="icon ' + (e.dir ? 'folder' : 'disk') + '">' + (e.dir ? 'DIR' : e.name.split('.').pop().toUpperCase().slice(0,3)) + '</div>';
-      html += '<div class="meta"><div class="name">' + esc(e.name) + '</div>';
-      if (!e.dir && e.size > 0) html += '<div class="size">' + formatSize(e.size) + '</div>';
-      html += '</div>';
-      if (isDisk) html += '<div class="actions"><button class="btn btn-success" onclick="event.stopPropagation();ftpInsert(\'' + esc(path + (path.endsWith('/') ? '' : '/') + e.name).replace(/'/g,"\\'") + '\',this)">Insert</button></div>';
-      html += '</div>';
+    const data = await api('/api/ftp/list?path=' + encodeURIComponent(path));
+    loading.style.display = 'none';
+
+    if (data.entries.length === 0) {
+      list.innerHTML = '<div style="padding:20px;text-align:center;color:#888">No ADF/DSK files found in this directory</div>';
+      return;
+    }
+
+    // Sort: directories first, then files
+    data.entries.sort((a, b) => {
+      if (a.dir && !b.dir) return -1;
+      if (!a.dir && b.dir) return 1;
+      return a.name.localeCompare(b.name);
     });
-    if (!html) html = '<div style="text-align:center;color:var(--dim);padding:20px">Empty folder</div>';
-    $('ftp-list').innerHTML = html;
-  } catch(e) { $('ftp-list').innerHTML = '<div class="msg err" style="display:block">Load failed</div>'; }
-}
 
-function ftpUp() {
-  let p = ftpCurrentPath;
-  if (p.endsWith('/') && p.length > 1) p = p.slice(0, -1);
-  const ls = p.lastIndexOf('/');
-  ftpBrowse(ls > 0 ? p.substring(0, ls + 1) : '/');
-}
+    let html = '';
+    // Add parent directory link if not at root
+    if (path !== '/' && path !== '') {
+      const parentPath = path.substring(0, path.lastIndexOf('/')) || '/';
+      html += '<div class="ftp-item dir" onclick="ftpBrowse(\'' + parentPath.replace(/'/g, "\\'") + '\')">' +
+        '<div class="ftp-icon">&#128193;</div>' +
+        '<div class="ftp-name">..</div>' +
+        '<div class="ftp-size"></div></div>';
+    }
 
-async function ftpInsert(remotePath, btn) {
-  btn.disabled = true; btn.textContent = 'Loading...';
-  try {
-    const r = await fetch(API + '/api/ftp/load', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'path='+encodeURIComponent(remotePath)});
-    const d = await r.json().catch(()=>({}));
-    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
-    btn.textContent = 'Playing!'; btn.style.background = 'var(--green)';
-    toast(d.name + ' loaded! (' + formatSize(d.bytes) + ')');
-    updateStatus();
-  } catch(e) { btn.textContent = 'Insert'; btn.disabled = false; toast('Load failed: ' + e.message, 'error'); }
-}
-
-// ══════════════════════════════════════
-// WEBDAV
-// ══════════════════════════════════════
-function davShowDebug(data) {
-  if (data && data.debug) {
-    $('dav-debug-wrap').style.display = '';
-    $('dav-debug').textContent = data.debug;
+    data.entries.forEach(entry => {
+      const fullPath = (path === '/' ? '/' : path + '/') + entry.name;
+      if (entry.dir) {
+        html += '<div class="ftp-item dir" onclick="ftpBrowse(\'' + fullPath.replace(/'/g, "\\'") + '\')">' +
+          '<div class="ftp-icon">&#128193;</div>' +
+          '<div class="ftp-name">' + esc(entry.name) + '</div>' +
+          '<div class="ftp-size"></div></div>';
+      } else {
+        const sizeStr = entry.size > 1048576 ? (entry.size / 1048576).toFixed(1) + ' MB' :
+                        entry.size > 1024 ? (entry.size / 1024).toFixed(0) + ' KB' : entry.size + ' B';
+        html += '<div class="ftp-item">' +
+          '<div class="ftp-icon">&#128190;</div>' +
+          '<div class="ftp-name">' + esc(entry.name) + '</div>' +
+          '<div class="ftp-size">' + sizeStr + '</div>' +
+          '<button class="dl-btn" onclick="ftpDownload(\'' + fullPath.replace(/'/g, "\\'") + '\',this)">Download</button>' +
+          '</div>';
+      }
+    });
+    list.innerHTML = html;
+  } catch (e) {
+    loading.style.display = 'none';
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--c-err)">Failed to list directory: ' + esc(e.message || 'Unknown error') + '</div>';
   }
 }
 
-let davIsConnected = false;
+function ftpUpdateBreadcrumb(path) {
+  const bc = document.getElementById('ftp-breadcrumb');
+  const parts = path.split('/').filter(p => p.length > 0);
+  let html = '<a onclick="ftpBrowse(\'/\')">FTP Root</a>';
+  let buildPath = '';
+  parts.forEach(part => {
+    buildPath += '/' + part;
+    const p = buildPath;
+    html += ' / <a onclick="ftpBrowse(\'' + p.replace(/'/g, "\\'") + '\')">' + esc(part) + '</a>';
+  });
+  bc.innerHTML = html;
+}
+
+async function ftpDownload(remotePath, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Downloading...';
+  const fileName = remotePath.split('/').pop();
+  showLoading('Downloading from FTP…\n' + fileName);
+
+  try {
+    const result = await api('/api/ftp/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'path=' + encodeURIComponent(remotePath)
+    });
+    btn.textContent = 'Done!';
+    toast(result.file + ' downloaded (' + (result.bytes / 1024).toFixed(0) + ' KB)');
+    lastGameData = null; loadGames();  // refresh game list
+  } catch (e) {
+    btn.textContent = 'Failed';
+    btn.disabled = false;
+    toast('Download failed: ' + (e.message || 'Unknown error'), 'error');
+  } finally {
+    hideLoading();
+  }
+}
+
+// ── WebDAV Functions ──
+
+let davCurrentPath = '/';
+let davConnected = false;
+let davAllEntries = [];  // all folder entries from root listing
+let davActiveAlpha = '';
+let davLoadedFile = '';
+let davLoadedFileAtModalOpen = '';  // snapshot taken when modal opens, to detect changes
 
 async function davLoadStatus() {
   try {
-    const s = await api('/api/dav/status');
-    davShowDebug(s);
-    davIsConnected = s.connected;
-    const bar = $('dav-status-bar');
-    if (s.connected) {
+    const status = await api('/api/dav/status');
+    davConnected = status.connected;
+    const bar = document.getElementById('dav-status-bar');
+    const noConfig = document.getElementById('dav-no-config');
+    const connectBtn = document.getElementById('dav-connect-btn');
+    const disconnectBtn = document.getElementById('dav-disconnect-btn');
+
+    // Sync now-playing state from device (global — any source)
+    if (status.now_playing && status.now_playing.source === 'dav') {
+      davLoadedFile = status.now_playing.path;
+    } else {
+      davLoadedFile = '';  // clear if nothing loaded or SD game loaded
+    }
+    // Update now-playing card — show regardless of source (SD or DAV)
+    const npCard = document.getElementById('dav-now-playing-card');
+    const npEl = document.getElementById('dav-now-playing');
+    if (status.now_playing) {
+      npCard.style.display = 'block';
+      let srcLabel = status.now_playing.source.toUpperCase();
+      npEl.innerHTML =
+        '<span class="active-indicator"></span>' +
+        '<strong>' + esc(status.now_playing.name) + '</strong>' +
+        ' <span style="color:#555;font-size:13px">(' + srcLabel + ')</span>' +
+        ' <button class="btn btn-sm" onclick="davEject()">Eject</button>';
+    } else {
+      npCard.style.display = 'none';
+    }
+
+    if (!status.enabled || !status.host) {
+      bar.className = 'ftp-status error';
+      bar.textContent = 'WebDAV not configured';
+      noConfig.style.display = '';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = 'none';
+    } else if (!status.wifi_connected) {
+      bar.className = 'ftp-status disconnected';
+      bar.textContent = 'WiFi not connected — enable WiFi Client in Config';
+      noConfig.style.display = 'none';
+      connectBtn.style.display = 'none';
+    } else if (status.connected) {
       bar.className = 'ftp-status connected';
-      bar.innerHTML = '<span class="active-indicator"></span>Connected to ' + esc(s.host);
-      $('dav-browse').style.display = '';
-      davBrowse(davCurrentPath);
+      bar.textContent = 'Connected — ' + status.host + (status.https ? ' (HTTPS)' : ' (HTTP)');
+      noConfig.style.display = 'none';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = '';
+      // Load entries from cache or network if not yet loaded
+      if (davAllEntries.length === 0) davBrowse('/');
     } else {
       bar.className = 'ftp-status disconnected';
-      bar.textContent = s.wifi_connected ? 'Not connected — tap Connect' : 'WiFi client not connected (enable in Settings)';
-      // Show cached game list even when disconnected
-      if (s.has_cache && !$('dav-list').innerHTML) {
-        $('dav-browse').style.display = '';
-        davBrowse(davCurrentPath);
-      } else if (!s.has_cache) {
-        $('dav-browse').style.display = 'none';
-      }
+      bar.textContent = status.host ? 'Disconnected — ' + status.host : 'Not connected';
+      noConfig.style.display = 'none';
+      connectBtn.style.display = '';
+      disconnectBtn.style.display = 'none';
+      // Load from cache if available so user can browse without connecting
+      if (status.has_cache && davAllEntries.length === 0) davBrowse('/');
     }
-  } catch(e) {}
+
+    // Re-render list to update playing badges — but only if no modal is open
+    // and only through the active filter (never dump the full list)
+    const modalOpen = document.getElementById('modal-dav-detail').classList.contains('show');
+    if (davAllEntries.length > 0 && !modalOpen) {
+      const search = document.getElementById('dav-search').value.trim();
+      if (search || davActiveAlpha) {
+        davFilterGames();
+      }
+      // If no filter active, leave the empty-state prompt as-is
+    }
+  } catch (e) {
+    document.getElementById('dav-status-bar').className = 'ftp-status error';
+    document.getElementById('dav-status-bar').textContent = 'Failed to get WebDAV status';
+  }
 }
 
-async function davEnsureConnected() {
-  if (davIsConnected) return true;
+async function davConnect() {
+  const btn = document.getElementById('dav-connect-btn');
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+  showLoading('Connecting to WebDAV server…');
+
   try {
-    const res = await fetch(API + '/api/dav/connect', {method:'POST'});
-    const data = await res.json().catch(()=>({}));
+    const res = await fetch(API + '/api/dav/connect', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast('WebDAV connection failed: ' + (data.error || 'HTTP ' + res.status), 'error');
+    } else {
+      davConnected = true;
+      davCurrentPath = '/';
+      davAllEntries = [];  // force re-load of entries after fresh connect
+      await davLoadStatus();
+    }
+  } catch (e) {
+    toast('WebDAV connection failed: ' + (e.message || 'Unknown error'), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+    hideLoading();
+  }
+}
+
+async function davDisconnect() {
+  try {
+    await api('/api/dav/disconnect', { method: 'POST' });
+    davConnected = false;
+    davAllEntries = [];
+    document.getElementById('dav-list').innerHTML = '';
+    document.getElementById('dav-game-card').style.display = 'none';
+    document.getElementById('dav-now-playing-card').style.display = 'none';
+    await davLoadStatus();
+    toast('WebDAV disconnected');
+  } catch (e) { toast('Disconnect failed', 'error'); }
+}
+
+async function davRefresh() {
+  if (davConnected) {
+    await davBrowse('/', true);  // force refresh — bypass cache
+  } else {
+    await davLoadStatus();
+  }
+}
+
+async function davBrowse(path, forceRefresh) {
+  davCurrentPath = path;
+  const list = document.getElementById('dav-list');
+  const loading = document.getElementById('dav-loading');
+  const gameCard = document.getElementById('dav-game-card');
+  loading.style.display = '';
+  gameCard.style.display = '';
+
+  try {
+    let url = '/api/dav/list?path=' + encodeURIComponent(path);
+    if (forceRefresh) url += '&refresh=1';
+    const data = await api(url);
+    const entries = data.entries || [];
+
+    // Only show folders as "games" — filter out files at root level
+    const folders = entries.filter(e => e.dir).sort((a, b) => a.name.localeCompare(b.name));
+    davAllEntries = folders;
+
+    // Now Playing bar
+    const npCard = document.getElementById('dav-now-playing-card');
+    const npEl = document.getElementById('dav-now-playing');
+    if (davLoadedFile) {
+      npCard.style.display = 'block';
+      let displayName = davLoadedFile.split('/').filter(s => s).pop() || davLoadedFile;
+      npEl.innerHTML =
+        '<span class="active-indicator"></span>' +
+        '<strong>' + esc(displayName) + '</strong>' +
+        '<button class="btn btn-sm" onclick="davEject()">Eject</button>';
+    } else {
+      npCard.style.display = 'none';
+    }
+
+    // Show total count in header
+    document.getElementById('dav-game-count').textContent = '(' + folders.length + ' games)';
+
+    // Reset search/filter only if entries changed (i.e. fresh load, not re-entry)
+    document.getElementById('dav-search').value = '';
+    davActiveAlpha = '';
+
+    // Build A-Z filter — don't show all games at once
+    davBuildAlphaFilter(folders);
+    list.innerHTML = '<p style="color:var(--c-text-muted);padding:12px;font-size:13px">Choose a letter or search to browse games.</p>';
+  } catch (e) {
+    list.innerHTML = '<p style="color:var(--c-err);padding:12px">Error: ' + esc(e.message || 'Failed to list directory') + '</p>';
+  } finally {
+    loading.style.display = 'none';
+  }
+}
+
+function davBuildAlphaFilter(folders) {
+  const letters = new Set();
+  folders.forEach(f => {
+    const c = f.name.charAt(0).toUpperCase();
+    if (c >= 'A' && c <= 'Z') letters.add(c);
+    else letters.add('#');
+  });
+  const bar = document.getElementById('dav-alpha-filter');
+  let html = '';
+  for (let i = 0; i < 26; i++) {
+    const l = String.fromCharCode(65 + i);
+    const has = letters.has(l);
+    html += '<span class="alpha-btn' + (!has ? ' disabled' : '') + (davActiveAlpha === l ? ' active' : '') + '" onclick="davSetAlpha(\'' + l + '\')">' + l + '</span>';
+  }
+  if (letters.has('#')) {
+    html += '<span class="alpha-btn' + (davActiveAlpha === '#' ? ' active' : '') + '" onclick="davSetAlpha(\'#\')">#</span>';
+  }
+  bar.innerHTML = html;
+}
+
+function davSetAlpha(letter) {
+  davActiveAlpha = letter;
+  document.getElementById('dav-search').value = '';
+  davFilterGames();
+}
+
+function davFilterGames() {
+  const search = document.getElementById('dav-search').value.toLowerCase().trim();
+  if (search) davActiveAlpha = '';
+
+  let filtered = davAllEntries;
+  if (search) {
+    filtered = filtered.filter(f => f.name.toLowerCase().includes(search));
+  } else if (davActiveAlpha) {
+    filtered = filtered.filter(f => {
+      const c = f.name.charAt(0).toUpperCase();
+      if (davActiveAlpha === '#') return !(c >= 'A' && c <= 'Z');
+      return c === davActiveAlpha;
+    });
+  }
+
+  davBuildAlphaFilter(davAllEntries);
+  davRenderGameList(filtered);
+}
+
+function davRenderGameList(folders) {
+  document.getElementById('dav-game-count').textContent = '(' + folders.length + ' games)';
+  const list = document.getElementById('dav-list');
+
+  if (folders.length === 0) {
+    list.innerHTML = '<p style="color:#555;padding:20px;text-align:center">No games found.</p>';
+    return;
+  }
+
+  list.innerHTML = folders.map(f => {
+    let fullPath = davCurrentPath.endsWith('/') ? davCurrentPath + f.name : davCurrentPath + '/' + f.name;
+    let coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + f.name + '.jpg');
+    let isPlaying = davLoadedFile && davLoadedFile.startsWith(fullPath + '/');
+    return '<div class="game-item' + (isPlaying ? ' active' : '') + '" onclick="davOpenFolder(\'' + fullPath.replace(/'/g, "\\'") + '\',\'' + esc(f.name).replace(/'/g, "\\'") + '\')">' +
+      '<img class="game-cover" src="' + coverUrl + '" loading="lazy" onerror="' +
+        'if(this.src.endsWith(\'.jpg\')){this.src=this.src.replace(/\\.jpg$/,\'.png\')}' +
+        'else{this.outerHTML=\'<div class=&quot;game-cover empty&quot;>No Art</div>\'}' +
+      '">' +
+      '<div class="game-info">' +
+        '<div class="game-name">' + (isPlaying ? '<span class="active-indicator"></span>' : '') + esc(f.name) + '</div>' +
+        '<div class="game-meta">' +
+          (isPlaying ? '<span class="badge" style="background:var(--c-ok);color:#fff">PLAYING</span> ' : '') +
+          '<span class="badge" style="background:var(--c-accent);color:#fff">WebDAV</span>' +
+        '</div>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+}
+
+// Open a DAV folder as a game detail modal (like SD game detail)
+async function davEnsureConnected() {
+  if (davConnected) return true;
+  try {
+    const res = await fetch(API + '/api/dav/connect', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
     if (res.ok) {
-      davIsConnected = true;
-      davLoadStatus();
+      davConnected = true;
+      davLoadStatus();  // refresh status bar in background
       return true;
     }
     toast('Auto-connect failed: ' + (data.error || 'Unknown'), 'error');
@@ -502,179 +2862,342 @@ async function davEnsureConnected() {
   }
 }
 
-async function davConnect() {
-  try {
-    const bar = $('dav-status-bar');
-    bar.textContent = 'Connecting...';
-    const res = await fetch(API + '/api/dav/connect', {method:'POST'});
-    const d = await res.json().catch(()=>({}));
-    davShowDebug(d);
-    if (!res.ok) {
-      toast('WebDAV: ' + (d.error || 'Failed'), 'error');
-      davLoadStatus();
+async function davOpenFolder(folderPath, folderName) {
+  davLoadedFileAtModalOpen = davLoadedFile;  // snapshot for change detection on close
+
+  document.getElementById('dav-modal-title').textContent = folderName;
+  document.getElementById('dav-modal-load-status').innerHTML =
+    '<span style="color:var(--c-text-muted)"><span class="spinner" style="width:12px;height:12px;margin-right:6px;vertical-align:middle"></span>Loading...</span>';
+
+  // Disable Load/Eject until PROPFIND completes
+  const loadBtn = document.getElementById('dav-modal-load-btn');
+  const ejectBtn = document.getElementById('dav-modal-eject-btn');
+  loadBtn.disabled = true;
+  ejectBtn.disabled = true;
+
+  // Clear stale disk list
+  document.getElementById('dav-modal-disk-select').innerHTML = '';
+  document.getElementById('dav-modal-disks').innerHTML = '';
+
+  // Show modal immediately with loading state
+  const modal = document.getElementById('modal-dav-detail');
+  modal.classList.add('show');
+
+  // Cover
+  const coverImg = document.getElementById('dav-modal-cover');
+  let coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(folderPath + '/' + folderName + '.jpg');
+  coverImg.src = coverUrl;
+  coverImg.style.display = 'block';
+  coverImg.onerror = function() {
+    if (this.src.endsWith('.jpg')) {
+      this.src = this.src.replace(/\.jpg$/, '.png');
     } else {
-      davIsConnected = true;
-      davLoadStatus();
-      // After explicit connect, refresh from server
-      davBrowse('/', true);
+      this.style.display = 'none';
     }
-  } catch(e) { toast('Connection failed', 'error'); }
-}
+  };
 
-async function davDisconnect() {
-  await api('/api/dav/disconnect', {method:'POST'});
-  davLoadStatus();
-}
-
-async function davBrowse(path, forceRefresh) {
-  davCurrentPath = path;
-  $('dav-path').textContent = path;
-  $('dav-list').innerHTML = '<div style="text-align:center;color:var(--dim);padding:20px">Loading...</div>';
-  // Auto-connect if browsing a subfolder while disconnected (root can use cache)
-  if (path !== '/' && !davIsConnected) {
-    $('dav-list').innerHTML = '<div style="text-align:center;color:var(--dim);padding:20px">Connecting...</div>';
+  // Auto-connect if needed (user clicked game from cache while disconnected)
+  if (!davConnected) {
+    document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--c-warn)">Connecting to WebDAV...</p>';
     if (!await davEnsureConnected()) {
-      $('dav-list').innerHTML = '<div class="msg err" style="display:block">Could not connect to WebDAV server</div>';
+      document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--c-err)">Could not connect to WebDAV server</p>';
       return;
     }
   }
+
+  // PROPFIND the folder to find disk files and NFO
   try {
-    let url = '/api/dav/list?path=' + encodeURIComponent(path);
-    if (forceRefresh) url += '&refresh=1';
-    const d = await api(url);
-    davShowDebug(d);
-    if (d.error) { $('dav-list').innerHTML = '<div class="msg err" style="display:block">' + esc(d.error) + '</div>'; return; }
+    const data = await api('/api/dav/list?path=' + encodeURIComponent(folderPath));
+    const entries = data.entries || [];
+    const diskExts = ['ADF','DSK','ADZ','IMG'];
+    const disks = entries.filter(e => !e.dir && diskExts.includes(e.name.split('.').pop().toUpperCase()));
+    disks.sort((a, b) => a.name.localeCompare(b.name));
 
-    const dirCover = d.cover || '';
-    let html = '';
-    (d.entries || []).forEach(e => {
-      const isDisk = isDiskImage(e.name);
-      const fullPath = path + (path.endsWith('/') ? '' : '/') + e.name;
-      // Convention-based cover: for folders try FolderName/FolderName.jpg, for files use dir-level cover
-      let coverUrl = '';
-      if (e.dir) {
-        coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + e.name + '.jpg');
-      } else if (dirCover) {
-        coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(path + (path.endsWith('/') ? '' : '/') + dirCover);
-      } else {
-        // Try convention: filename without ext + .jpg
-        const baseName = e.name.replace(/\.[^.]+$/, '');
-        coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(path + (path.endsWith('/') ? '' : '/') + baseName + '.jpg');
+    // Disk selector
+    const diskSel = document.getElementById('dav-modal-disk-select');
+    diskSel.innerHTML = disks.map((d, i) => {
+      let sizeStr = d.size > 1048576 ? (d.size/1048576).toFixed(1)+' MB' : (d.size/1024).toFixed(0)+' KB';
+      return '<option value="' + i + '">' + esc(d.name) + ' (' + sizeStr + ')</option>';
+    }).join('');
+
+    // Disk file list
+    const disksEl = document.getElementById('dav-modal-disks');
+    if (disks.length > 1) {
+      disksEl.innerHTML = '<label>Disk Files</label>' + disks.map(d => {
+        let sizeStr = d.size > 1048576 ? (d.size/1048576).toFixed(1)+' MB' : (d.size/1024).toFixed(0)+' KB';
+        return '<div style="padding:4px 0;font-size:13px;color:#333">' + esc(d.name) + ' <span style="color:#888">(' + sizeStr + ')</span></div>';
+      }).join('');
+    } else {
+      disksEl.innerHTML = '';
+    }
+
+    // NFO
+    const nfoFile = entries.find(e => !e.dir && e.name.toLowerCase().endsWith('.nfo'));
+    const nfoEl = document.getElementById('dav-modal-nfo');
+    if (nfoFile) {
+      try {
+        const nfoData = await api('/api/dav/nfo?path=' + encodeURIComponent(folderPath + '/' + nfoFile.name));
+        nfoEl.innerHTML = '<label>NFO / Description</label><pre style="font-size:12px;background:var(--c-surface2);padding:8px;border:1px inset var(--c-border);border-radius:2px;max-height:150px;overflow:auto;white-space:pre-wrap">' + esc(nfoData.content || '') + '</pre>';
+      } catch(e) {
+        nfoEl.innerHTML = '<label>NFO</label><span class="badge badge-nfo">Available</span>';
       }
+    } else {
+      nfoEl.innerHTML = '';
+    }
 
-      html += '<div class="game-item" onclick="' + (e.dir ? "davBrowse('" + esc(fullPath).replace(/'/g,"\\'") + "')" : '') + '">';
-      html += '<div class="icon cover"><img src="' + coverUrl + '" onerror="' +
-        'if(this.src.endsWith(\'.jpg\')){this.src=this.src.replace(/\\.jpg$/,\'.png\')}' +
-        'else{this.parentElement.className=\'icon ' + (e.dir ? 'folder' : 'disk') + '\';this.parentElement.innerHTML=\'' + (e.dir ? 'DIR' : e.name.split('.').pop().toUpperCase().slice(0,3)) + '\'}' +
-      '"></div>';
-      html += '<div class="meta"><div class="name">' + esc(e.name) + '</div>';
-      if (!e.dir && e.size > 0) html += '<div class="size">' + formatSize(e.size) + '</div>';
-      html += '</div>';
-      if (isDisk) html += '<div class="actions"><button class="btn btn-success" onclick="event.stopPropagation();davInsert(\'' + esc(fullPath).replace(/'/g,"\\'") + '\',\'' + esc(e.name).replace(/'/g,"\\'") + '\',this)">Insert</button></div>';
-      html += '</div>';
-    });
-    if (!html) html = '<div style="text-align:center;color:var(--dim);padding:20px">Empty folder</div>';
-    $('dav-list').innerHTML = html;
-  } catch(e) { $('dav-list').innerHTML = '<div class="msg err" style="display:block">Load failed</div>'; }
+    // PROPFIND done — enable buttons and update status
+    loadBtn.disabled = (disks.length === 0);
+    ejectBtn.disabled = false;
+
+    const isPlaying = davLoadedFile && davLoadedFile.startsWith(folderPath + '/');
+    if (isPlaying) {
+      let loadedName = davLoadedFile.split('/').pop();
+      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Playing: ' + esc(loadedName) + '</span>';
+    } else if (disks.length === 0) {
+      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-text-muted)">No disk files found</span>';
+    } else {
+      document.getElementById('dav-modal-load-status').textContent = '';
+    }
+
+    // Load button handler
+    document.getElementById('dav-modal-load-btn').onclick = async function() {
+      const idx = parseInt(diskSel.value);
+      if (idx < 0 || idx >= disks.length) return;
+      const disk = disks[idx];
+      const remotePath = folderPath + '/' + disk.name;
+      this.disabled = true;
+      this.textContent = 'Loading...';
+      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-warn)">Loading...</span>';
+      showLoading('Streaming from WebDAV…\n' + disk.name);
+      try {
+        const res = await fetch(API + '/api/dav/load', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'path=' + encodeURIComponent(remotePath)
+        });
+        const rdata = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(rdata.error || 'HTTP ' + res.status);
+        davLoadedFile = remotePath;
+        this.textContent = 'Insert';
+        this.disabled = false;
+        document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Playing: ' + esc(disk.name) + '</span>';
+        let loadMsg = rdata.name + ' loading...';
+        if (rdata.bytes) loadMsg = rdata.name + ' loaded! (' + (rdata.bytes / 1024).toFixed(0) + ' KB)';
+        toast(loadMsg);
+      } catch(e) {
+        this.textContent = 'Insert';
+        this.disabled = false;
+        document.getElementById('dav-modal-load-status').innerHTML = '';
+        toast('Load failed: ' + (e.message || 'Unknown'), 'error');
+      } finally {
+        hideLoading();
+      }
+    };
+
+  } catch(e) {
+    document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--c-err)">Failed to load folder contents</p>';
+    document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-err)">Error loading folder</span>';
+    // Re-enable eject so user can still eject a previously loaded disk
+    loadBtn.disabled = true;
+    ejectBtn.disabled = false;
+  }
 }
 
-function davUp() {
-  let p = davCurrentPath;
-  if (p.endsWith('/') && p.length > 1) p = p.slice(0, -1);
-  const ls = p.lastIndexOf('/');
-  davBrowse(ls > 0 ? p.substring(0, ls + 1) : '/');
+function davCloseFolderModal() {
+  document.getElementById('modal-dav-detail').classList.remove('show');
+
+  // Only touch the list if davLoadedFile actually changed (i.e. user loaded or ejected)
+  if (davLoadedFile === davLoadedFileAtModalOpen) return;
+
+  // Something was loaded/ejected — patch just the affected game-item cards in-place
+  // without rebuilding the whole list (no API call, no DOM thrash)
+  document.querySelectorAll('#dav-list .game-item').forEach(card => {
+    const onclick = card.getAttribute('onclick') || '';
+    // Extract folderPath from onclick="davOpenFolder('...','...')"
+    const m = onclick.match(/davOpenFolder\('([^']+)'/);
+    if (!m) return;
+    const folderPath = m[1];
+    const isPlaying = davLoadedFile && davLoadedFile.startsWith(folderPath + '/');
+    const wasPlaying = card.classList.contains('active');
+    if (isPlaying === wasPlaying) return;  // no change for this card
+
+    card.classList.toggle('active', isPlaying);
+    const nameEl = card.querySelector('.game-name');
+    const metaEl = card.querySelector('.game-meta');
+    if (!nameEl || !metaEl) return;
+
+    if (isPlaying) {
+      if (!nameEl.querySelector('.active-indicator')) {
+        nameEl.insertAdjacentHTML('afterbegin', '<span class="active-indicator"></span>');
+      }
+      if (!metaEl.querySelector('.badge-playing')) {
+        metaEl.insertAdjacentHTML('afterbegin', '<span class="badge badge-playing" style="background:var(--c-ok);color:#fff">PLAYING</span> ');
+      }
+    } else {
+      nameEl.querySelector('.active-indicator')?.remove();
+      metaEl.querySelector('.badge-playing')?.remove();
+    }
+  });
 }
 
 async function davInsert(remotePath, displayName, btn) {
-  btn.disabled = true; btn.textContent = 'Loading...';
-  // Auto-connect if needed (user clicked from cached list while disconnected)
-  if (!davIsConnected) {
-    btn.textContent = 'Connecting...';
-    if (!await davEnsureConnected()) {
-      btn.disabled = false; btn.textContent = 'Insert';
-      return;
+  btn.disabled = true;
+  btn.textContent = 'Loading...';
+  showLoading('Streaming from WebDAV…\n' + displayName);
+
+  try {
+    const res = await fetch(API + '/api/dav/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'path=' + encodeURIComponent(remotePath)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'HTTP ' + res.status);
     }
-    btn.textContent = 'Loading...';
-  }
-  try {
-    const res = await fetch(API + '/api/dav/load', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'path='+encodeURIComponent(remotePath)});
-    const d = await res.json().catch(()=>({}));
-    davShowDebug(d);
-    if (!res.ok) throw new Error(d.error || 'HTTP ' + res.status);
     davLoadedFile = remotePath;
-    btn.textContent = 'Playing!'; btn.style.background = 'var(--green)';
-    toast(d.name + ' loaded! (' + formatSize(d.bytes) + ')');
-    updateStatus();
-  } catch(e) { btn.textContent = 'Insert'; btn.disabled = false; toast('Load failed: ' + e.message, 'error'); }
+    btn.textContent = 'Playing!';
+    btn.style.background = 'var(--c-ok)';
+    toast(data.name + ' loaded! (' + (data.bytes / 1024).toFixed(0) + ' KB)');
+    // Show eject button
+    document.getElementById('dav-disconnect-btn').style.display = '';
+    // Update status bar
+    const bar = document.getElementById('dav-status-bar');
+    bar.className = 'ftp-status connected';
+    bar.innerHTML = '<span class="active-indicator"></span>Playing: ' + esc(displayName) +
+      ' <button class="btn btn-danger" style="font-size:11px;padding:2px 8px;margin-left:8px" onclick="davEject()">Eject</button>';
+  } catch (e) {
+    btn.textContent = 'Insert';
+    btn.disabled = false;
+    toast('Load failed: ' + (e.message || 'Unknown error'), 'error');
+  } finally {
+    hideLoading();
+  }
 }
 
-// ══════════════════════════════════════
-// SETTINGS
-// ══════════════════════════════════════
-async function loadSettings() {
+async function davEject() {
   try {
-    const c = await api('/api/config');
-    $('cfg-ap-ssid').value = c.WIFI_SSID || '';
-    $('cfg-ap-pass').value = c.WIFI_PASS || '';
-    $('cfg-ap-chan').value = c.WIFI_CHANNEL || '6';
-    $('cfg-sta-en').checked = c.WIFI_CLIENT_ENABLED === '1';
-    $('cfg-sta-ssid').value = c.WIFI_CLIENT_SSID || '';
-    $('cfg-sta-pass').value = c.WIFI_CLIENT_PASS || '';
-    $('cfg-ftp-en').checked = c.FTP_ENABLED === '1';
-    $('cfg-ftp-host').value = c.FTP_HOST || '';
-    $('cfg-ftp-port').value = c.FTP_PORT || '21';
-    $('cfg-ftp-user').value = c.FTP_USER || '';
-    $('cfg-ftp-pass').value = c.FTP_PASS || '';
-    $('cfg-ftp-path').value = c.FTP_PATH || '/';
-    $('cfg-dav-en').checked = c.DAV_ENABLED === '1';
-    $('cfg-dav-host').value = c.DAV_HOST || '';
-    $('cfg-dav-port').value = c.DAV_PORT || '443';
-    $('cfg-dav-user').value = c.DAV_USER || '';
-    $('cfg-dav-pass').value = c.DAV_PASS || '';
-    $('cfg-dav-path').value = c.DAV_PATH || '/';
-    $('cfg-dav-https').checked = c.DAV_HTTPS === '1';
-  } catch(e) {}
+    await api('/api/disk/unload', { method: 'POST' });
+    davLoadedFile = '';
+    toast('Disk ejected');
+    await davLoadStatus();
+  } catch (e) {
+    toast('Eject failed', 'error');
+  }
 }
 
-async function saveSettings() {
-  const params = new URLSearchParams({
-    WIFI_SSID: $('cfg-ap-ssid').value,
-    WIFI_PASS: $('cfg-ap-pass').value,
-    WIFI_CHANNEL: $('cfg-ap-chan').value,
-    WIFI_CLIENT_ENABLED: $('cfg-sta-en').checked ? '1' : '0',
-    WIFI_CLIENT_SSID: $('cfg-sta-ssid').value,
-    WIFI_CLIENT_PASS: $('cfg-sta-pass').value,
-    FTP_ENABLED: $('cfg-ftp-en').checked ? '1' : '0',
-    FTP_HOST: $('cfg-ftp-host').value,
-    FTP_PORT: $('cfg-ftp-port').value,
-    FTP_USER: $('cfg-ftp-user').value,
-    FTP_PASS: $('cfg-ftp-pass').value,
-    FTP_PATH: $('cfg-ftp-path').value,
-    DAV_ENABLED: $('cfg-dav-en').checked ? '1' : '0',
-    DAV_HOST: $('cfg-dav-host').value,
-    DAV_PORT: $('cfg-dav-port').value,
-    DAV_USER: $('cfg-dav-user').value,
-    DAV_PASS: $('cfg-dav-pass').value,
-    DAV_PATH: $('cfg-dav-path').value,
-    DAV_HTTPS: $('cfg-dav-https').checked ? '1' : '0'
-  });
+async function davDownload(remotePath, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
 
   try {
-    await fetch(API + '/api/config', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:params});
-    const m = $('cfg-msg');
-    m.textContent = 'Settings saved! Reboot to apply WiFi changes.';
-    m.className = 'msg ok';
-    toast('Settings saved!');
-  } catch(e) {
-    const m = $('cfg-msg');
-    m.textContent = 'Save failed';
-    m.className = 'msg err';
+    const result = await api('/api/dav/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'path=' + encodeURIComponent(remotePath)
+    });
+    btn.textContent = 'Saved!';
+    toast(result.file + ' saved to SD (' + (result.bytes / 1024).toFixed(0) + ' KB)');
+    loadGames();
+  } catch (e) {
+    btn.textContent = 'Save to SD';
+    btn.disabled = false;
+    toast('Download failed: ' + (e.message || 'Unknown error'), 'error');
+  }
+}
+
+// Enter key on game search
+document.getElementById('game-search').addEventListener('keyup', e => {
+  if (e.key === 'Enter') filterGames();
+});
+document.getElementById('dav-search').addEventListener('keyup', e => {
+  if (e.key === 'Enter') davFilterGames();
+});
+
+// Close modal on overlay click
+document.getElementById('modal-game-detail').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+document.getElementById('modal-dav-detail').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) davCloseFolderModal();
+});
+
+// Keyboard shortcut
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeModal(); davCloseFolderModal(); }
+});
+
+// ═══════════════ GLOBAL LOADING OVERLAY ═══════════════
+
+function showLoading(msg) {
+  const overlay = document.getElementById('loading-overlay');
+  document.getElementById('loading-msg').textContent = msg || 'Loading...';
+  overlay.classList.add('show');
+}
+function hideLoading() {
+  document.getElementById('loading-overlay').classList.remove('show');
+}
+
+// ═══════════════ LOG VIEWER ═══════════════
+
+let logPollTimer = null;
+
+async function loadLog() {
+  const el = document.getElementById('log-content');
+  try {
+    const data = await api('/api/log');
+    const text = data.log || '(empty log)';
+    // Only update DOM if content changed to avoid scroll jumping
+    if (el.textContent !== text) {
+      el.textContent = text;
+      if (document.getElementById('log-auto-scroll').checked) {
+        el.scrollTop = el.scrollHeight;
+      }
+    }
+  } catch (e) {
+    el.textContent = 'Failed to load log: ' + e.message;
+  }
+}
+
+function startLogPolling() {
+  stopLogPolling();
+  loadLog();
+  logPollTimer = setInterval(loadLog, 3000);
+}
+
+function stopLogPolling() {
+  if (logPollTimer) { clearInterval(logPollTimer); logPollTimer = null; }
+}
+
+async function clearLog() {
+  if (!confirm('Clear the log file?')) return;
+  await api('/api/log/clear', { method: 'POST' });
+  toast('Log cleared');
+  loadLog();
+}
+
+// ═══════════════ CONDITIONAL TABS ═══════════════
+// Hide FTP/WebDAV/Log tabs when the corresponding feature is disabled in config
+
+async function updateTabVisibility() {
+  try {
+    const d = await api('/api/system/info');
+    systemInfo = d;
+
+    const ftpTab = document.getElementById('tab-ftp');
+    const davTab = document.getElementById('tab-webdav');
+
+    if (ftpTab) ftpTab.style.display = d.ftp_enabled ? '' : 'none';
+    if (davTab) davTab.style.display = d.dav_enabled ? '' : 'none';
+    // Log tab always visible
+  } catch (e) {
+    // If API fails, show all tabs as fallback
   }
 }
 
 // Init
-updateStatus();
-setInterval(updateStatus, 3000);
+updateTabVisibility();
+loadDashboard();
 </script>
 </body>
 </html>

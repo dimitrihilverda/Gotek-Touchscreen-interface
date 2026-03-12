@@ -87,6 +87,9 @@ String cfg_ftp_user    = "anonymous";
 String cfg_ftp_pass    = "gotek@local";
 String cfg_ftp_path    = "/";
 
+// Logging config
+bool   cfg_log_enabled = true;
+
 // WebDAV config
 bool   cfg_dav_enabled = false;
 String cfg_dav_host    = "";
@@ -126,6 +129,8 @@ void loadConfig() {
   cfg_dav_pass    = prefs.getString("dav_pass", "");
   cfg_dav_path    = prefs.getString("dav_path", "/remote.php/webdav/");
   cfg_dav_https   = prefs.getBool("dav_https", true);
+
+  cfg_log_enabled = prefs.getBool("log_en", true);
   prefs.end();
 }
 
@@ -153,6 +158,8 @@ void saveConfig() {
   prefs.putString("dav_pass", cfg_dav_pass);
   prefs.putString("dav_path", cfg_dav_path);
   prefs.putBool("dav_https", cfg_dav_https);
+
+  prefs.putBool("log_en", cfg_log_enabled);
   prefs.end();
 }
 
@@ -243,6 +250,80 @@ void davClearCache() {
   if (SPIFFS.exists(DAV_CACHE_FILE)) {
     SPIFFS.remove(DAV_CACHE_FILE);
   }
+}
+
+// ==========================================================================
+// DAV FOLDER CACHE — per-folder disk list cache in SPIFFS
+// Mirrors the SD-based DAV_FOLDER_CACHE on JC3248.
+// Format (per file):
+//   HOST=<dav_host>
+//   DISK=<filename>   (repeated for each disk file)
+//   COVER=<filename>  (or empty)
+//   NFO=<filename>    (or empty)
+// ==========================================================================
+#define DAV_FOLDER_CACHE_PREFIX "/dfc_"   // prefix + sanitised folder name
+
+String davFolderCachePath(const String &folderPath) {
+  // Sanitise: replace non-alphanum with '_', max 24 chars
+  String safe = "";
+  for (unsigned int i = 0; i < folderPath.length() && (int)safe.length() < 24; i++) {
+    char c = folderPath[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '-') {
+      safe += c;
+    } else {
+      safe += '_';
+    }
+  }
+  return String(DAV_FOLDER_CACHE_PREFIX) + safe + ".txt";
+}
+
+void davSaveFolderCache(const String &folderPath,
+                        const std::vector<String> &disks,
+                        const String &coverFile,
+                        const String &nfoFile) {
+  String path = davFolderCachePath(folderPath);
+  File f = SPIFFS.open(path, "w");
+  if (!f) return;
+  f.println("HOST=" + cfg_dav_host);
+  for (const auto &d : disks) f.println("DISK=" + d);
+  f.println("COVER=" + coverFile);
+  f.println("NFO=" + nfoFile);
+  f.close();
+}
+
+bool davLoadFolderCache(const String &folderPath,
+                        std::vector<String> &disks,
+                        String &coverFile,
+                        String &nfoFile) {
+  String path = davFolderCachePath(folderPath);
+  if (!SPIFFS.exists(path)) return false;
+  File f = SPIFFS.open(path, "r");
+  if (!f) return false;
+
+  disks.clear();
+  coverFile = "";
+  nfoFile   = "";
+  bool hostOk = false;
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+    if (line.startsWith("HOST=")) {
+      hostOk = (line.substring(5) == cfg_dav_host);
+    } else if (line.startsWith("DISK=") && hostOk) {
+      String d = line.substring(5);
+      if (d.length() > 0) disks.push_back(d);
+    } else if (line.startsWith("COVER=") && hostOk) {
+      coverFile = line.substring(6);
+    } else if (line.startsWith("NFO=") && hostOk) {
+      nfoFile = line.substring(4);
+    }
+  }
+  f.close();
+  if (!hostOk) { disks.clear(); coverFile = ""; nfoFile = ""; return false; }
+  return true;
 }
 
 // ==========================================================================
@@ -487,6 +568,35 @@ size_t loadFileFromDAV(const String &remotePath) {
 }
 
 // ==========================================================================
+// LOG BUFFER — simple ring buffer for web-accessible log output
+// ==========================================================================
+#define LOG_BUF_MAX 4096
+static char   log_buf[LOG_BUF_MAX];
+static int    log_buf_len = 0;
+static bool   log_buf_wrapped = false;
+
+void logAppend(const String &line) {
+  if (!cfg_log_enabled) return;
+  String entry = line + "\n";
+  int n = entry.length();
+  if (n >= LOG_BUF_MAX) return;
+  if (log_buf_len + n < LOG_BUF_MAX) {
+    memcpy(log_buf + log_buf_len, entry.c_str(), n);
+    log_buf_len += n;
+  } else {
+    // Wrap: discard oldest to make room
+    int excess = (log_buf_len + n) - LOG_BUF_MAX + 1;
+    memmove(log_buf, log_buf + excess, log_buf_len - excess);
+    log_buf_len -= excess;
+    log_buf_wrapped = true;
+    memcpy(log_buf + log_buf_len, entry.c_str(), n);
+    log_buf_len += n;
+  }
+  log_buf[log_buf_len] = 0;
+  Serial.println(line);
+}
+
+// ==========================================================================
 // HTTP HELPERS
 // ==========================================================================
 
@@ -697,7 +807,7 @@ void handleRequest(WiFiClient &client) {
 
   // ── Serve Web UI (gzipped) ──
   if (req.path == "/" || req.path == "/index.html") {
-    sendGzipResponse(client, "text/html", webui_gz, webui_gz_len);
+    sendGzipResponse(client, "text/html", webui_html_gz, webui_html_gz_len);
     return;
   }
 
@@ -790,7 +900,8 @@ void handleRequest(WiFiClient &client) {
     json += "\"DAV_USER\":\"" + jsonEscape(cfg_dav_user) + "\",";
     json += "\"DAV_PASS\":\"" + jsonEscape(cfg_dav_pass) + "\",";
     json += "\"DAV_PATH\":\"" + jsonEscape(cfg_dav_path) + "\",";
-    json += "\"DAV_HTTPS\":\"" + String(cfg_dav_https ? "1" : "0") + "\"";
+    json += "\"DAV_HTTPS\":\"" + String(cfg_dav_https ? "1" : "0") + "\",";
+    json += "\"LOG_ENABLED\":\"" + String(cfg_log_enabled ? "1" : "0") + "\"";
     json += "}";
     sendJSON(client, 200, json);
     return;
@@ -861,6 +972,9 @@ void handleRequest(WiFiClient &client) {
 
     val = getFormValue(req.body, "DAV_HTTPS");
     if (val.length() > 0) cfg_dav_https = (val == "1" || val == "true");
+
+    val = getFormValue(req.body, "LOG_ENABLED");
+    if (val.length() > 0) cfg_log_enabled = (val == "1" || val == "true");
 
     saveConfig();
     sendJSON(client, 200, "{\"status\":\"ok\"}");
@@ -1063,6 +1177,25 @@ void handleRequest(WiFiClient &client) {
       }
     }
 
+    // For sub-folder paths: check per-folder SPIFFS cache first
+    if (path != "/" && !forceRefresh) {
+      std::vector<String> cachedDisks;
+      String cachedCover, cachedNfo;
+      if (davLoadFolderCache(path, cachedDisks, cachedCover, cachedNfo)) {
+        String json = "{\"path\":\"" + jsonEscape(path) + "\",\"cached\":true";
+        if (cachedCover.length() > 0) json += ",\"cover\":\"" + jsonEscape(cachedCover) + "\"";
+        if (cachedNfo.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(cachedNfo) + "\"";
+        json += ",\"entries\":[";
+        for (int i = 0; i < (int)cachedDisks.size(); i++) {
+          if (i > 0) json += ",";
+          json += "{\"name\":\"" + jsonEscape(cachedDisks[i]) + "\",\"dir\":false,\"size\":0}";
+        }
+        json += "]}";
+        sendJSON(client, 200, json);
+        return;
+      }
+    }
+
     // No cache or forced refresh — need WiFi for PROPFIND
     if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}"); return; }
 
@@ -1073,9 +1206,22 @@ void handleRequest(WiFiClient &client) {
     }
 
     String coverFile = "", nfoFile = "";
+    std::vector<String> diskFiles;
+    static const char *diskExts[] = {".adf", ".dms", ".ipf", ".img", ".ima", ".st", ".adz", nullptr};
     for (int i = 0; i < (int)entries.size(); i++) {
       if (entries[i].coverFile.length() > 0 && coverFile.length() == 0) coverFile = entries[i].coverFile;
-      if (entries[i].nfoFile.length() > 0 && nfoFile.length() == 0) nfoFile = entries[i].nfoFile;
+      if (entries[i].nfoFile.length() > 0 && nfoFile.length() == 0)     nfoFile   = entries[i].nfoFile;
+      if (!entries[i].isDir && entries[i].coverFile.length() == 0 && entries[i].nfoFile.length() == 0) {
+        String lower = entries[i].name; lower.toLowerCase();
+        for (int k = 0; diskExts[k]; k++) {
+          if (lower.endsWith(diskExts[k])) { diskFiles.push_back(entries[i].name); break; }
+        }
+      }
+    }
+
+    // Save per-folder cache if it's a subfolder
+    if (path != "/") {
+      davSaveFolderCache(path, diskFiles, coverFile, nfoFile);
     }
 
     String json = "{\"path\":\"" + jsonEscape(path) + "\"";
@@ -1186,6 +1332,113 @@ void handleRequest(WiFiClient &client) {
     if (bytes <= 0) { sendJSON(client, 404, "{\"error\":\"NFO not found\"}"); return; }
     buf[bytes] = 0;
     sendJSON(client, 200, "{\"nfo\":\"" + jsonEscape(String((char *)buf)) + "\"}");
+    return;
+  }
+
+  // ── GET /api/system/info ──
+  if (req.path == "/api/system/info" && req.method == "GET") {
+    String json = "{";
+    json += "\"firmware\":\"" + String(FW_VERSION) + "\",";
+    json += "\"device\":\"WiFi-Dongle\",";
+    json += "\"chip\":\"ESP32-S3\",";
+    json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
+    json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
+    json += "\"total_psram\":" + String(ESP.getPsramSize()) + ",";
+    json += "\"spiffs_total\":" + String(SPIFFS.totalBytes()) + ",";
+    json += "\"spiffs_used\":" + String(SPIFFS.usedBytes()) + ",";
+    json += "\"uptime_ms\":" + String(millis()) + ",";
+    json += "\"wifi_ap_ssid\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
+    json += "\"wifi_ap_ip\":\"" + wifi_ap_ip + "\",";
+    json += "\"wifi_sta_ip\":\"" + wifi_sta_ip + "\",";
+    json += "\"wifi_sta_connected\":" + String(wifi_sta_connected ? "true" : "false") + ",";
+    json += "\"wifi_clients\":" + String(WiFi.softAPgetStationNum());
+    json += "}";
+    sendJSON(client, 200, json);
+    return;
+  }
+
+  // ── GET /api/disk/status ──
+  if (req.path == "/api/disk/status" && req.method == "GET") {
+    String json = "{";
+    json += "\"loaded\":" + String(disk_present ? "true" : "false") + ",";
+    json += "\"filename\":\"" + jsonEscape(loaded_filename) + "\",";
+    json += "\"size\":" + String(loaded_size);
+    json += "}";
+    sendJSON(client, 200, json);
+    return;
+  }
+
+  // ── GET /api/wifi/status ──
+  if (req.path == "/api/wifi/status" && req.method == "GET") {
+    String json = "{";
+    json += "\"ap_active\":" + String(wifi_ap_active ? "true" : "false") + ",";
+    json += "\"ap_ip\":\"" + wifi_ap_ip + "\",";
+    json += "\"ap_ssid\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
+    json += "\"ap_clients\":" + String(WiFi.softAPgetStationNum()) + ",";
+    json += "\"sta_connected\":" + String(wifi_sta_connected ? "true" : "false") + ",";
+    json += "\"sta_ip\":\"" + wifi_sta_ip + "\",";
+    json += "\"sta_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\"";
+    json += "}";
+    sendJSON(client, 200, json);
+    return;
+  }
+
+  // ── GET /api/wifi/scan ──
+  if (req.path == "/api/wifi/scan" && req.method == "GET") {
+    int n = WiFi.scanNetworks();
+    String json = "[";
+    for (int i = 0; i < n; i++) {
+      if (i > 0) json += ",";
+      json += "{\"ssid\":\"" + jsonEscape(WiFi.SSID(i)) + "\"";
+      json += ",\"rssi\":" + String(WiFi.RSSI(i));
+      json += ",\"enc\":" + String((int)WiFi.encryptionType(i));
+      json += "}";
+    }
+    json += "]";
+    WiFi.scanDelete();
+    sendJSON(client, 200, json);
+    return;
+  }
+
+  // ── GET /api/log ──
+  if (req.path == "/api/log" && req.method == "GET") {
+    if (!cfg_log_enabled) {
+      sendJSON(client, 200, "{\"enabled\":false,\"log\":\"\"}");
+      return;
+    }
+    String content = String(log_buf);
+    sendJSON(client, 200, "{\"enabled\":true,\"log\":\"" + jsonEscape(content) + "\"}");
+    return;
+  }
+
+  // ── POST /api/log/clear ──
+  if (req.path == "/api/log/clear" && req.method == "POST") {
+    log_buf_len = 0;
+    log_buf[0] = 0;
+    log_buf_wrapped = false;
+    sendJSON(client, 200, "{\"status\":\"ok\"}");
+    return;
+  }
+
+  // ── GET /api/themes/list ──
+  if (req.path == "/api/themes/list" && req.method == "GET") {
+    // Dongle has no display so no active theme stored, return static list
+    sendJSON(client, 200, "{\"themes\":[\"default\",\"dark\",\"amber\",\"green\",\"matrix\"],\"active\":\"default\"}");
+    return;
+  }
+
+  // ── POST /api/themes/*/activate ──
+  if (req.path.startsWith("/api/themes/") && req.path.endsWith("/activate") && req.method == "POST") {
+    // Dongle has no display — acknowledge but do nothing
+    String theme = req.path.substring(12, req.path.length() - 9);
+    sendJSON(client, 200, "{\"status\":\"ok\",\"theme\":\"" + jsonEscape(theme) + "\"}");
+    return;
+  }
+
+  // ── GET /api/dav/cache/clear ──
+  if ((req.path == "/api/dav/cache/clear" || req.path == "/api/dav/cache") && req.method == "DELETE") {
+    davClearCache();
+    sendJSON(client, 200, "{\"status\":\"ok\"}");
     return;
   }
 
