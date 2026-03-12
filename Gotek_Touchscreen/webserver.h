@@ -468,10 +468,10 @@ void handleHttpRequest(WiFiClient &client) {
         int s2 = remainder.indexOf('/');
         String name, action;
         if (s2 >= 0) {
-          name = remainder.substring(0, s2);
+          name = urlDecode(remainder.substring(0, s2));
           action = remainder.substring(s2 + 1);
         } else {
-          name = remainder;
+          name = urlDecode(remainder);
           action = "";
         }
 
