@@ -132,7 +132,8 @@ public:
     {
       IPAddress resolved;
       bool dnsOk = WiFi.hostByName(cfg_dav_host.c_str(), resolved);
-      _log("DAV: DNS " + cfg_dav_host + " -> " + (dnsOk ? resolved.toString() : String("FAILED")) + " GW=" + WiFi.gatewayIP().toString() + " DNS=" + WiFi.dnsIP().toString());
+      _log("DAV: DNS " + cfg_dav_host + " -> " + (dnsOk ? resolved.toString() : String("FAILED")) + " GW=" + WiFi.gatewayIP().toString() + " DNS1=" + WiFi.dnsIP(0).toString() + " DNS2=" + WiFi.dnsIP(1).toString());
+      _log("DAV: cfg host=[" + cfg_dav_host + "] port=" + String(cfg_dav_port) + " https=" + String(cfg_dav_https) + " path=[" + cfg_dav_path + "] user=[" + cfg_dav_user + "]");
     }
     _log("DAV: connecting to " + cfg_dav_host + ":" + String(cfg_dav_port) + " WiFiStatus=" + String(WiFi.status()) + " localIP=" + WiFi.localIP().toString());
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
