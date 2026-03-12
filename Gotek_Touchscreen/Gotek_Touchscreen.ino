@@ -2645,6 +2645,24 @@ static String _davCacheUrlDecode(const String &in) {
 
 bool davLoadCache() {
   if (!SD_MMC.exists(DAV_CACHE_FILE)) return false;
+
+  // Detect and auto-delete corrupt caches (names stored URL-encoded with leading %2F)
+  {
+    File fc = SD_MMC.open(DAV_CACHE_FILE, "r");
+    if (fc) {
+      while (fc.available()) {
+        String l = fc.readStringUntil('\n'); l.trim();
+        if (l.startsWith("D|%") || l.startsWith("D|/")) {
+          fc.close();
+          SD_MMC.remove(DAV_CACHE_FILE);
+          Serial.println("DAV cache: corrupt names detected, cache deleted");
+          return false;
+        }
+      }
+      fc.close();
+    }
+  }
+
   File f = SD_MMC.open(DAV_CACHE_FILE, "r");
   if (!f) return false;
 
@@ -2799,16 +2817,19 @@ void davPrecacheOneCover() {
   }
 
   const DAVFileEntry &folder = dav_entries[dav_cover_precache_idx];
+  // Sanitize name — old caches may have stored URL-encoded or leading-slash names
+  String folderName = _davCacheUrlDecode(folder.name);
+  if (folderName.startsWith("/")) folderName = folderName.substring(1);
   String basePath = dav_current_path;
   if (!basePath.endsWith("/")) basePath += "/";
   // Convention: cover = FolderName/FolderName.jpg (or .png)
-  String coverPath = basePath + folder.name + "/" + folder.name + ".jpg";
+  String coverPath = basePath + folderName + "/" + folderName + ".jpg";
 
   // Check if already cached
   String cachePath = davCoverCachePath(coverPath);
   if (!SD_MMC.exists(cachePath.c_str())) {
     // Also check .png variant
-    String pngCoverPath = basePath + folder.name + "/" + folder.name + ".png";
+    String pngCoverPath = basePath + folderName + "/" + folderName + ".png";
     String pngCachePath = davCoverCachePath(pngCoverPath);
     if (!SD_MMC.exists(pngCachePath.c_str())) {
       // Not cached — download .jpg first, fallback to .png

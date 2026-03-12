@@ -331,7 +331,7 @@ void handleDiskLoad(WiFiClient &client, const String &mode, const String &name, 
 // ============================================================================
 
 void handleDiskUnload(WiFiClient &client) {
-  if (loaded_disk_index < 0) {
+  if (loaded_disk_index < 0 && !dav_disk_loaded) {
     sendJSON(client, 200, "{\"status\":\"ok\",\"message\":\"No disk loaded\"}");
     return;
   }
