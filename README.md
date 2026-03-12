@@ -52,7 +52,11 @@ Both boards use an **ESP32-S3** with PSRAM and an SD card slot.
 - **Multi-disk support** — Games with multiple disks are grouped automatically; switch disks from the detail view
 - **USB Mass Storage** — The ESP32 presents a FAT12 RAM disk over USB, so retro machines see a standard floppy drive
 - **Themeable UI** — Three built-in themes (Amiga WB2, Cyberpunk, Steampunk) with PNG button assets; create your own
-- **WiFi Web Server** — Built-in WiFi Access Point with browser-based management UI (game upload, config editing, theme switching)
+- **First-boot setup** — On a blank SD card the firmware automatically creates the full folder structure and writes the default theme assets — no manual preparation needed
+- **WiFi Web Server** — Built-in WiFi Access Point with browser-based management UI (game upload, config editing, theme switching, log viewer)
+- **WebDAV client** — Stream disk images directly from a WebDAV server over WiFi without copying files to the SD card first
+- **FTP client** — Load disk images from an FTP server over WiFi
+- **SD logging** — All diagnostic messages are written to `/LOG.TXT` on the SD card and readable from the web UI Log tab
 - **Auto-resume** — The last loaded disk and theme are saved to `CONFIG.TXT` and restored on boot
 - **ADF/DSK modes** — Switch between Amiga (ADF) and ZX/CPC (DSK) disk formats from the info screen
 
@@ -87,24 +91,29 @@ Missing PNGs fall back to simple drawn buttons, so you don't need to provide all
 
 ## SD Card Layout
 
+The SD card structure is created automatically on first boot — just insert a blank formatted card and power on. The firmware creates all required folders, writes a default `CONFIG.TXT`, and extracts the built-in Amiga WB2 theme PNG assets to `/THEMES/AMIGA_WB2/`.
+
 ```
 SD Card Root/
 ├── CONFIG.TXT              # Auto-generated config file
+├── LOG.TXT                 # Diagnostic log (when LOG_ENABLED=1)
 ├── THEMES/
-│   ├── AMIGA_WB2/          # Theme folders with PNG button assets
+│   ├── AMIGA_WB2/          # Default theme (written on first boot)
 │   ├── CYBERPUNK/
 │   └── STEAMPUNK/
-└── adfs/                   # Disk images (ADF mode)
-    ├── Speedball 2/
-    │   ├── Speedball 2.adf       # Single-disk game
-    │   ├── Speedball 2.jpg       # Cover art (JPEG)
-    │   └── Speedball 2.nfo       # Game info (plain text)
-    ├── Cannon Fodder/
-    │   ├── Cannon Fodder-1.adf   # Multi-disk: use -1, -2, -3 suffix
-    │   ├── Cannon Fodder-2.adf
-    │   ├── Cannon Fodder-3.adf
-    │   ├── Cannon Fodder.jpg
-    │   └── Cannon Fodder.nfo
+├── ADF/                    # Disk images (ADF mode)
+│   ├── Speedball 2/
+│   │   ├── Speedball 2.adf       # Single-disk game
+│   │   ├── Speedball 2.jpg       # Cover art (JPEG)
+│   │   └── Speedball 2.nfo       # Game info (plain text)
+│   ├── Cannon Fodder/
+│   │   ├── Cannon Fodder-1.adf   # Multi-disk: use -1, -2, -3 suffix
+│   │   ├── Cannon Fodder-2.adf
+│   │   ├── Cannon Fodder-3.adf
+│   │   ├── Cannon Fodder.jpg
+│   │   └── Cannon Fodder.nfo
+│   └── ...
+└── DSK/                    # Disk images (DSK mode, same structure)
     └── ...
 ```
 
@@ -116,7 +125,7 @@ The `sdcard_example/` folder in this repository contains a ready-to-use SD card 
 - **Multi-disk games**: `GameName-1.adf`, `GameName-2.adf`, etc.
 - **Cover art**: `GameName.jpg` (JPEG, any resolution — displayed scaled to fit)
 - **Game info**: `GameName.nfo` (plain text, line 1 = title, line 2 = description)
-- **DSK mode**: Same structure but with `.dsk` files in a `dsks/` folder
+- **DSK mode**: Same structure but with `.dsk` files under `/DSK/`
 
 ## Building
 
@@ -154,8 +163,9 @@ The firmware supports both display types in a single sketch. Edit the `ACTIVE_DI
 
 ## Configuration
 
-The `CONFIG.TXT` file is created automatically on first run and updated when you load a disk or switch themes. You can also edit it manually:
+The `CONFIG.TXT` file is created automatically on first boot and updated when you load a disk or switch themes. You can also edit it manually or via the web UI Config tab.
 
+**Core settings:**
 ```ini
 DISPLAY=JC3248
 LASTMODE=ADF
@@ -163,7 +173,34 @@ THEME=AMIGA_WB2
 LASTFILE=Cannon Fodder-1.adf
 ```
 
-See the included `CONFIG.TXT` for all available options and documentation.
+**WiFi & logging:**
+```ini
+WIFI_ENABLED=1
+LOG_ENABLED=1          # Write diagnostic log to /LOG.TXT on SD card
+```
+
+**WebDAV client:**
+```ini
+DAV_ENABLED=1
+DAV_HOST=192.168.1.10
+DAV_PORT=80
+DAV_USER=admin
+DAV_PASS=secret
+DAV_PATH=/dav/amiga
+DAV_HTTPS=0
+```
+
+**FTP client:**
+```ini
+FTP_ENABLED=1
+FTP_HOST=192.168.1.10
+FTP_PORT=21
+FTP_USER=admin
+FTP_PASS=secret
+FTP_PATH=/amiga
+```
+
+See the auto-generated `CONFIG.TXT` on your SD card for all available keys and their defaults.
 
 ## WiFi Web Server
 
@@ -172,15 +209,20 @@ The firmware includes a built-in WiFi Access Point that serves a browser-based m
 **Quick Start:**
 1. Connect to WiFi network `Gotek-Setup` (password: `retrogaming`)
 2. Open `http://192.168.4.1` in your browser
-3. You'll see a dashboard with four tabs: Dashboard, Config, Games, and Themes
+3. You'll see a dashboard with tabs: Dashboard, Config, Games, Themes, WebDAV, FTP, and Log
 
 **Features:**
 - **Dashboard** — System stats (memory, SD card usage, loaded game, WiFi clients)
 - **Config Editor** — Edit all settings via web form (display type, theme, WiFi credentials)
 - **Game Manager** — Upload new games (drag & drop ADF/DSK files + cover art + NFO), delete games, edit game info
 - **Theme Switcher** — View installed themes and activate a different one
+- **WebDAV** — Connect to a WebDAV server and stream disk images directly without copying to SD card
+- **FTP** — Connect to an FTP server and load disk images over WiFi
+- **Log** — View the live diagnostic log (`/LOG.TXT`) from the browser; clear with one click
 
-**WiFi Settings in CONFIG.TXT:**
+Tabs for disabled features (FTP, WebDAV, Log) are automatically hidden in the web UI.
+
+**WiFi AP settings in CONFIG.TXT:**
 ```ini
 WIFI_ENABLED=1
 WIFI_SSID=Gotek-Setup
@@ -190,7 +232,7 @@ WIFI_CHANNEL=6
 
 Set `WIFI_ENABLED=0` to disable the WiFi AP and save power/memory.
 
-**Remote Dongle Settings in CONFIG.TXT:**
+**Remote Dongle settings in CONFIG.TXT:**
 ```ini
 REMOTE_ENABLED=1
 REMOTE_SSID=Gotek-Dongle
@@ -199,7 +241,7 @@ REMOTE_HOST=192.168.4.1
 REMOTE_PORT=80
 ```
 
-When `REMOTE_ENABLED=1`, the touchscreen connects to the dongle's WiFi AP and sends disk images wirelessly when you tap INSERT. The touchscreen's own WiFi AP and web server can still run simultaneously (AP+STA dual mode). A `[REMOTE]` indicator appears on the detail screen, and the info screen shows dongle connection status.
+When `REMOTE_ENABLED=1`, the touchscreen connects to the dongle's WiFi AP and sends disk images wirelessly when you tap INSERT. The touchscreen's own AP and web server can still run simultaneously (AP+STA dual mode). A `[REMOTE]` indicator appears on the detail screen.
 
 ## Architecture
 
