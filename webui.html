@@ -2635,8 +2635,16 @@ async function davLoadStatus() {
       // Show alpha filter from cache if available so user can browse without connecting
       if (status.has_cache && davAllEntries.length === 0) davBrowse('/');
     }
-    // Re-render list if loaded to update playing badges
-    if (davAllEntries.length > 0) davRenderGameList(davAllEntries);
+    // Re-render list to update playing badges — but only if no modal is open
+    // and only through the active filter (never dump the full list)
+    const modalOpen = document.getElementById('modal-dav-detail').classList.contains('show');
+    if (davAllEntries.length > 0 && !modalOpen) {
+      const search = document.getElementById('dav-search').value.trim();
+      if (search || davActiveAlpha) {
+        davFilterGames();
+      }
+      // If no filter active, leave the empty-state as-is — don't show unfiltered list
+    }
   } catch (e) {
     document.getElementById('dav-status-bar').className = 'ftp-status error';
     document.getElementById('dav-status-bar').textContent = 'Failed to get WebDAV status';
@@ -2835,7 +2843,18 @@ async function davOpenFolder(folderPath, folderName) {
   davLoadedFileAtModalOpen = davLoadedFile;  // snapshot for change detection on close
 
   document.getElementById('dav-modal-title').textContent = folderName;
-  document.getElementById('dav-modal-load-status').textContent = '';
+  document.getElementById('dav-modal-load-status').innerHTML =
+    '<span style="color:var(--c-text-muted)"><span class="spinner" style="width:12px;height:12px;margin-right:6px;vertical-align:middle"></span>Loading...</span>';
+
+  // Disable Load/Eject until PROPFIND completes
+  const loadBtn = document.getElementById('dav-modal-load-btn');
+  const ejectBtn = document.getElementById('dav-modal-eject-btn');
+  loadBtn.disabled = true;
+  ejectBtn.disabled = true;
+
+  // Clear stale disk list
+  document.getElementById('dav-modal-disk-select').innerHTML = '';
+  document.getElementById('dav-modal-disks').innerHTML = '';
 
   // Show modal immediately with loading state
   const modal = document.getElementById('modal-dav-detail');
@@ -2903,11 +2922,18 @@ async function davOpenFolder(folderPath, folderName) {
       nfoEl.innerHTML = '';
     }
 
-    // Check if currently playing
+    // PROPFIND done — enable buttons and update status
+    loadBtn.disabled = (disks.length === 0);
+    ejectBtn.disabled = false;
+
     const isPlaying = davLoadedFile && davLoadedFile.startsWith(folderPath + '/');
     if (isPlaying) {
       let loadedName = davLoadedFile.split('/').pop();
       document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Playing: ' + esc(loadedName) + '</span>';
+    } else if (disks.length === 0) {
+      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-text-muted)">No disk files found</span>';
+    } else {
+      document.getElementById('dav-modal-load-status').textContent = '';
     }
 
     // Load button handler
@@ -2947,6 +2973,10 @@ async function davOpenFolder(folderPath, folderName) {
 
   } catch(e) {
     document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--c-err)">Failed to load folder contents</p>';
+    document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-err)">Error loading folder</span>';
+    // Re-enable eject so user can still eject a previously loaded disk
+    loadBtn.disabled = true;
+    ejectBtn.disabled = false;
   }
 }
 
