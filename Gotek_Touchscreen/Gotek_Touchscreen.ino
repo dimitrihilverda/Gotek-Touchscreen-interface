@@ -2789,6 +2789,10 @@ void davPrioritizeFolder(const String &folderName) {
   }
 }
 
+// Forward declaration — isDiskFile is defined in shared/connectivity_api.h
+// which is included later via api_handlers.h / webserver.h.
+bool isDiskFile(const String &name);
+
 // Call this once per loop() iteration when idle (no touch activity).
 // Downloads ONE cover per call to keep touch responsive.
 void davPrecacheOneCover() {
