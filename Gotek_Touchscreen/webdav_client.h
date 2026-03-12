@@ -45,10 +45,12 @@ public:
     _lastError = "";
     if (cfg_dav_host.length() == 0) {
       _lastError = "No WebDAV host configured";
+      _log("DAV connect: " + _lastError);
       return false;
     }
     if (WiFi.status() != WL_CONNECTED) {
-      _lastError = "WiFi not connected";
+      _lastError = "WiFi not connected (status=" + String(WiFi.status()) + ")";
+      _log("DAV connect: " + _lastError);
       return false;
     }
 
@@ -113,7 +115,8 @@ public:
     }
 
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
-      _lastError = "Connection failed to " + cfg_dav_host + ":" + String(cfg_dav_port);
+      _lastError = "TCP connect failed to " + cfg_dav_host + ":" + String(cfg_dav_port);
+      _log("DAV: " + _lastError);
       delete tcp;
       return false;
     }
@@ -144,6 +147,7 @@ public:
 
     if (response.length() == 0) {
       _lastError = "Empty response from server";
+      _log("DAV: " + _lastError);
       return false;
     }
 
@@ -213,7 +217,8 @@ public:
     }
 
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
-      _lastError = "Connection failed";
+      _lastError = "TCP connect failed for download";
+      _log("DAV: " + _lastError);
       delete tcp;
       return -1;
     }
@@ -329,7 +334,8 @@ public:
     }
 
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
-      _lastError = "Connection failed";
+      _lastError = "TCP connect failed for stream";
+      _log("DAV: " + _lastError);
       delete tcp;
       return -1;
     }
@@ -451,6 +457,8 @@ private:
     if (_debugLog.length() > 2048) {
       _debugLog = _debugLog.substring(_debugLog.length() - 1500);
     }
+    // Also write to SD card log file (if logging enabled)
+    sdLog(msg);
   }
 
   // Base64 encode for HTTP Basic Auth

@@ -36,17 +36,20 @@ public:
     _lastError = "";
     if (cfg_ftp_host.length() == 0) {
       _lastError = "No FTP host configured";
+      sdLog("FTP: " + _lastError);
       return false;
     }
     if (WiFi.status() != WL_CONNECTED) {
       _lastError = "WiFi not connected";
+      sdLog("FTP: " + _lastError);
       return false;
     }
 
-    Serial.println("FTP: connecting to " + cfg_ftp_host + ":" + String(cfg_ftp_port));
+    sdLog("FTP: connecting to " + cfg_ftp_host + ":" + String(cfg_ftp_port));
 
     if (!_ctrl.connect(cfg_ftp_host.c_str(), cfg_ftp_port)) {
-      _lastError = "Connection failed";
+      _lastError = "TCP connect failed to " + cfg_ftp_host + ":" + String(cfg_ftp_port);
+      sdLog("FTP: " + _lastError);
       return false;
     }
     _ctrl.setTimeout(10000);
@@ -55,6 +58,7 @@ public:
     String resp = _readResponse();
     if (!resp.startsWith("220")) {
       _lastError = "Bad welcome: " + resp;
+      sdLog("FTP: " + _lastError);
       disconnect();
       return false;
     }
@@ -64,12 +68,14 @@ public:
       // Some servers accept USER directly with 230
       if (!_lastResp.startsWith("230")) {
         _lastError = "USER failed: " + _lastResp;
+        sdLog("FTP: " + _lastError);
         disconnect();
         return false;
       }
     } else {
       if (!_sendCmd("PASS " + cfg_ftp_pass, "230")) {
         _lastError = "Login failed: " + _lastResp;
+        sdLog("FTP: " + _lastError);
         disconnect();
         return false;
       }
@@ -79,7 +85,7 @@ public:
     _sendCmd("TYPE I", "200");
 
     _connected = true;
-    Serial.println("FTP: logged in as " + cfg_ftp_user);
+    sdLog("FTP: logged in as " + cfg_ftp_user);
     return true;
   }
 
@@ -90,7 +96,7 @@ public:
       _ctrl.stop();
     }
     _connected = false;
-    Serial.println("FTP: disconnected");
+    sdLog("FTP: disconnected");
   }
 
   bool isConnected() { return _connected && _ctrl.connected(); }
@@ -164,7 +170,7 @@ public:
       _parseList(listing, entries);
     }
 
-    Serial.println("FTP: listed " + String(entries.size()) + " entries in " + fullPath);
+    sdLog("FTP: listed " + String(entries.size()) + " entries in " + fullPath);
     return true;
   }
 
@@ -256,7 +262,7 @@ public:
       return -1;
     }
 
-    Serial.println("FTP: downloaded " + fullRemote + " -> " + localPath + " (" + String(totalBytes) + " bytes)");
+    sdLog("FTP: downloaded " + fullRemote + " -> " + localPath + " (" + String(totalBytes) + " bytes)");
     return totalBytes;
   }
 

@@ -1263,21 +1263,29 @@ void handleDAVStatus(WiFiClient &client) {
 
 // POST /api/dav/connect — Connect to WebDAV server
 void handleDAVConnect(WiFiClient &client) {
+  sdLog("API: DAV connect request");
   if (!cfg_dav_enabled) {
+    sdLog("API: DAV not enabled in config");
     sendJSON(client, 400, "{\"error\":\"WebDAV not enabled in config\"}");
     return;
   }
   if (WiFi.status() != WL_CONNECTED) {
+    sdLog("API: WiFi not connected (status=" + String(WiFi.status()) + ")");
     sendJSON(client, 503, "{\"error\":\"WiFi client not connected to network\"}");
     return;
   }
+  sdLog("API: DAV connecting to " + cfg_dav_host + ":" + String(cfg_dav_port) +
+        " user=" + cfg_dav_user + " https=" + String(cfg_dav_https) +
+        " path=" + cfg_dav_path);
   if (davClient.connect()) {
+    sdLog("API: DAV connected OK");
     String json = "{\"status\":\"connected\"";
     String dbg = davClient.lastDebug();
     if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
     json += "}";
     sendJSON(client, 200, json);
   } else {
+    sdLog("API: DAV connect FAILED: " + davClient.lastError());
     String json = "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"";
     String dbg = davClient.lastDebug();
     if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
@@ -1295,6 +1303,7 @@ void handleDAVDisconnect(WiFiClient &client) {
 // GET /api/dav/list?path=/subdir&refresh=1 — List WebDAV directory
 // Uses SD card cache for root listing unless refresh=1 is specified
 void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefresh) {
+  sdLog("API: DAV list path=" + queryPath + " refresh=" + String(forceRefresh));
   if (!cfg_dav_enabled) {
     sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}");
     return;
@@ -1346,11 +1355,14 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
     return;
   }
 
+  sdLog("API: DAV PROPFIND for path=" + path);
   std::vector<DAVFileEntry> entries;
   if (!davClient.listDir(path, entries)) {
+    sdLog("API: DAV list FAILED: " + davClient.lastError());
     sendJSON(client, 500, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
     return;
   }
+  sdLog("API: DAV list OK, " + String(entries.size()) + " entries");
 
   // Separate cover/nfo metadata from browsable entries
   String coverFile = "", nfoFile = "";

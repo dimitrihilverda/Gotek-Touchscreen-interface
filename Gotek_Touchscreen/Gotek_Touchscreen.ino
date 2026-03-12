@@ -464,6 +464,9 @@ String detail_jpg_path = "";
 vector<int> disk_set;         // file_list indices for all disks of current game
 int loaded_disk_index = -1;   // file_list index of currently loaded disk (-1 = none)
 
+// Forward declaration: sdLog() is defined later but needed by FTP/WebDAV clients
+void sdLog(const String &msg);
+
 // FTP and WebDAV clients (included here so types are available for state vars below)
 #include "ftp_client.h"
 #include "webdav_client.h"
@@ -2139,13 +2142,17 @@ void drawThemedButton(int x, int y, int w, int h,
 
   int imgW = 0, imgH = 0;
   if (getPngSize(path.c_str(), &imgW, &imgH)) {
-    // Clip to button bounds so oversized PNGs don't bleed outside
-    lcd.setClipRect(x, y, w, h);
     // Center the PNG within the button area
     int bx = x + (w - imgW) / 2;
     int by = y + (h - imgH) / 2;
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+    // Clip to button bounds so oversized PNGs don't bleed outside (Waveshare only)
+    lcd.setClipRect(x, y, w, h);
     drawPngFile(path.c_str(), bx, by);
     lcd.clearClipRect();
+#else
+    drawPngFile(path.c_str(), bx, by);
+#endif
   } else {
     // Fallback: filled rectangle with border and text
     gfx_fillRect(x, y, w, h, TFT_BLACK);
