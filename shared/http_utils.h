@@ -141,10 +141,11 @@ struct HttpRequest {
   int    contentLength;
   String filename;
   String contentType;
+  String boundary;   // multipart boundary (if any)
 };
 
 inline bool parseRequest(WiFiClient &client, HttpRequest &req) {
-  req.method = req.path = req.query = req.body = req.filename = req.contentType = "";
+  req.method = req.path = req.query = req.body = req.filename = req.contentType = req.boundary = "";
   req.contentLength = 0;
 
   String line = client.readStringUntil('\n');
@@ -168,11 +169,15 @@ inline bool parseRequest(WiFiClient &client, HttpRequest &req) {
     String lower = hdr; lower.toLowerCase();
     if      (lower.startsWith("content-length:")) { req.contentLength = hdr.substring(15).toInt(); }
     else if (lower.startsWith("x-filename:"))     { req.filename = hdr.substring(11); req.filename.trim(); }
-    else if (lower.startsWith("content-type:"))   { req.contentType = hdr.substring(13); req.contentType.trim(); }
+    else if (lower.startsWith("content-type:"))   {
+      req.contentType = hdr.substring(13); req.contentType.trim();
+      int bIdx = req.contentType.indexOf("boundary=");
+      if (bIdx >= 0) { req.boundary = req.contentType.substring(bIdx + 9); req.boundary.trim(); }
+    }
   }
 
   if (req.method == "POST" && req.contentLength > 0 && req.contentLength < 4096 &&
-      req.contentType.indexOf("octet-stream") < 0) {
+      req.boundary.length() == 0) {
     unsigned long t = millis();
     while (client.available() < req.contentLength && millis() - t < 3000) { yield(); delay(1); }
     req.body = client.readString();
