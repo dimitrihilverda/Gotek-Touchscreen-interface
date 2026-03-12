@@ -2628,6 +2628,21 @@ void davSaveCache() {
   f.close();
 }
 
+// Minimal URL-decode for cache names — shared/http_utils.h isn't available this early
+static String _davCacheUrlDecode(const String &in) {
+  String out; out.reserve(in.length());
+  for (int i = 0; i < (int)in.length(); i++) {
+    char c = in[i];
+    if (c == '%' && i + 2 < (int)in.length()) {
+      char hi = in[i+1], lo = in[i+2];
+      int h = (hi>='0'&&hi<='9')?hi-'0':(hi>='A'&&hi<='F')?hi-'A'+10:(hi>='a'&&hi<='f')?hi-'a'+10:-1;
+      int l = (lo>='0'&&lo<='9')?lo-'0':(lo>='A'&&lo<='F')?lo-'A'+10:(lo>='a'&&lo<='f')?lo-'a'+10:-1;
+      if (h>=0&&l>=0) { out += (char)((h<<4)|l); i+=2; } else out += c;
+    } else { out += c; }
+  }
+  return out;
+}
+
 bool davLoadCache() {
   if (!SD_MMC.exists(DAV_CACHE_FILE)) return false;
   File f = SD_MMC.open(DAV_CACHE_FILE, "r");
@@ -2662,7 +2677,7 @@ bool davLoadCache() {
 
     if (line.startsWith("D|")) {
       DAVFileEntry entry;
-      entry.name = urlDecode(line.substring(2));  // decode in case old cache had URL-encoded names
+      entry.name = _davCacheUrlDecode(line.substring(2));  // decode in case old cache had URL-encoded names
       entry.isDir = true;
       entry.size = 0;
       entry.hasCover = false;
@@ -2680,12 +2695,12 @@ bool davLoadCache() {
       DAVFileEntry entry;
       entry.isDir = false;
       entry.size = rest.substring(0, p1).toInt();
-      entry.name = urlDecode(rest.substring(p1 + 1, p2));  // decode in case old cache had URL-encoded names
+      entry.name = _davCacheUrlDecode(rest.substring(p1 + 1, p2));  // decode in case old cache had URL-encoded names
       entry.hasCover = false;
       entry.hasNfo = false;
       if (p3 >= 0) {
-        entry.coverFile = urlDecode(rest.substring(p2 + 1, p3));
-        entry.nfoFile = urlDecode(rest.substring(p3 + 1));
+        entry.coverFile = _davCacheUrlDecode(rest.substring(p2 + 1, p3));
+        entry.nfoFile = _davCacheUrlDecode(rest.substring(p3 + 1));
         if (entry.coverFile.length() > 0) entry.hasCover = true;
         if (entry.nfoFile.length() > 0) entry.hasNfo = true;
       }
