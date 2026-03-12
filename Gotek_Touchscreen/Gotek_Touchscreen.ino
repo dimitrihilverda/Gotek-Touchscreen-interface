@@ -2199,13 +2199,11 @@ void drawCracktroSplash() {
 
   // Scroll text — classic cracktro scroller
   const char *scrollText =
-    "       CRACKED BY DEXX OF OMEGAWARE  *  "
-    "GOTEK TOUCHSCREEN INTERFACE  ...  "
+    "       GOTEK TOUCHSCREEN INTERFACE  *  CODED BY MEZ AND DIMMY OF OMEGAWARE  *  "
     "THE ULTIMATE RETRO DISK LOADER FOR AMIGA AND CPC  ...  "
-    "ORIGINAL CODE BY DIMMY  ...  "
-    "ACTIVE THEME ENGINE - PNG BUTTON SUPPORT - FAT12 RAM DISK  ...  "
+    "WEBDAV STREAMING - WIFI WEB INTERFACE - THEME ENGINE - FAT12 RAM DISK  ...  "
     "GREETINGS TO ALL RETRO COMPUTING ENTHUSIASTS!  ...  "
-    "OMEGAWARE - QUALITY OVER QUANTITY SINCE 2025  *  "
+    "KEEP THE SCENE ALIVE  ...  OMEGAWARE 2025  *  "
     "TAP SCREEN TO CONTINUE  ...       ";
   int scrollLen = strlen(scrollText);
   int scrollPos = 0;
