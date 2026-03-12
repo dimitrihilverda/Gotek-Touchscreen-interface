@@ -1166,6 +1166,9 @@ void saveConfig() {
     f.println("DAV_HTTPS=" + String(cfg_dav_https ? "1" : "0"));
   }
 
+  // Logging
+  f.println("LOG_ENABLED=" + String(cfg_log_enabled ? "1" : "0"));
+
   f.close();
 }
 
@@ -3084,7 +3087,7 @@ void drawDAVDetail() {
   if (imgH < 60) imgH = 60;
 
   bool coverDrawn = false;
-  if (dav_detail_cover_path.length() > 0 && !dav_detail_needs_full_load) {
+  if (dav_detail_cover_path.length() > 0) {
     size_t maxCover = 100 * 1024;
     uint8_t *coverBuf = (uint8_t *)ps_malloc(maxCover);
     if (coverBuf) {
@@ -4648,19 +4651,37 @@ void loop() {
       dav_detail_cover_path = "";
       dav_detail_nfo_text = "";
       dav_detail_disk_sel = 0;
+      String dirPath = folderPath;
+      if (!dirPath.endsWith("/")) dirPath += "/";
       if (nowPlaying.path.length() > 0) {
         String diskFile = nowPlaying.path;
         int sl = diskFile.lastIndexOf('/');
         if (sl >= 0) diskFile = diskFile.substring(sl + 1);
         dav_detail_disks.push_back(diskFile);
-        String dirPath = folderPath;
-        if (!dirPath.endsWith("/")) dirPath += "/";
         dav_detail_path = dirPath + diskFile;
+
+        // Guess cover path from disk filename (GameName.adf -> GameName.jpg/.png)
+        // drawDAVDetail() will try the cache first, then download if needed
+        String base = diskFile;
+        int dot = base.lastIndexOf('.');
+        if (dot > 0) base = base.substring(0, dot);
+        // Remove disk number suffix e.g. " Disk1", "_1", "-1"
+        base.trim();
+        if (base.length() > 2) {
+          char last = base.charAt(base.length() - 1);
+          char prev = base.charAt(base.length() - 2);
+          if (last >= '1' && last <= '9' && (prev == ' ' || prev == '_' || prev == '-')) {
+            base = base.substring(0, base.length() - 2);
+            base.trim();
+          }
+        }
+        dav_detail_cover_path = dirPath + base + ".jpg";
       }
 
-      // Switch screen and draw — NO network calls
+      // Switch screen and draw — NO network calls for disk list / NFO,
+      // but cover will be attempted from cache or downloaded lazily
       current_screen = SCR_WEBDAV_DETAIL;
-      dav_detail_needs_full_load = true;  // flag: load cover/NFO/disks on next user interaction
+      dav_detail_needs_full_load = true;  // flag: full PROPFIND/disk-list on next user nav
       drawDAVDetail();
     }
   }

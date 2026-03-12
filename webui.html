@@ -328,6 +328,29 @@
         border-bottom: 1px solid var(--c-border);
       }
 
+      /* Enabled toggle bar — sits above the fields grid, never mixed in */
+      .cfg-enabled-row {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+        margin-bottom: var(--spacing-md);
+        padding: var(--spacing-sm) var(--spacing-md);
+        background: color-mix(in srgb, var(--c-accent) 8%, transparent);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+      }
+      .cfg-enabled-row label {
+        flex: 1;
+        font-weight: 600;
+        font-size: 13px;
+        margin: 0;
+      }
+      .cfg-enabled-select {
+        width: auto;
+        min-width: 80px;
+        flex-shrink: 0;
+      }
+
       /* form-row: always 1 column on mobile, explicit variants for wider */
       .form-row {
         display: grid;
@@ -1363,14 +1386,14 @@
           <!-- WiFi AP -->
           <div class="cfg-section">
             <div class="cfg-section-title">WiFi Access Point</div>
-            <div class="form-row form-row-3">
-              <div class="form-group">
-                <label for="cfg-wifi-enabled">Enabled</label>
-                <select id="cfg-wifi-enabled" name="WIFI_ENABLED">
-                  <option value="1">Yes</option>
-                  <option value="0">No</option>
-                </select>
-              </div>
+            <div class="cfg-enabled-row">
+              <label for="cfg-wifi-enabled">Enabled</label>
+              <select id="cfg-wifi-enabled" name="WIFI_ENABLED" class="cfg-enabled-select">
+                <option value="1">Yes</option>
+                <option value="0">No</option>
+              </select>
+            </div>
+            <div class="form-row form-row-2">
               <div class="form-group">
                 <label for="cfg-wifi-ssid">SSID</label>
                 <input type="text" id="cfg-wifi-ssid" name="WIFI_SSID" placeholder="Gotek-Setup">
@@ -1392,22 +1415,20 @@
           <!-- WiFi Client -->
           <div class="cfg-section">
             <div class="cfg-section-title">WiFi Client <small style="font-weight:400;font-size:13px">connect to your home network</small></div>
-            <div class="form-row form-row-2">
-              <div class="form-group">
-                <label for="cfg-wifi-client-enabled">Enabled</label>
-                <select id="cfg-wifi-client-enabled" name="WIFI_CLIENT_ENABLED">
-                  <option value="0">No</option>
-                  <option value="1">Yes</option>
-                </select>
+            <div class="cfg-enabled-row">
+              <label for="cfg-wifi-client-enabled">Enabled</label>
+              <select id="cfg-wifi-client-enabled" name="WIFI_CLIENT_ENABLED" class="cfg-enabled-select">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfg-wifi-client-ssid">Network SSID</label>
+              <div class="net-row">
+                <input type="text" id="cfg-wifi-client-ssid" name="WIFI_CLIENT_SSID" placeholder="MyNetwork">
+                <button type="button" class="btn btn-sm" onclick="scanNetworks()">Scan</button>
               </div>
-              <div class="form-group">
-                <label for="cfg-wifi-client-ssid">Network SSID</label>
-                <div class="net-row">
-                  <input type="text" id="cfg-wifi-client-ssid" name="WIFI_CLIENT_SSID" placeholder="MyNetwork">
-                  <button type="button" class="btn btn-sm" onclick="scanNetworks()">Scan</button>
-                </div>
-                <div id="wifi-scan-list" class="wifi-list hidden"></div>
-              </div>
+              <div id="wifi-scan-list" class="wifi-list hidden"></div>
             </div>
             <div class="form-group">
               <label for="cfg-wifi-client-pass">Password</label>
@@ -1425,14 +1446,14 @@
           <!-- FTP -->
           <div class="cfg-section">
             <div class="cfg-section-title">FTP Source <small style="font-weight:400;font-size:13px">plain FTP only, no SFTP</small></div>
+            <div class="cfg-enabled-row">
+              <label for="cfg-ftp-enabled">Enabled</label>
+              <select id="cfg-ftp-enabled" name="FTP_ENABLED" class="cfg-enabled-select">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </div>
             <div class="form-row form-row-3">
-              <div class="form-group">
-                <label for="cfg-ftp-enabled">Enabled</label>
-                <select id="cfg-ftp-enabled" name="FTP_ENABLED">
-                  <option value="0">No</option>
-                  <option value="1">Yes</option>
-                </select>
-              </div>
               <div class="form-group">
                 <label for="cfg-ftp-host">Host</label>
                 <input type="text" id="cfg-ftp-host" name="FTP_HOST" placeholder="192.168.1.100">
@@ -1441,22 +1462,22 @@
                 <label for="cfg-ftp-port">Port</label>
                 <input type="number" id="cfg-ftp-port" name="FTP_PORT" placeholder="21">
               </div>
-            </div>
-            <div class="form-row form-row-2">
               <div class="form-group">
                 <label for="cfg-ftp-user">Username</label>
                 <input type="text" id="cfg-ftp-user" name="FTP_USER" placeholder="anonymous">
               </div>
+            </div>
+            <div class="form-row form-row-2">
               <div class="form-group">
                 <label for="cfg-ftp-path">Base Path</label>
                 <input type="text" id="cfg-ftp-path" name="FTP_PATH" placeholder="/">
               </div>
-            </div>
-            <div class="form-group">
-              <label for="cfg-ftp-pass">Password</label>
-              <div class="pass-wrap">
-                <input type="password" id="cfg-ftp-pass" name="FTP_PASS">
-                <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+              <div class="form-group">
+                <label for="cfg-ftp-pass">Password</label>
+                <div class="pass-wrap">
+                  <input type="password" id="cfg-ftp-pass" name="FTP_PASS">
+                  <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+                </div>
               </div>
             </div>
           </div>
@@ -1464,14 +1485,14 @@
           <!-- WebDAV -->
           <div class="cfg-section">
             <div class="cfg-section-title">WebDAV Source <small style="font-weight:400;font-size:13px">Nextcloud, Stackstorage, etc.</small></div>
+            <div class="cfg-enabled-row">
+              <label for="cfg-dav-enabled">Enabled</label>
+              <select id="cfg-dav-enabled" name="DAV_ENABLED" class="cfg-enabled-select">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </div>
             <div class="form-row form-row-3">
-              <div class="form-group">
-                <label for="cfg-dav-enabled">Enabled</label>
-                <select id="cfg-dav-enabled" name="DAV_ENABLED">
-                  <option value="0">No</option>
-                  <option value="1">Yes</option>
-                </select>
-              </div>
               <div class="form-group">
                 <label for="cfg-dav-host">Host</label>
                 <input type="text" id="cfg-dav-host" name="DAV_HOST" placeholder="username.stackstorage.com">
@@ -1480,8 +1501,6 @@
                 <label for="cfg-dav-port">Port</label>
                 <input type="number" id="cfg-dav-port" name="DAV_PORT" placeholder="443">
               </div>
-            </div>
-            <div class="form-row form-row-3">
               <div class="form-group">
                 <label for="cfg-dav-https">Protocol</label>
                 <select id="cfg-dav-https" name="DAV_HTTPS">
@@ -1489,6 +1508,8 @@
                   <option value="0">HTTP (80)</option>
                 </select>
               </div>
+            </div>
+            <div class="form-row form-row-3">
               <div class="form-group">
                 <label for="cfg-dav-user">Username</label>
                 <input type="text" id="cfg-dav-user" name="DAV_USER">
@@ -1497,14 +1518,27 @@
                 <label for="cfg-dav-path">Base Path</label>
                 <input type="text" id="cfg-dav-path" name="DAV_PATH" placeholder="/remote.php/webdav/">
               </div>
-            </div>
-            <div class="form-group">
-              <label for="cfg-dav-pass">Password</label>
-              <div class="pass-wrap">
-                <input type="password" id="cfg-dav-pass" name="DAV_PASS">
-                <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+              <div class="form-group">
+                <label for="cfg-dav-pass">Password</label>
+                <div class="pass-wrap">
+                  <input type="password" id="cfg-dav-pass" name="DAV_PASS">
+                  <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+                </div>
               </div>
             </div>
+          </div>
+
+          <!-- Logging -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">Logging</div>
+            <div class="cfg-enabled-row">
+              <label for="cfg-log-enabled">Write log to SD card (/LOG.TXT)</label>
+              <select id="cfg-log-enabled" name="LOG_ENABLED" class="cfg-enabled-select">
+                <option value="0">Off</option>
+                <option value="1">On</option>
+              </select>
+            </div>
+            <p style="margin:var(--spacing-sm) 0 0;font-size:12px;color:var(--c-text-muted)">When On, the Log tab is visible and events are written to /LOG.TXT on the SD card. Saving this setting takes effect immediately.</p>
           </div>
 
           <button type="submit" class="btn btn-primary" style="width:100%;min-height:48px;margin-top:var(--spacing-md)">Save Configuration</button>
@@ -1830,6 +1864,10 @@ async function loadConfig() {
   document.getElementById('cfg-dav-user').value = cfg.DAV_USER || '';
   document.getElementById('cfg-dav-pass').value = cfg.DAV_PASS || '';
   document.getElementById('cfg-dav-path').value = cfg.DAV_PATH || '/remote.php/webdav/';
+  const logEnabled = (cfg.LOG_ENABLED || '0') === '1';
+  document.getElementById('cfg-log-enabled').value = logEnabled ? '1' : '0';
+  const logTab = document.getElementById('tab-log');
+  if (logTab) logTab.style.display = logEnabled ? '' : 'none';
 
   // Load themes for dropdown
   const themes = await api('/api/themes/list');
@@ -1845,6 +1883,11 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
   const params = new URLSearchParams(form);
   await fetch(API + '/api/config', { method: 'POST', body: params });
   toast('Configuration saved! Reboot device for WiFi changes to take effect.');
+
+  // Log tab visibility follows LOG_ENABLED immediately (no reboot needed)
+  const logEnabled = document.getElementById('cfg-log-enabled').value === '1';
+  const logTab = document.getElementById('tab-log');
+  if (logTab) logTab.style.display = logEnabled ? '' : 'none';
 });
 
 // WiFi scan

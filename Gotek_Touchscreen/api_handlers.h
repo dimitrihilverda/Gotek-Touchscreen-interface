@@ -390,7 +390,8 @@ void handleConfigGet(WiFiClient &client) {
   json += "\"DAV_USER\":\"" + jsonEscape(cfg_dav_user) + "\",";
   json += "\"DAV_PASS\":\"" + jsonEscape(cfg_dav_pass) + "\",";
   json += "\"DAV_PATH\":\"" + jsonEscape(cfg_dav_path) + "\",";
-  json += "\"DAV_HTTPS\":\"" + String(cfg_dav_https ? "1" : "0") + "\"";
+  json += "\"DAV_HTTPS\":\"" + String(cfg_dav_https ? "1" : "0") + "\",";
+  json += "\"LOG_ENABLED\":\"" + String(cfg_log_enabled ? "1" : "0") + "\"";
   json += "}";
 
   sendJSON(client, 200, json);
@@ -500,6 +501,11 @@ void handleConfigPost(WiFiClient &client, const String &body) {
   val = getFormValue(body, "DAV_HTTPS");
   if (val.length() > 0) {
     cfg_dav_https = (val == "1" || val == "true");
+  }
+
+  val = getFormValue(body, "LOG_ENABLED");
+  if (val.length() > 0) {
+    cfg_log_enabled = (val == "1" || val == "true");
   }
 
   saveConfig();
