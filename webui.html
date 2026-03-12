@@ -2537,6 +2537,7 @@ let davConnected = false;
 let davAllEntries = [];  // all folder entries from root listing
 let davActiveAlpha = '';
 let davLoadedFile = '';
+let davLoadedFileAtModalOpen = '';  // snapshot taken when modal opens, to detect changes
 
 async function davLoadStatus() {
   try {
@@ -2792,6 +2793,8 @@ async function davEnsureConnected() {
 }
 
 async function davOpenFolder(folderPath, folderName) {
+  davLoadedFileAtModalOpen = davLoadedFile;  // snapshot for change detection on close
+
   document.getElementById('dav-modal-title').textContent = folderName;
   document.getElementById('dav-modal-load-status').textContent = '';
 
@@ -2910,19 +2913,39 @@ async function davOpenFolder(folderPath, folderName) {
 
 function davCloseFolderModal() {
   document.getElementById('modal-dav-detail').classList.remove('show');
-  // Re-apply current filter (not the full list) so the view stays as-is
-  if (davConnected && davAllEntries.length > 0) {
-    const search = document.getElementById('dav-search').value.trim();
-    if (search || davActiveAlpha) {
-      // Refresh filtered view (also updates playing badges)
-      davFilterGames();
+
+  // Only touch the list if davLoadedFile actually changed (i.e. user loaded or ejected)
+  if (davLoadedFile === davLoadedFileAtModalOpen) return;
+
+  // Something was loaded/ejected — patch just the affected game-item cards in-place
+  // without rebuilding the whole list (no API call, no DOM thrash)
+  document.querySelectorAll('#dav-list .game-item').forEach(card => {
+    const onclick = card.getAttribute('onclick') || '';
+    // Extract folderPath from onclick="davOpenFolder('...','...')"
+    const m = onclick.match(/davOpenFolder\('([^']+)'/);
+    if (!m) return;
+    const folderPath = m[1];
+    const isPlaying = davLoadedFile && davLoadedFile.startsWith(folderPath + '/');
+    const wasPlaying = card.classList.contains('active');
+    if (isPlaying === wasPlaying) return;  // no change for this card
+
+    card.classList.toggle('active', isPlaying);
+    const nameEl = card.querySelector('.game-name');
+    const metaEl = card.querySelector('.game-meta');
+    if (!nameEl || !metaEl) return;
+
+    if (isPlaying) {
+      if (!nameEl.querySelector('.active-indicator')) {
+        nameEl.insertAdjacentHTML('afterbegin', '<span class="active-indicator"></span>');
+      }
+      if (!metaEl.querySelector('.badge-playing')) {
+        metaEl.insertAdjacentHTML('afterbegin', '<span class="badge badge-playing" style="background:var(--c-ok);color:#fff">PLAYING</span> ');
+      }
     } else {
-      // No filter active — show empty-state, same as initial browse state
-      const list = document.getElementById('dav-list');
-      list.innerHTML = '<p style="color:var(--c-text-muted);padding:20px;text-align:center">Choose a letter or search to browse games.</p>';
-      document.getElementById('dav-game-count').textContent = '';
+      nameEl.querySelector('.active-indicator')?.remove();
+      metaEl.querySelector('.badge-playing')?.remove();
     }
-  }
+  });
 }
 
 async function davInsert(remotePath, displayName, btn) {
