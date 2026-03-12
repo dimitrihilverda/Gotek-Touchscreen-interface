@@ -30,6 +30,8 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
+#include "default_theme.h"
+
 // ============================================================================
 // DISPLAY SELECTOR
 // ============================================================================
@@ -394,6 +396,9 @@ String cfg_dav_pass    = "";
 String cfg_dav_path    = "/remote.php/webdav/";
 bool   cfg_dav_https   = true;
 
+// Logging config — write step-by-step log to SD card for debugging
+bool   cfg_log_enabled = false;
+
 // Remote dongle config — send disk images to a WiFi Dongle instead of local USB
 bool   cfg_remote_enabled  = false;
 String cfg_remote_ssid     = "Gotek-Dongle";   // dongle's WiFi AP name
@@ -458,6 +463,9 @@ String detail_jpg_path = "";
 // Multi-disk support
 vector<int> disk_set;         // file_list indices for all disks of current game
 int loaded_disk_index = -1;   // file_list index of currently loaded disk (-1 = none)
+
+// Forward declaration: sdLog() is defined later but needed by FTP/WebDAV clients
+void sdLog(const String &msg);
 
 // FTP and WebDAV clients (included here so types are available for state vars below)
 #include "ftp_client.h"
@@ -1091,6 +1099,8 @@ void loadConfig() {
       cfg_dav_path = val;
     } else if (key == "DAV_HTTPS") {
       cfg_dav_https = (val == "1" || val == "true");
+    } else if (key == "LOG_ENABLED") {
+      cfg_log_enabled = (val == "1" || val == "true");
     }
   }
   f.close();
@@ -1218,6 +1228,160 @@ void init_sd_card() {
   if (!SD_MMC.begin("/sdcard", true)) {
     Serial.println("SD card mount failed!");
   }
+}
+
+// ============================================================================
+// SD card logging — write step-by-step log for debugging without serial monitor
+// ============================================================================
+// Enable in CONFIG.TXT: LOG_ENABLED=1
+// Log is written to /LOG.TXT on the SD card. Cleared on each boot.
+
+void sdLog(const String &msg) {
+  Serial.println(msg);  // always echo to serial
+  if (!cfg_log_enabled) return;
+
+  File f = SD_MMC.open("/LOG.TXT", "a");
+  if (!f) return;
+
+  // Timestamp: milliseconds since boot
+  f.print("[");
+  unsigned long ms = millis();
+  f.print(ms / 1000);
+  f.print(".");
+  if (ms % 1000 < 100) f.print("0");
+  if (ms % 1000 < 10) f.print("0");
+  f.print(ms % 1000);
+  f.print("] ");
+  f.println(msg);
+  f.close();
+}
+
+void sdLogClear() {
+  if (!cfg_log_enabled) return;
+  // Clear log on boot
+  File f = SD_MMC.open("/LOG.TXT", "w");
+  if (f) {
+    f.println("=== Gotek Touchscreen Interface — Boot Log ===");
+    f.close();
+  }
+}
+
+// ============================================================================
+// First-boot scaffolding — create SD folder structure + default config + theme
+// ============================================================================
+void firstBootScaffold() {
+  // Only run if CONFIG.TXT doesn't exist yet (= fresh SD card)
+  if (SD_MMC.exists("/CONFIG.TXT")) return;
+
+  Serial.println("First boot detected — creating SD card structure...");
+
+  // Create required folders
+  const char *folders[] = { "/ADF", "/DSK", "/THEMES", "/THEMES/AMIGA_WB2" };
+  for (auto dir : folders) {
+    if (!SD_MMC.exists(dir)) SD_MMC.mkdir(dir);
+  }
+
+  // Write README files with instructions
+  if (!SD_MMC.exists("/ADF/README.TXT")) {
+    File f = SD_MMC.open("/ADF/README.TXT", "w");
+    if (f) {
+      f.println("Place your Amiga ADF disk images here.");
+      f.println("Use subfolders per game: /ADF/GameName/GameName.adf");
+      f.println("Optional: add GameName.nfo and GameName.jpg for metadata.");
+      f.close();
+    }
+  }
+  if (!SD_MMC.exists("/DSK/README.TXT")) {
+    File f = SD_MMC.open("/DSK/README.TXT", "w");
+    if (f) {
+      f.println("Place your Amstrad CPC DSK disk images here.");
+      f.println("Use subfolders per game: /DSK/GameName/GameName.dsk");
+      f.println("Optional: add GameName.nfo and GameName.jpg for metadata.");
+      f.close();
+    }
+  }
+
+  // Write default theme PNGs from PROGMEM
+  for (int i = 0; i < default_theme_files_count; i++) {
+    const char *path = default_theme_files[i].filename;
+    if (!SD_MMC.exists(path)) {
+      File f = SD_MMC.open(path, "w");
+      if (f) {
+        // Read from PROGMEM byte by byte (safe for all flash types)
+        const uint8_t *src = default_theme_files[i].data;
+        size_t len = default_theme_files[i].len;
+        uint8_t buf[256];
+        size_t written = 0;
+        while (written < len) {
+          size_t chunk = min((size_t)256, len - written);
+          memcpy_P(buf, src + written, chunk);
+          f.write(buf, chunk);
+          written += chunk;
+        }
+        f.close();
+        Serial.println("  Wrote theme: " + String(path));
+      }
+    }
+  }
+
+  // Write default CONFIG.TXT with all options documented
+  File cfg = SD_MMC.open("/CONFIG.TXT", "w");
+  if (cfg) {
+    cfg.println("# ============================================");
+    cfg.println("# Gotek Touchscreen Interface — Configuration");
+    cfg.println("# ============================================");
+    cfg.println("");
+    cfg.println("# Display type: JC3248 or WAVESHARE (auto-detected if empty)");
+    cfg.println("DISPLAY=");
+    cfg.println("");
+    cfg.println("# Theme folder name inside /THEMES/");
+    cfg.println("THEME=AMIGA_WB2");
+    cfg.println("");
+    cfg.println("# Last loaded file (auto-saved, do not edit)");
+    cfg.println("LASTFILE=");
+    cfg.println("LASTMODE=ADF");
+    cfg.println("");
+    cfg.println("# WiFi Access Point (for web interface on phone/laptop)");
+    cfg.println("WIFI_ENABLED=1");
+    cfg.println("WIFI_SSID=GotekTouch");
+    cfg.println("WIFI_PASS=amiga500");
+    cfg.println("WIFI_CHANNEL=6");
+    cfg.println("");
+    cfg.println("# WiFi Client (connect to your home network for internet)");
+    cfg.println("WIFI_CLIENT_ENABLED=0");
+    cfg.println("WIFI_CLIENT_SSID=");
+    cfg.println("WIFI_CLIENT_PASS=");
+    cfg.println("");
+    cfg.println("# Remote Dongle mode (send disks to WiFi dongle)");
+    cfg.println("REMOTE_ENABLED=0");
+    cfg.println("REMOTE_SSID=GotekDongle");
+    cfg.println("REMOTE_PASS=amiga500");
+    cfg.println("REMOTE_HOST=192.168.4.1");
+    cfg.println("REMOTE_PORT=80");
+    cfg.println("");
+    cfg.println("# WebDAV server (cloud game library)");
+    cfg.println("DAV_ENABLED=0");
+    cfg.println("DAV_HOST=");
+    cfg.println("DAV_PORT=443");
+    cfg.println("DAV_USER=");
+    cfg.println("DAV_PASS=");
+    cfg.println("DAV_PATH=/");
+    cfg.println("DAV_HTTPS=1");
+    cfg.println("");
+    cfg.println("# FTP server (NAS game library)");
+    cfg.println("FTP_ENABLED=0");
+    cfg.println("FTP_HOST=");
+    cfg.println("FTP_PORT=21");
+    cfg.println("FTP_USER=");
+    cfg.println("FTP_PASS=");
+    cfg.println("FTP_PATH=/");
+    cfg.println("");
+    cfg.println("# Logging — write step-by-step log to /LOG.TXT on SD card");
+    cfg.println("LOG_ENABLED=0");
+    cfg.close();
+  }
+
+  Serial.println("First-boot scaffold complete!");
 }
 
 // ============================================================================
@@ -1981,7 +2145,14 @@ void drawThemedButton(int x, int y, int w, int h,
     // Center the PNG within the button area
     int bx = x + (w - imgW) / 2;
     int by = y + (h - imgH) / 2;
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+    // Clip to button bounds so oversized PNGs don't bleed outside (Waveshare only)
+    lcd.setClipRect(x, y, w, h);
     drawPngFile(path.c_str(), bx, by);
+    lcd.clearClipRect();
+#else
+    drawPngFile(path.c_str(), bx, by);
+#endif
   } else {
     // Fallback: filled rectangle with border and text
     gfx_fillRect(x, y, w, h, TFT_BLACK);
@@ -2014,15 +2185,25 @@ void initStars() {
 void drawCracktroSplash() {
   initStars();
 
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+  // Use sprite as back-buffer on Waveshare to prevent tearing.
+  // LovyanGFX writes directly to the display — without a sprite, each
+  // draw call is visible immediately, causing flicker/tearing.
+  // The sprite collects a full frame, then pushes it in one DMA transfer.
+  LGFX_Sprite sprite(&lcd);
+  bool useSprite = sprite.createSprite(gW, gH);  // ~150KB in PSRAM
+  if (useSprite) {
+    Serial.println("Cracktro: sprite buffer allocated (" + String(gW) + "x" + String(gH) + ")");
+  }
+#endif
+
   // Scroll text — classic cracktro scroller
   const char *scrollText =
-    "       CRACKED BY DEXX OF OMEGAWARE  *  "
-    "GOTEK TOUCHSCREEN INTERFACE  ...  "
+    "       GOTEK TOUCHSCREEN INTERFACE  *  CODED BY MEZ AND DIMMY OF OMEGAWARE  *  "
     "THE ULTIMATE RETRO DISK LOADER FOR AMIGA AND CPC  ...  "
-    "ORIGINAL CODE BY DIMMY  ...  "
-    "ACTIVE THEME ENGINE - PNG BUTTON SUPPORT - FAT12 RAM DISK  ...  "
-    "GREETINGS TO ALL RETRO COMPUTING ENTHUSIASTS!  ...  "
-    "OMEGAWARE - QUALITY OVER QUANTITY SINCE 2025  *  "
+    "WEBDAV STREAMING - WIFI WEB INTERFACE - THEME ENGINE - FAT12 RAM DISK  ...  "
+    "GREETINGS TO THE GREENFORD COMPUTER CLUB (GCC) AND ALL RETRO COMPUTING ENTHUSIASTS!  ...  "
+    "KEEP THE SCENE ALIVE  ...  OMEGAWARE 2026  *  "
     "TAP SCREEN TO CONTINUE  ...       ";
   int scrollLen = strlen(scrollText);
   int scrollPos = 0;
@@ -2035,7 +2216,7 @@ void drawCracktroSplash() {
   };
   int numCopper = 16;
 
-  // Sine-wave color table for "DEXX" text effect
+  // Sine-wave color table for bouncer text effect
   uint16_t sineColors[] = {
     0xF800, 0xFBE0, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xF81F, 0xF800
   };
@@ -2054,7 +2235,16 @@ void drawCracktroSplash() {
       break;
     }
 
+    // ── Render target: sprite (Waveshare) or framebuffer (JC3248) ──
+    // On Waveshare, we draw to a sprite to prevent tearing, then push in one shot.
+    // On JC3248, gfx_* functions draw to a PSRAM framebuffer and gfx_flush() pushes it.
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+    // Draw to sprite if available, else fall back to lcd direct
+    auto &gfx = useSprite ? (lgfx::LGFXBase &)sprite : (lgfx::LGFXBase &)lcd;
+    gfx.fillScreen(TFT_BLACK);
+#else
     gfx_fillScreen(TFT_BLACK);
+#endif
 
     // ── Starfield ──
     for (int i = 0; i < NUM_STARS; i++) {
@@ -2062,7 +2252,11 @@ void drawCracktroSplash() {
       if (star_speed[i] == 3) col = TFT_WHITE;
       else if (star_speed[i] == 2) col = TFT_GREY;
       else col = TFT_DARKGREY;
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+      gfx.drawPixel(star_x[i], star_y[i], col);
+#else
       gfx_drawPixel(star_x[i], star_y[i], col);
+#endif
       star_x[i] -= star_speed[i];
       if (star_x[i] < 0) {
         star_x[i] = gW - 1;
@@ -2075,17 +2269,81 @@ void drawCracktroSplash() {
     for (int i = 0; i < numCopper; i++) {
       int barY = copperY + i * 3;
       if (barY >= 0 && barY < gH) {
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+        gfx.fillRect(0, barY, gW, 2, copperColors[i]);
+#else
         gfx_fillRect(0, barY, gW, 2, copperColors[i]);
+#endif
       }
     }
 
-    // ── "DEXX" — large, color-cycling text above copper bars ──
+    // ── "MEZ & DIMMY" — large, color-cycling text above copper bars ──
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+    gfx.setTextSize(3);
+    String cracker = "MEZ & DIMMY";
+    int tw = cracker.length() * 6 * 3;
+    int dexxY = copperY - 8;
+    int cx = (gW - tw) / 2;
+    for (int c = 0; c < (int)cracker.length(); c++) {
+      int colorIdx = (frame / 4 + c) % numSineColors;
+      gfx.setTextColor(sineColors[colorIdx], TFT_BLACK);
+      gfx.setCursor(cx, dexxY);
+      char buf[2] = { cracker.charAt(c), 0 };
+      gfx.print(buf);
+      cx += 6 * 3;
+    }
+
+    // ── "OMEGAWARE" ──
+    gfx.setTextSize(2);
+    String group = "- OMEGAWARE -";
+    tw = group.length() * 6 * 2;
+    uint16_t groupCol = (frame % 30 < 15) ? TFT_CYAN : TFT_WHITE;
+    gfx.setTextColor(groupCol, TFT_BLACK);
+    gfx.setCursor((gW - tw) / 2, copperY + 42);
+    gfx.print(group);
+
+    // ── "GOTEK TOUCHSCREEN" ──
+    gfx.setTextSize(1);
+    gfx.setTextColor(0x7BEF, TFT_BLACK);
+    String subtitle = "GOTEK TOUCHSCREEN INTERFACE";
+    tw = subtitle.length() * 6;
+    gfx.setCursor((gW - tw) / 2, copperY + 62);
+    gfx.print(subtitle);
+
+    // ── "TAP TO CONTINUE" ──
+    if ((frame / 20) % 2 == 0) {
+      gfx.setTextSize(1);
+      gfx.setTextColor(0x7BEF, TFT_BLACK);
+      String tapMsg = "TAP SCREEN TO CONTINUE";
+      tw = tapMsg.length() * 6;
+      gfx.setCursor((gW - tw) / 2, gH - 40);
+      gfx.print(tapMsg);
+    }
+
+    // ── Scroll text (bottom bar) ──
+    gfx.fillRect(0, gH - 30, gW, 24, 0x0010);
+    gfx.setTextSize(2);
+    gfx.setTextColor(TFT_YELLOW, 0x0010);
+
+    int startChar = scrollPos / charW;
+    int pixOffset = scrollPos % charW;
+    gfx.setCursor(-pixOffset, gH - 26);
+    for (int c = 0; c < (gW / charW) + 2; c++) {
+      int idx = (startChar + c) % scrollLen;
+      char buf[2] = { scrollText[idx], 0 };
+      gfx.print(buf);
+    }
+
+    // Push sprite to display in one shot (no tearing)
+    if (useSprite) sprite.pushSprite(0, 0);
+
+#else
+    // JC3248: use gfx_* framebuffer (already double-buffered)
     text_transparent = true;
     gfx_setTextSize(3);
-    String cracker = "DEXX";
+    String cracker = "MEZ & DIMMY";
     int tw = gfx_textWidth(cracker);
     int dexxY = copperY - 8;
-    // Draw each letter in a cycling color
     int cx = (gW - tw) / 2;
     for (int c = 0; c < (int)cracker.length(); c++) {
       int colorIdx = (frame / 4 + c) % numSineColors;
@@ -2096,26 +2354,22 @@ void drawCracktroSplash() {
       cx += gfx_textWidth(String(buf));
     }
 
-    // ── "OMEGAWARE" — medium text, pulsing brightness ──
     gfx_setTextSize(2);
     String group = "- OMEGAWARE -";
     tw = gfx_textWidth(group);
-    // Pulse between white and cyan
     uint16_t groupCol = (frame % 30 < 15) ? TFT_CYAN : TFT_WHITE;
     gfx_setTextColor(groupCol, TFT_BLACK);
     gfx_setCursor((gW - tw) / 2, copperY + 42);
     gfx_print(group);
 
-    // ── "GOTEK TOUCHSCREEN" — smaller, below group name ──
     gfx_setTextSize(1);
-    gfx_setTextColor(0x7BEF, TFT_BLACK);  // light grey
+    gfx_setTextColor(0x7BEF, TFT_BLACK);
     String subtitle = "GOTEK TOUCHSCREEN INTERFACE";
     tw = gfx_textWidth(subtitle);
     gfx_setCursor((gW - tw) / 2, copperY + 62);
     gfx_print(subtitle);
     text_transparent = false;
 
-    // ── "TAP TO CONTINUE" — blinking at bottom ──
     if ((frame / 20) % 2 == 0) {
       gfx_setTextSize(1);
       gfx_setTextColor(0x7BEF, TFT_BLACK);
@@ -2125,8 +2379,7 @@ void drawCracktroSplash() {
       gfx_print(tapMsg);
     }
 
-    // ── Scroll text (bottom bar) ──
-    gfx_fillRect(0, gH - 30, gW, 24, 0x0010);  // dark blue bar
+    gfx_fillRect(0, gH - 30, gW, 24, 0x0010);
     gfx_setTextSize(2);
     gfx_setTextColor(TFT_YELLOW, 0x0010);
 
@@ -2139,12 +2392,19 @@ void drawCracktroSplash() {
       gfx_print(String(buf));
     }
 
+    gfx_flush();
+#endif
+
     scrollPos += 3;  // scroll speed (pixels per frame)
     frame++;
 
-    gfx_flush();
-    delay(30);  // ~33 fps
+    delay(20);  // ~50 fps (up from 33 fps for smoother animation)
   }
+
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+  // Free sprite memory
+  if (useSprite) sprite.deleteSprite();
+#endif
 
   // Fade out: quick flash
   gfx_fillScreen(TFT_WHITE);
@@ -3954,6 +4214,7 @@ void doUnload() {
 
   // Clear RAM disk and rebuild empty volume
   build_volume_with_file();
+  bumpInquiryRevision();
   msc.mediaPresent(false);
 
   tud_connect();
@@ -3963,6 +4224,7 @@ void doUnload() {
   loaded_disk_index = -1;
   dav_disk_loaded = false;
   saveConfig();
+  sdLog("Drive unloaded");
 
   // Clear global now playing
   nowPlaying.source = NP_NONE;
@@ -3974,10 +4236,20 @@ void doUnload() {
   Serial.println("Drive unloaded");
 }
 
+// Bump USB MSC inquiry revision — forces the host OS to re-read disk contents.
+// Without this, Windows/macOS may cache the old FAT12 directory.
+static uint32_t g_inquiry_rev = 1;
+void bumpInquiryRevision() {
+  char rev[8];
+  snprintf(rev, sizeof(rev), "%lu", (unsigned long)g_inquiry_rev++);
+  msc.productRevision(rev);
+}
+
 // Full load: disconnects USB, loads file, reconnects USB, saves config.
 // In remote mode: sends file to dongle instead of local RAM disk.
 void doLoadSelected() {
   if (selected_index < 0 || selected_index >= (int)file_list.size()) return;
+  sdLog("Loading: " + file_list[selected_index]);
 
   // Remote mode: send file to dongle over WiFi
   if (cfg_remote_enabled && remote_connected) {
@@ -4003,6 +4275,7 @@ void doLoadSelected() {
 
   size_t loaded = loadFileToRam(selected_index);
 
+  bumpInquiryRevision();
   msc.mediaPresent(loaded > 0);
   tud_connect();
 
@@ -4078,6 +4351,7 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   delay(500);
 
   // Reconnect USB with loaded disk
+  bumpInquiryRevision();
   msc.mediaPresent(true);
   tud_connect();
 
@@ -4109,10 +4383,22 @@ void setup() {
 
   init_sd_card();
   Serial.println("SD card initialized");
+
+  // First-boot: create folder structure, default config & theme if needed
+  firstBootScaffold();
+
   drawBootProgress("Loading configuration...", 15);
 
   loadConfig();
+
+  // Initialize log (after loadConfig so we know if LOG_ENABLED is set)
+  sdLogClear();
+  sdLog("Gotek Touchscreen Interface starting...");
+  sdLog("Display initialized, touch initialized");
+  sdLog("SD card initialized");
+
   scanThemes();
+  sdLog("Themes scanned: " + String(theme_list.size()) + " themes, active: " + cfg_theme);
   drawBootProgress("Scanning themes...", 25);
 
   if (cfg_lastmode == "DSK") {
@@ -4120,6 +4406,7 @@ void setup() {
   } else {
     g_mode = MODE_ADF;
   }
+  sdLog("Mode: " + String(g_mode == MODE_ADF ? "ADF" : "DSK"));
 
   drawBootProgress("Scanning disk images...", 35);
   file_list = listImages();
@@ -4127,25 +4414,26 @@ void setup() {
   sortByDisplay();
   buildGameList();
 
-  Serial.println("Found " + String(file_list.size()) + " images (" + String(game_list.size()) + " games)");
+  sdLog("Found " + String(file_list.size()) + " images (" + String(game_list.size()) + " games)");
   drawBootProgress("Found " + String(game_list.size()) + " games", 50);
 
   drawBootProgress("Allocating RAM disk...", 60);
   ram_disk = (uint8_t *)ps_malloc(RAM_DISK_SIZE);
   if (!ram_disk) {
-    Serial.println("Failed to allocate RAM disk!");
+    sdLog("FATAL: Failed to allocate RAM disk!");
     drawBootProgress("ERROR: RAM alloc failed!", 60);
     while (1);
   }
 
   build_volume_with_file();
-  Serial.println("RAM disk initialized");
+  sdLog("RAM disk initialized (" + String(RAM_DISK_SIZE / 1024) + " KB)");
   drawBootProgress("RAM disk ready", 70);
 
   // Auto-load last file BEFORE USB starts (no tud_disconnect needed)
   bool autoloaded = false;
   if (cfg_lastfile.length() > 0) {
     drawBootProgress("Auto-loading last disk...", 80);
+    sdLog("Auto-loading: " + cfg_lastfile);
     for (int i = 0; i < (int)file_list.size(); i++) {
       if (file_list[i] == cfg_lastfile) {
         selected_index = i;
@@ -4158,25 +4446,25 @@ void setup() {
       loaded_disk_index = selected_index;
       game_selected = findGameIndex(selected_index);
     }
-    Serial.println("Auto-loaded: " + file_list[selected_index] + " (" + String(loaded) + " bytes)");
+    sdLog("Auto-loaded: " + file_list[selected_index] + " (" + String(loaded) + " bytes)");
   }
 
   // ── WiFi Access Point + Web Server + Remote Dongle ──
   if (cfg_wifi_enabled || cfg_remote_enabled) {
     drawBootProgress(cfg_remote_enabled ? "Connecting to dongle..." : "Starting WiFi AP...", 85);
+    sdLog("WiFi init: AP=" + String(cfg_wifi_enabled) + " Remote=" + String(cfg_remote_enabled));
     if (initWiFiAP()) {
       if (cfg_wifi_enabled) {
         startWebServer();
-        Serial.println("Web server ready at http://" + wifi_ap_ip);
+        sdLog("Web server ready at http://" + wifi_ap_ip);
       }
       if (cfg_remote_enabled) {
-        Serial.println("Remote mode: connecting to " + cfg_remote_ssid + "...");
+        sdLog("Remote mode: connecting to " + cfg_remote_ssid);
       }
     }
   }
 
-  Serial.println("Free heap before USB: " + String(ESP.getFreeHeap()) + " bytes");
-  Serial.println("Free PSRAM: " + String(ESP.getFreePsram()) + " bytes");
+  sdLog("Free heap: " + String(ESP.getFreeHeap()) + " | Free PSRAM: " + String(ESP.getFreePsram()));
   drawBootProgress("Starting USB...", 90);
 
   msc.vendorID("Gotek");
@@ -4186,9 +4474,8 @@ void setup() {
   msc.onWrite(onWrite);
   msc.mediaPresent(autoloaded);
   msc.begin(msc_block_count, 512);
-  Serial.println("USB.begin()...");
   USB.begin();
-  Serial.println("USB MSC initialized, heap: " + String(ESP.getFreeHeap()));
+  sdLog("USB MSC initialized, heap: " + String(ESP.getFreeHeap()));
 
   drawBootProgress("Ready!", 100);
   delay(300);

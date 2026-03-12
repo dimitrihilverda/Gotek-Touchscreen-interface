@@ -118,13 +118,14 @@ textarea{min-height:80px;resize:vertical}
   <span class="ip" id="ip-display">connecting...</span>
 </div>
 
-<div class="tabs">
+<div class="tabs" id="tab-bar">
   <div class="tab active" data-view="dashboard">Dashboard</div>
   <div class="tab" data-view="config">Config</div>
   <div class="tab" data-view="games">Games</div>
-  <div class="tab" data-view="ftp">FTP</div>
-  <div class="tab" data-view="webdav">WebDAV</div>
+  <div class="tab" data-view="ftp" id="tab-ftp">FTP</div>
+  <div class="tab" data-view="webdav" id="tab-webdav">WebDAV</div>
   <div class="tab" data-view="themes">Themes</div>
+  <div class="tab" data-view="log" id="tab-log">Log</div>
 </div>
 
 <!-- DASHBOARD -->
@@ -382,6 +383,20 @@ textarea{min-height:80px;resize:vertical}
   </div>
 </div>
 
+<!-- LOG VIEWER -->
+<div class="content view hidden" id="view-log">
+  <div class="card">
+    <h2>System Log</h2>
+    <p style="font-size:13px;color:#555;margin-bottom:10px">Device boot log and runtime events. Enable logging in Config: <code>LOG_ENABLED=1</code></p>
+    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary" onclick="loadLog()">Refresh</button>
+      <button class="btn btn-danger" onclick="clearLog()">Clear Log</button>
+      <label style="margin:0;font-size:13px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="log-auto-scroll" checked> Auto-scroll</label>
+    </div>
+    <pre id="log-content" style="font-size:11px;background:#1a1a2e;color:#0f0;padding:12px;border-radius:4px;max-height:500px;overflow:auto;white-space:pre-wrap;min-height:200px;font-family:'Courier New',monospace;border:2px inset #999">Loading...</pre>
+  </div>
+</div>
+
 <!-- GAME DETAIL MODAL -->
 <div class="modal-overlay" id="modal-game-detail">
   <div class="modal">
@@ -446,6 +461,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.view === 'ftp') ftpLoadStatus();
     if (tab.dataset.view === 'webdav') davLoadStatus();
     if (tab.dataset.view === 'themes') loadThemes();
+    if (tab.dataset.view === 'log') loadLog();
   });
 });
 
@@ -485,6 +501,14 @@ async function api(path, opts = {}) {
 async function loadDashboard() {
   const d = await api('/api/system/info');
   systemInfo = d;
+
+  // Update tab visibility based on feature flags
+  const ftpTab = document.getElementById('tab-ftp');
+  const davTab = document.getElementById('tab-webdav');
+  const logTab = document.getElementById('tab-log');
+  if (ftpTab) ftpTab.style.display = d.ftp_enabled ? '' : 'none';
+  if (davTab) davTab.style.display = d.dav_enabled ? '' : 'none';
+  if (logTab) logTab.style.display = d.log_enabled ? '' : 'none';
 
   const ipEl = document.getElementById('ip-display');
   let ipText = d.wifi_ip || '?';
@@ -1680,7 +1704,50 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeModal(); davCloseFolderModal(); }
 });
 
+// ═══════════════ LOG VIEWER ═══════════════
+
+async function loadLog() {
+  const el = document.getElementById('log-content');
+  try {
+    const data = await api('/api/log');
+    el.textContent = data.log || 'Empty log';
+    if (document.getElementById('log-auto-scroll').checked) {
+      el.scrollTop = el.scrollHeight;
+    }
+  } catch (e) {
+    el.textContent = 'Failed to load log: ' + e.message;
+  }
+}
+
+async function clearLog() {
+  if (!confirm('Clear the log file?')) return;
+  await api('/api/log/clear', { method: 'POST' });
+  toast('Log cleared');
+  loadLog();
+}
+
+// ═══════════════ CONDITIONAL TABS ═══════════════
+// Hide FTP/WebDAV/Log tabs when the corresponding feature is disabled in config
+
+async function updateTabVisibility() {
+  try {
+    const d = await api('/api/system/info');
+    systemInfo = d;
+
+    const ftpTab = document.getElementById('tab-ftp');
+    const davTab = document.getElementById('tab-webdav');
+    const logTab = document.getElementById('tab-log');
+
+    if (ftpTab) ftpTab.style.display = d.ftp_enabled ? '' : 'none';
+    if (davTab) davTab.style.display = d.dav_enabled ? '' : 'none';
+    if (logTab) logTab.style.display = d.log_enabled ? '' : 'none';
+  } catch (e) {
+    // If API fails, show all tabs as fallback
+  }
+}
+
 // Init
+updateTabVisibility();
 loadDashboard();
 </script>
 </body>
