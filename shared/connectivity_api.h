@@ -303,6 +303,8 @@ inline void handleDAVList(WiFiClient &client, const String &queryPath, bool forc
       json += ",\"disks\":" + String(dav_entries[i].diskPaths.size());
       json += ",\"indexed\":" + String(dav_entries[i].indexed ? "true" : "false");
       json += ",\"hasCover\":" + String(dav_entries[i].hasCover ? "true" : "false");
+      if (dav_entries[i].coverPath.length() > 0)
+        json += ",\"coverPath\":\"" + jsonEscape(dav_entries[i].coverPath) + "\"";
       json += "}";
     }
     return json + "]}";
