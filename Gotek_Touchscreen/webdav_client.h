@@ -45,6 +45,7 @@ public:
   GotekDAV() : _connected(false), _lastError(""), _debugLog("") {}
 
   String lastError() { return _lastError; }
+  int lastHttpStatus() { return _httpStatus; }
   String lastDebug() { return _debugLog; }
   bool isConnected() { return _connected; }
 
@@ -734,6 +735,35 @@ private:
   }
 
   // Extract text content of an XML tag (case-insensitive namespace)
+  // Decode XML/HTML entities: &amp; &lt; &gt; &quot; &apos; &#39; &#NNN; &#xHH;
+  String _xmlDecode(const String &s) {
+    String r = "";
+    r.reserve(s.length());
+    for (int i = 0; i < (int)s.length(); i++) {
+      if (s.charAt(i) == '&') {
+        int semi = s.indexOf(';', i + 1);
+        if (semi > i && semi - i < 12) {
+          String ent = s.substring(i + 1, semi);
+          if (ent == "amp")       { r += '&'; i = semi; continue; }
+          if (ent == "lt")        { r += '<'; i = semi; continue; }
+          if (ent == "gt")        { r += '>'; i = semi; continue; }
+          if (ent == "quot")      { r += '"'; i = semi; continue; }
+          if (ent == "apos")      { r += '\''; i = semi; continue; }
+          if (ent.startsWith("#x") || ent.startsWith("#X")) {
+            char c = (char)strtol(ent.c_str() + 2, nullptr, 16);
+            if (c) { r += c; i = semi; continue; }
+          }
+          if (ent.startsWith("#")) {
+            char c = (char)atoi(ent.c_str() + 1);
+            if (c) { r += c; i = semi; continue; }
+          }
+        }
+      }
+      r += s.charAt(i);
+    }
+    return r;
+  }
+
   String _extractTagValue(const String &xml, const String &tagName) {
     // Try D:tag, d:tag, tag
     String variants[] = { "D:" + tagName, "d:" + tagName, tagName };
@@ -750,7 +780,7 @@ private:
       String closeTag = "</" + variants[v] + ">";
       int end = xml.indexOf(closeTag, gt + 1);
       if (end < 0) continue;
-      return xml.substring(gt + 1, end);
+      return _xmlDecode(xml.substring(gt + 1, end));
     }
     return "";
   }

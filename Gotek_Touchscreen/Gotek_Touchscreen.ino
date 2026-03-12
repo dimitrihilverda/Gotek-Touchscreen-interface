@@ -2903,6 +2903,14 @@ void davPrecacheOneCover() {
 
   std::vector<DAVFileEntry> subEntries;
   if (!davClient.listDir(folderDavPath, subEntries)) {
+    int httpCode = davClient.lastHttpStatus();
+    if (httpCode == 404 || httpCode == 410) {
+      // Folder not found on server — skip it, don't retry
+      Serial.println("DAV indexer: " + folder.name + " HTTP " + String(httpCode) + " — skipping");
+      folder.indexed = true;  // mark as indexed to prevent retry
+      dav_cover_precache_idx++;
+      return;
+    }
     // Server unreachable (likely rate limiting) — exponential backoff
     dav_precache_fail_count++;
     unsigned long backoffMs = min(60000UL, (unsigned long)(2000UL * dav_precache_fail_count));
