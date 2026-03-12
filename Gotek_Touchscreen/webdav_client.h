@@ -121,7 +121,8 @@ public:
       secure = new WiFiClientSecure();
       if (!secure) { _lastError = "Out of memory"; return false; }
       secure->setInsecure();  // Skip cert validation (ESP32 has no CA store)
-      secure->setTimeout(15);
+      secure->setTimeout(30);
+      secure->setHandshakeTimeout(30);
       tcp = secure;
     } else {
       tcp = new WiFiClient();
