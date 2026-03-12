@@ -756,6 +756,16 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
+  // ── Log viewer ──
+  if (req.path == "/api/log" && req.method == "GET") {
+    handleLogGet(client);
+    return;
+  }
+  if (req.path == "/api/log/clear" && req.method == "POST") {
+    handleLogClear(client);
+    return;
+  }
+
   // ── 404 ──
   sendJSON(client, 404, "{\"error\":\"Not found\"}");
 }

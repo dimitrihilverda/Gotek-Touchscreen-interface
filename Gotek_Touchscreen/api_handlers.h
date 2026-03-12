@@ -351,7 +351,11 @@ void handleSystemInfo(WiFiClient &client) {
   json += "\"wifi_clients\":" + String(WiFi.softAPgetStationNum()) + ",";
   json += "\"internet\":" + String(wifi_sta_connected ? "true" : "false") + ",";
   json += "\"internet_ip\":\"" + wifi_sta_ip + "\",";
-  json += "\"internet_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\"";
+  json += "\"internet_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\",";
+  json += "\"ftp_enabled\":" + String(cfg_ftp_enabled ? "true" : "false") + ",";
+  json += "\"dav_enabled\":" + String(cfg_dav_enabled ? "true" : "false") + ",";
+  json += "\"remote_enabled\":" + String(cfg_remote_enabled ? "true" : "false") + ",";
+  json += "\"log_enabled\":" + String(cfg_log_enabled ? "true" : "false");
   json += "}";
 
   sendJSON(client, 200, json);
@@ -1585,6 +1589,51 @@ void handleDAVNfo(WiFiClient &client, const String &queryPath) {
 
   String nfoText = String((char *)buf);
   sendJSON(client, 200, "{\"nfo\":\"" + jsonEscape(nfoText) + "\"}");
+}
+
+// ============================================================================
+// GET /api/log — Read LOG.TXT from SD card
+// ============================================================================
+
+void handleLogGet(WiFiClient &client) {
+  if (!cfg_log_enabled) {
+    sendJSON(client, 200, "{\"log\":\"Logging is disabled. Set LOG_ENABLED=1 in CONFIG.TXT\",\"enabled\":false}");
+    return;
+  }
+  if (!SD_MMC.exists("/LOG.TXT")) {
+    sendJSON(client, 200, "{\"log\":\"No log file found.\",\"enabled\":true}");
+    return;
+  }
+  File f = SD_MMC.open("/LOG.TXT", "r");
+  if (!f) {
+    sendJSON(client, 200, "{\"log\":\"Could not open log file.\",\"enabled\":true}");
+    return;
+  }
+  // Read up to 32KB of log (tail if larger)
+  size_t sz = f.size();
+  size_t maxRead = 32768;
+  String logText = "";
+  if (sz > maxRead) {
+    f.seek(sz - maxRead);
+    logText = "... (truncated, showing last 32KB) ...\n";
+  }
+  while (f.available()) {
+    logText += f.readStringUntil('\n') + "\n";
+  }
+  f.close();
+  sendJSON(client, 200, "{\"log\":\"" + jsonEscape(logText) + "\",\"enabled\":true}");
+}
+
+// GET /api/log/clear — Clear LOG.TXT
+void handleLogClear(WiFiClient &client) {
+  if (SD_MMC.exists("/LOG.TXT")) {
+    File f = SD_MMC.open("/LOG.TXT", "w");
+    if (f) {
+      f.println("=== Log cleared from web interface ===");
+      f.close();
+    }
+  }
+  sendJSON(client, 200, "{\"ok\":true}");
 }
 
 #endif // API_HANDLERS_H
