@@ -3125,17 +3125,9 @@ void drawDAVDetail() {
   if (!coverDrawn) {
     gfx_drawRect((gW - imgW) / 2, imgTop, imgW, imgH, 0x4208);
     gfx_setTextColor(0x4208, TFT_BLACK);
-    gfx_setTextSize(1);
-    if (dav_detail_needs_full_load) {
-      // Lightweight nav after web-triggered load — cover not fetched yet
-      // Prompt user to swipe left/right to trigger full PROPFIND + cover load
-      gfx_setCursor(gW / 2 - 52, imgTop + imgH / 2 - 14);
-      gfx_print("< swipe for cover >");
-    } else {
-      gfx_setTextSize(2);
-      gfx_setCursor(gW / 2 - 40, imgTop + imgH / 2 - 10);
-      gfx_print("No Cover");
-    }
+    gfx_setTextSize(2);
+    gfx_setCursor(gW / 2 - 40, imgTop + imgH / 2 - 10);
+    gfx_print("No Cover");
   }
 
   // Title and blurb below cover (like SD detail)
@@ -4631,12 +4623,13 @@ void loop() {
   }
 
   // Check if web API requested navigation to a DAV detail page
-  // Use lightweight nav — NO blocking PROPFIND/cover/NFO downloads
+  // Use the same full load path as touchscreen left/right navigation —
+  // this fetches cover, NFO and disk list correctly via PROPFIND.
   if (dav_pending_detail_nav >= 0) {
     int navIdx = dav_pending_detail_nav;
     dav_pending_detail_nav = -1;
 
-    // If dav_entries is empty, try loading from cache only (no network!)
+    // Ensure dav_entries is populated (load from SD cache if needed, no network)
     if (dav_entries.size() == 0) {
       if (davLoadCache()) {
         dav_current_path = "/";
@@ -4645,72 +4638,8 @@ void loop() {
     }
 
     if (navIdx >= 0 && navIdx < (int)dav_entries.size() && dav_entries[navIdx].isDir) {
-      // Lightweight detail setup — just set state from what we already know
-      const DAVFileEntry &folder = dav_entries[navIdx];
-      dav_detail_index = navIdx;
-      dav_detail_name = folder.name;
-      String folderPath = dav_current_path;
-      if (!folderPath.endsWith("/")) folderPath += "/";
-      folderPath += folder.name;
-      dav_detail_folder_path = folderPath;
-
-      // We know the loaded file from nowPlaying — set it as the only disk
-      dav_detail_disks.clear();
-      dav_detail_cover_path = "";
-      dav_detail_nfo_text = "";
-      dav_detail_disk_sel = 0;
-      String dirPath = folderPath;
-      if (!dirPath.endsWith("/")) dirPath += "/";
-      if (nowPlaying.path.length() > 0) {
-        String diskFile = nowPlaying.path;
-        int sl = diskFile.lastIndexOf('/');
-        if (sl >= 0) diskFile = diskFile.substring(sl + 1);
-        dav_detail_disks.push_back(diskFile);
-        dav_detail_path = dirPath + diskFile;
-
-        // Only use cover if it's already in the SD cache (instant, no network).
-        // Build candidate paths and check the cache — don't guess or download.
-        String base = diskFile;
-        int dot = base.lastIndexOf('.');
-        if (dot > 0) base = base.substring(0, dot);
-        // Strip trailing disk-number suffix e.g. " Disk1", "_1", "-1"
-        base.trim();
-        if (base.length() > 2) {
-          char last = base.charAt(base.length() - 1);
-          char prev = base.charAt(base.length() - 2);
-          if (last >= '1' && last <= '9' && (prev == ' ' || prev == '_' || prev == '-')) {
-            base = base.substring(0, base.length() - 2);
-            base.trim();
-          }
-        }
-        // Check SD cache for .jpg then .png — no network attempt
-        const char* exts[] = { ".jpg", ".png", nullptr };
-        for (int ei = 0; exts[ei]; ei++) {
-          String candidate = dirPath + base + exts[ei];
-          String cachePath = davCoverCachePath(candidate);
-          if (SD_MMC.exists(cachePath.c_str())) {
-            dav_detail_cover_path = candidate;
-            break;
-          }
-        }
-        // Also try folder-name as cover filename (common convention)
-        if (dav_detail_cover_path.length() == 0) {
-          for (int ei = 0; exts[ei]; ei++) {
-            String candidate = dirPath + folder.name + exts[ei];
-            String cachePath = davCoverCachePath(candidate);
-            if (SD_MMC.exists(cachePath.c_str())) {
-              dav_detail_cover_path = candidate;
-              break;
-            }
-          }
-        }
-        // If not cached, leave empty — user can press ◀/▶ for full load with cover
-      }
-
-      // Switch screen immediately — no network calls at all
-      current_screen = SCR_WEBDAV_DETAIL;
-      dav_detail_needs_full_load = true;  // full PROPFIND triggered on next ◀/▶ nav
-      drawDAVDetail();
+      // Full detail load: PROPFIND + cover + NFO + disk list — same as ◀/▶ swipe
+      davOpenFolderDetail(navIdx);
     }
   }
 
