@@ -2662,7 +2662,7 @@ bool davLoadCache() {
 
     if (line.startsWith("D|")) {
       DAVFileEntry entry;
-      entry.name = line.substring(2);
+      entry.name = urlDecode(line.substring(2));  // decode in case old cache had URL-encoded names
       entry.isDir = true;
       entry.size = 0;
       entry.hasCover = false;
@@ -2680,12 +2680,12 @@ bool davLoadCache() {
       DAVFileEntry entry;
       entry.isDir = false;
       entry.size = rest.substring(0, p1).toInt();
-      entry.name = rest.substring(p1 + 1, p2);
+      entry.name = urlDecode(rest.substring(p1 + 1, p2));  // decode in case old cache had URL-encoded names
       entry.hasCover = false;
       entry.hasNfo = false;
       if (p3 >= 0) {
-        entry.coverFile = rest.substring(p2 + 1, p3);
-        entry.nfoFile = rest.substring(p3 + 1);
+        entry.coverFile = urlDecode(rest.substring(p2 + 1, p3));
+        entry.nfoFile = urlDecode(rest.substring(p3 + 1));
         if (entry.coverFile.length() > 0) entry.hasCover = true;
         if (entry.nfoFile.length() > 0) entry.hasNfo = true;
       }
