@@ -129,6 +129,11 @@ public:
       tcp->setTimeout(15);
     }
 
+    {
+      IPAddress resolved;
+      bool dnsOk = WiFi.hostByName(cfg_dav_host.c_str(), resolved);
+      _log("DAV: DNS " + cfg_dav_host + " -> " + (dnsOk ? resolved.toString() : String("FAILED")) + " GW=" + WiFi.gatewayIP().toString() + " DNS=" + WiFi.dnsIP().toString());
+    }
     _log("DAV: connecting to " + cfg_dav_host + ":" + String(cfg_dav_port) + " WiFiStatus=" + String(WiFi.status()) + " localIP=" + WiFi.localIP().toString());
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
       _lastError = "TCP connect failed to " + cfg_dav_host + ":" + String(cfg_dav_port);
