@@ -2910,9 +2910,18 @@ async function davOpenFolder(folderPath, folderName) {
 
 function davCloseFolderModal() {
   document.getElementById('modal-dav-detail').classList.remove('show');
-  // Refresh list to update playing status
+  // Re-apply current filter (not the full list) so the view stays as-is
   if (davConnected && davAllEntries.length > 0) {
-    davRenderGameList(davAllEntries);
+    const search = document.getElementById('dav-search').value.trim();
+    if (search || davActiveAlpha) {
+      // Refresh filtered view (also updates playing badges)
+      davFilterGames();
+    } else {
+      // No filter active — show empty-state, same as initial browse state
+      const list = document.getElementById('dav-list');
+      list.innerHTML = '<p style="color:var(--c-text-muted);padding:20px;text-align:center">Choose a letter or search to browse games.</p>';
+      document.getElementById('dav-game-count').textContent = '';
+    }
   }
 }
 
