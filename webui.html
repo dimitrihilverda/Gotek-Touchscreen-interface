@@ -1,454 +1,1573 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Gotek Setup</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#a0a0a0;--panel:#c0c0c0;--dark:#606060;--light:#e0e0e0;--blue:#0055aa;--cyan:#00aaaa;--orange:#ff8800;--green:#00aa00;--red:#cc0000;--text:#000;--white:#fff}
-body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-.topbar{background:linear-gradient(180deg,#0055aa,#003377);color:var(--white);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 4px rgba(0,0,0,.3)}
-.topbar h1{font-size:18px;font-weight:700;letter-spacing:1px}
-.topbar .ip{font-size:13px;opacity:.8;font-family:monospace}
-.tabs{display:flex;background:#505050;border-bottom:2px solid #333}
-.tab{padding:10px 20px;color:#ccc;cursor:pointer;font-size:14px;font-weight:600;border-right:1px solid #444;transition:all .15s}
-.tab:hover{background:#606060;color:#fff}
-.tab.active{background:var(--panel);color:var(--text);border-bottom:2px solid var(--orange)}
-.content{padding:16px;max-width:900px;margin:0 auto}
-.card{background:var(--panel);border:2px outset var(--light);padding:16px;margin-bottom:12px;border-radius:2px}
-.card h2{font-size:15px;color:var(--blue);margin-bottom:10px;border-bottom:1px solid var(--dark);padding-bottom:6px}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
-.stat{background:var(--light);border:1px inset #999;padding:8px 10px;border-radius:2px}
-.stat .label{font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.5px}
-.stat .value{font-size:16px;font-weight:700;color:var(--text);margin-top:2px}
-.stat .value.ok{color:var(--green)}
-.stat .value.warn{color:var(--orange)}
-label{display:block;font-size:13px;font-weight:600;margin:8px 0 4px;color:#333}
-input[type=text],input[type=number],input[type=password],input[type=url],select,textarea{width:100%;padding:6px 8px;border:2px inset #999;background:var(--white);font-size:14px;font-family:inherit;border-radius:1px}
-textarea{min-height:80px;resize:vertical}
-.btn{display:inline-block;padding:8px 16px;border:2px outset var(--light);background:var(--panel);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;border-radius:2px;transition:all .1s}
-.btn:hover{background:var(--light)}
-.btn:active{border-style:inset;transform:translateY(1px)}
-.btn-primary{background:var(--blue);color:var(--white);border-color:#003377}
-.btn-primary:hover{background:#0066cc}
-.btn-danger{background:var(--red);color:var(--white);border-color:#880000}
-.btn-danger:hover{background:#ee0000}
-.btn-success{background:var(--green);color:var(--white);border-color:#006600}
-.btn-success:hover{background:#00cc00}
-.btn-sm{padding:4px 10px;font-size:12px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.game-list{display:grid;gap:10px}
-.game-item{display:flex;gap:12px;align-items:center;background:var(--light);border:1px solid #999;padding:10px;border-radius:2px;cursor:pointer;transition:all .1s}
-.game-item:hover{border-color:var(--blue);background:#d8d8e8}
-.game-item.selected{border-color:var(--orange);background:#e8dcc8;border-width:2px}
-.game-item.active{border-color:var(--green);background:#c8e8c8;border-width:2px}
-.game-item.active:hover{background:#b8e0b8}
-.active-indicator{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px;animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.game-cover{width:48px;height:48px;object-fit:cover;border:1px solid #888;background:#444;border-radius:2px}
-.game-cover.empty{display:flex;align-items:center;justify-content:center;color:#888;font-size:10px}
-.game-info{flex:1}
-.game-name{font-weight:700;font-size:14px}
-.game-meta{font-size:12px;color:#555;margin-top:2px}
-.game-actions{display:flex;gap:4px}
-.badge{display:inline-block;padding:2px 6px;font-size:11px;border-radius:2px;font-weight:600}
-.badge-disks{background:var(--cyan);color:var(--white)}
-.badge-nfo{background:var(--green);color:var(--white)}
-.badge-cover{background:var(--orange);color:var(--white)}
-.badge-net{background:#8800aa;color:var(--white)}
-.upload-zone{border:3px dashed #888;padding:30px;text-align:center;background:var(--light);border-radius:4px;cursor:pointer;transition:all .2s}
-.upload-zone:hover,.upload-zone.dragover{border-color:var(--blue);background:#d0d8e8}
-.upload-zone p{font-size:14px;color:#555;margin-top:8px}
-.progress-bar{height:20px;background:#ddd;border:1px inset #999;border-radius:2px;overflow:hidden;margin-top:8px;display:none}
-.progress-fill{height:100%;background:linear-gradient(90deg,var(--green),var(--cyan));transition:width .3s;text-align:center;color:#fff;font-size:11px;line-height:20px;font-weight:600}
-.theme-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
-.theme-card{background:var(--light);border:2px solid #999;padding:12px;text-align:center;cursor:pointer;border-radius:2px;transition:all .15s}
-.theme-card:hover{border-color:var(--blue)}
-.theme-card.active{border-color:var(--orange);border-width:3px;background:#e8dcc8}
-.theme-name{font-weight:700;font-size:14px;margin-top:6px}
-.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:100;align-items:center;justify-content:center}
-.modal-overlay.show{display:flex}
-.modal{background:var(--panel);border:3px outset var(--light);padding:20px;min-width:300px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;border-radius:2px}
-.modal h3{font-size:16px;color:var(--blue);margin-bottom:12px;border-bottom:1px solid var(--dark);padding-bottom:6px}
-.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
-.hidden{display:none!important}
-.toast{position:fixed;bottom:20px;right:20px;padding:12px 20px;border-radius:4px;color:#fff;font-weight:600;z-index:200;animation:slideIn .3s ease}
-.toast.success{background:var(--green)}
-.toast.error{background:var(--red)}
-.net-row{display:flex;gap:6px;align-items:flex-end;margin-top:4px}
-.net-row input{flex:1}
-.net-row button{white-space:nowrap}
-.wifi-list{max-height:150px;overflow-y:auto;border:1px inset #999;background:#fff;font-size:13px;margin-top:4px}
-.wifi-list div{padding:4px 8px;cursor:pointer;display:flex;justify-content:space-between}
-.wifi-list div:hover{background:#d0d8e8}
-.wifi-signal{color:#888;font-size:12px}
-@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
-.alpha-btn{display:inline-block;width:26px;height:26px;text-align:center;line-height:26px;font-size:12px;font-weight:700;cursor:pointer;border:1px solid #999;background:var(--light);border-radius:2px;transition:all .1s}
-.alpha-btn:hover{background:var(--blue);color:var(--white);border-color:var(--blue)}
-.alpha-btn.active{background:var(--orange);color:var(--white);border-color:var(--orange)}
-.alpha-btn.disabled{opacity:.3;cursor:default;pointer-events:none}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gotek Touchscreen Interface</title>
+  <style>
+    /* ──────────────────────────────────────────────────────────────────
+       CSS CUSTOM PROPERTIES & THEME SYSTEM
+       ────────────────────────────────────────────────────────────────── */
 
-.dl-btn{padding:4px 12px;font-size:12px;font-weight:600;border:2px outset var(--light);background:var(--green);color:var(--white);cursor:pointer;border-radius:2px;border-color:#006600}
-.dl-btn:hover{background:#00cc00}
-.dl-btn:disabled{opacity:.5;cursor:default}
-.ftp-item{display:flex;gap:12px;align-items:center;background:var(--light);border:1px solid #999;padding:10px;border-radius:2px;cursor:pointer;transition:all .1s}
-.ftp-item:hover{border-color:var(--blue);background:#d8d8e8}
-.ftp-item.dir{font-weight:700}
-.ftp-icon{width:32px;text-align:center;font-size:18px}
-.ftp-name{flex:1;font-size:14px}
-.ftp-size{font-size:12px;color:#555;min-width:70px;text-align:right}
-.ftp-breadcrumb{font-size:13px;color:#555;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
-.ftp-breadcrumb a{color:var(--blue);cursor:pointer;text-decoration:underline}
-.ftp-status{font-size:13px;padding:8px 12px;border-radius:2px;margin-bottom:10px}
-.ftp-status.connected{background:#c8e8c8;border:1px solid var(--green);color:#006600}
-.ftp-status.disconnected{background:#e8e0c0;border:1px solid var(--orange);color:#886600}
-.ftp-status.error{background:#ffe8e8;border:1px solid var(--red);color:var(--red)}
-.pass-wrap{position:relative;display:flex;align-items:center}
-.pass-wrap input{flex:1;padding-right:36px}
-.pass-toggle{position:absolute;right:6px;background:none;border:none;cursor:pointer;font-size:16px;color:#666;padding:4px}
-.pass-toggle:hover{color:#333}
-@media(max-width:600px){.tabs{flex-wrap:wrap}.tab{flex:1;text-align:center;padding:8px 10px;font-size:13px}.stat-grid{grid-template-columns:1fr 1fr}.content{padding:10px}}
+    @layer reset, theme, base, components, layout, responsive;
 
-/* ── Global loading overlay ── */
-#loading-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:500;align-items:center;justify-content:center;flex-direction:column;gap:16px}
-#loading-overlay.show{display:flex}
-.spinner{width:52px;height:52px;border:5px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-#loading-overlay .loading-msg{color:#fff;font-size:15px;font-weight:600;letter-spacing:.5px;text-align:center;max-width:260px;line-height:1.4}
-</style>
+    @layer reset {
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+    }
+
+    @layer theme {
+      :root {
+        /* Default theme: AMIGA_WB2 */
+        --c-bg: #6680aa;
+        --c-surface: #aaaaaa;
+        --c-surface2: #c0c0c0;
+        --c-accent: #0055aa;
+        --c-accent2: #ff8800;
+        --c-text: #000000;
+        --c-text-inv: #ffffff;
+        --c-ok: #00aa00;
+        --c-warn: #ff8800;
+        --c-err: #cc0000;
+        --c-border: #888888;
+
+        /* Semantic aliases */
+        --c-primary: var(--c-accent);
+        --c-primary-dark: #003d77;
+        --c-success: var(--c-ok);
+        --c-warning: var(--c-warn);
+        --c-error: var(--c-err);
+        --c-link: var(--c-accent);
+
+        /* Typography */
+        --font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        --font-mono: 'Monaco', 'Courier New', monospace;
+
+        /* Spacing */
+        --spacing-xs: 4px;
+        --spacing-sm: 8px;
+        --spacing-md: 12px;
+        --spacing-lg: 16px;
+        --spacing-xl: 24px;
+        --spacing-2xl: 32px;
+
+        /* Shadows */
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+        --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+        --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.15);
+
+        /* Radius */
+        --radius-sm: 4px;
+        --radius-md: 8px;
+        --radius-lg: 12px;
+
+        /* Z-index */
+        --z-nav: 1000;
+        --z-modal: 2000;
+        --z-loading: 3000;
+        --z-toast: 4000;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+        }
+      }
+    }
+
+    @layer base {
+      html, body {
+        width: 100%;
+        height: 100%;
+        font-family: var(--font-family);
+        background-color: var(--c-bg);
+        color: var(--c-text);
+        line-height: 1.5;
+      }
+
+      body {
+        scroll-behavior: smooth;
+        overflow-x: hidden;
+      }
+
+      a {
+        color: var(--c-link);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      input, textarea, select {
+        font-family: inherit;
+        border: 1px solid var(--c-border);
+        padding: var(--spacing-sm);
+        border-radius: var(--radius-md);
+        background-color: var(--c-surface2);
+        color: var(--c-text);
+      }
+
+      input:focus, textarea:focus, select:focus {
+        outline: 2px solid var(--c-accent);
+        outline-offset: 2px;
+      }
+
+      input[type="checkbox"], input[type="radio"] {
+        cursor: pointer;
+        width: 20px;
+        height: 20px;
+        accent-color: var(--c-accent);
+      }
+
+      button {
+        cursor: pointer;
+        font-family: inherit;
+        border: none;
+        border-radius: var(--radius-md);
+        padding: var(--spacing-sm) var(--spacing-md);
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        font-weight: 500;
+        transition: all 200ms ease;
+        min-height: 48px;
+        min-width: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--spacing-sm);
+      }
+
+      button:hover {
+        background-color: var(--c-primary-dark);
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-md);
+      }
+
+      button:active {
+        transform: translateY(0);
+        box-shadow: var(--shadow-sm);
+      }
+
+      button:focus-visible {
+        outline: 2px solid var(--c-accent2);
+        outline-offset: 2px;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: var(--spacing-xs);
+        margin-top: var(--spacing-md);
+      }
+
+      /* First label in section has no top margin */
+      *:first-child > label:first-of-type {
+        margin-top: 0;
+      }
+    }
+
+    @layer components {
+      /* Navigation Tabs */
+      .tab {
+        cursor: pointer;
+        user-select: none;
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--spacing-sm);
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-radius: var(--radius-md);
+        transition: all 200ms ease;
+        font-size: clamp(12px, 2vw, 14px);
+        white-space: nowrap;
+        color: var(--c-text);
+        position: relative;
+      }
+
+      .tab.active {
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        font-weight: 600;
+      }
+
+      .tab:focus-visible {
+        outline: 2px solid var(--c-accent2);
+        outline-offset: 2px;
+      }
+
+      /* Cards */
+      .card {
+        background-color: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-md);
+        box-shadow: var(--shadow-sm);
+        transition: box-shadow 200ms ease;
+      }
+
+      .card:hover {
+        box-shadow: var(--shadow-md);
+      }
+
+      /* Buttons */
+      .btn {
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-radius: var(--radius-md);
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        border: none;
+        cursor: pointer;
+        font-weight: 500;
+        transition: all 200ms ease;
+        min-height: 48px;
+        font-size: clamp(12px, 2vw, 14px);
+      }
+
+      .btn:hover {
+        background-color: var(--c-primary-dark);
+        box-shadow: var(--shadow-md);
+      }
+
+      .btn:active {
+        transform: scale(0.98);
+      }
+
+      .btn.btn-sm {
+        padding: 4px 8px;
+        font-size: 11px;
+        min-height: 36px;
+      }
+
+      .btn-danger {
+        background-color: var(--c-error) !important;
+      }
+
+      .btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      /* Badges */
+      .badge {
+        display: inline-block;
+        padding: 2px 6px;
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        border-radius: var(--radius-sm);
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .badge-disks {
+        background-color: var(--c-accent2);
+      }
+
+      .badge-nfo {
+        background-color: #4466aa;
+      }
+
+      .badge-cover {
+        background-color: #66aa44;
+      }
+
+      .badge-net {
+        background-color: #aa6644;
+      }
+
+      /* Active indicator (pulsing dot) */
+      .active-indicator {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        background-color: var(--c-ok);
+        border-radius: 50%;
+        margin-right: var(--spacing-xs);
+        animation: pulse 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+
+      /* Forms */
+      .form-group {
+        margin-bottom: var(--spacing-lg);
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-xs);
+      }
+
+      .form-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: var(--spacing-md);
+      }
+
+      /* Alpha filter buttons */
+      .alpha-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 32px;
+        min-height: 32px;
+        padding: 4px 8px;
+        background-color: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        user-select: none;
+        transition: all 150ms ease;
+        font-weight: 600;
+        font-size: clamp(11px, 1.5vw, 13px);
+        margin: 2px;
+      }
+
+      .alpha-btn:hover:not(.disabled) {
+        background-color: var(--c-surface2);
+        box-shadow: var(--shadow-sm);
+      }
+
+      .alpha-btn:focus-visible {
+        outline: 2px solid var(--c-accent2);
+      }
+
+      .alpha-btn.active {
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        font-weight: 700;
+      }
+
+      .alpha-btn.disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      /* Game item */
+      .game-item {
+        display: flex;
+        gap: var(--spacing-md);
+        padding: var(--spacing-md);
+        background-color: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        cursor: pointer;
+        transition: all 200ms ease;
+        min-height: 80px;
+        align-items: stretch;
+      }
+
+      .game-item:hover {
+        background-color: var(--c-surface2);
+        box-shadow: var(--shadow-md);
+        transform: translateY(-2px);
+      }
+
+      .game-item:focus-visible {
+        outline: 2px solid var(--c-accent2);
+      }
+
+      .game-item.active {
+        border-color: var(--c-ok);
+        background-color: rgba(0, 170, 0, 0.08);
+      }
+
+      .game-cover {
+        width: 56px;
+        height: 56px;
+        border-radius: var(--radius-md);
+        object-fit: cover;
+        background-color: var(--c-border);
+        flex-shrink: 0;
+      }
+
+      .game-cover.empty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        color: #666;
+        background-color: var(--c-border);
+      }
+
+      .game-info {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-width: 0;
+      }
+
+      .game-name {
+        font-weight: 600;
+        font-size: clamp(12px, 2vw, 14px);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-bottom: 4px;
+      }
+
+      .game-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        align-items: center;
+      }
+
+      /* FTP/DAV items */
+      .ftp-item {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+        padding: var(--spacing-md);
+        background-color: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        cursor: pointer;
+        transition: all 200ms ease;
+        user-select: none;
+      }
+
+      .ftp-item:hover {
+        background-color: var(--c-surface2);
+        box-shadow: var(--shadow-md);
+      }
+
+      .ftp-item.dir {
+        font-weight: 500;
+      }
+
+      .ftp-icon {
+        font-size: 24px;
+        flex-shrink: 0;
+      }
+
+      .ftp-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .ftp-size {
+        font-size: 11px;
+        color: #666;
+        min-width: 60px;
+        text-align: right;
+      }
+
+      .dl-btn {
+        padding: 4px 8px;
+        font-size: 11px;
+        background-color: var(--c-accent2);
+        flex-shrink: 0;
+      }
+
+      /* Status indicators */
+      .ftp-status {
+        padding: var(--spacing-md);
+        border-radius: var(--radius-lg);
+        font-size: 13px;
+        margin-bottom: var(--spacing-md);
+        border-left: 4px solid var(--c-border);
+      }
+
+      .ftp-status.connected {
+        background-color: rgba(0, 170, 0, 0.1);
+        border-left-color: var(--c-ok);
+        color: var(--c-ok);
+      }
+
+      .ftp-status.disconnected {
+        background-color: rgba(255, 136, 0, 0.1);
+        border-left-color: var(--c-warn);
+        color: var(--c-warn);
+      }
+
+      .ftp-status.error {
+        background-color: rgba(204, 0, 0, 0.1);
+        border-left-color: var(--c-err);
+        color: var(--c-err);
+      }
+
+      /* Breadcrumb */
+      .ftp-breadcrumb {
+        padding: var(--spacing-md) 0;
+        font-size: 12px;
+        word-break: break-all;
+      }
+
+      .ftp-breadcrumb a {
+        color: var(--c-link);
+        cursor: pointer;
+      }
+
+      .ftp-breadcrumb a:hover {
+        text-decoration: underline;
+      }
+
+      /* Progress bar */
+      .progress-bar {
+        width: 100%;
+        height: 32px;
+        background-color: var(--c-border);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        display: none;
+        margin: var(--spacing-md) 0;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--c-accent), var(--c-accent2));
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--c-text-inv);
+        font-size: 12px;
+        font-weight: 600;
+        transition: width 200ms ease;
+        width: 0%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding: 0 var(--spacing-sm);
+      }
+
+      /* Upload zone */
+      .upload-zone {
+        border: 2px dashed var(--c-border);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-xl);
+        text-align: center;
+        cursor: pointer;
+        transition: all 200ms ease;
+        background-color: rgba(0, 0, 0, 0.02);
+        min-height: 120px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: var(--spacing-md);
+      }
+
+      .upload-zone:hover {
+        border-color: var(--c-accent);
+        background-color: rgba(0, 85, 170, 0.05);
+      }
+
+      .upload-zone.dragover {
+        border-color: var(--c-accent2);
+        background-color: rgba(255, 136, 0, 0.1);
+        transform: scale(1.02);
+      }
+
+      #upload-input {
+        display: none;
+      }
+
+      /* Spinner */
+      .spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid var(--c-border);
+        border-top-color: var(--c-accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* Toast notifications */
+      .toast {
+        position: fixed;
+        bottom: 100px;
+        left: var(--spacing-md);
+        right: var(--spacing-md);
+        padding: var(--spacing-md) var(--spacing-lg);
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-lg);
+        z-index: var(--z-toast);
+        animation: slideUp 300ms ease forwards;
+        font-weight: 500;
+        max-width: 90vw;
+        word-wrap: break-word;
+      }
+
+      @keyframes slideUp {
+        from {
+          transform: translateY(120px);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0);
+          opacity: 1;
+        }
+      }
+
+      .toast.success {
+        background-color: var(--c-ok);
+      }
+
+      .toast.error {
+        background-color: var(--c-err);
+      }
+
+      /* Password toggle */
+      .pass-wrap {
+        position: relative;
+        display: flex;
+        gap: var(--spacing-xs);
+      }
+
+      .pass-wrap input {
+        flex: 1;
+      }
+
+      .pass-toggle {
+        padding: var(--spacing-sm);
+        background-color: var(--c-surface2);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        min-height: 36px;
+        min-width: 36px;
+      }
+
+      /* Stats grid */
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(clamp(120px, 20vw, 160px), 1fr));
+        gap: var(--spacing-md);
+      }
+
+      .stat {
+        background-color: var(--c-surface2);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-md);
+        text-align: center;
+      }
+
+      .stat .label {
+        font-size: 11px;
+        color: #666;
+        font-weight: 600;
+        margin-bottom: 4px;
+        text-transform: uppercase;
+      }
+
+      .stat .value {
+        font-size: clamp(12px, 2vw, 16px);
+        font-weight: 700;
+      }
+
+      .stat .value.ok {
+        color: var(--c-ok);
+      }
+
+      .stat .value.warn {
+        color: var(--c-warn);
+      }
+
+      /* Theme cards */
+      .theme-card {
+        background-color: var(--c-surface2);
+        border: 2px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-md);
+        text-align: center;
+        cursor: pointer;
+        transition: all 200ms ease;
+        min-height: 100px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .theme-card:hover {
+        border-color: var(--c-accent);
+        box-shadow: var(--shadow-md);
+      }
+
+      .theme-card.active {
+        border-color: var(--c-accent);
+        background-color: var(--c-accent);
+        color: var(--c-text-inv);
+        font-weight: 700;
+      }
+
+      .theme-name {
+        font-weight: 600;
+        font-size: clamp(12px, 2vw, 14px);
+      }
+
+      /* WiFi list */
+      .wifi-list {
+        background-color: var(--c-surface2);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        max-height: 200px;
+        overflow-y: auto;
+      }
+
+      .wifi-list > div {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: var(--spacing-sm) var(--spacing-md);
+        border-bottom: 1px solid var(--c-border);
+        cursor: pointer;
+        transition: background-color 150ms ease;
+      }
+
+      .wifi-list > div:hover {
+        background-color: var(--c-surface);
+      }
+
+      .wifi-list > div:last-child {
+        border-bottom: none;
+      }
+
+      .wifi-signal {
+        font-size: 11px;
+        color: #666;
+        font-weight: 500;
+      }
+
+      /* Network status */
+      .net-row {
+        padding: var(--spacing-md);
+        background-color: var(--c-surface2);
+        border-radius: var(--radius-lg);
+        margin-bottom: var(--spacing-md);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      /* Hidden state */
+      .hidden {
+        display: none !important;
+      }
+
+      /* Loading state */
+      .loading-msg {
+        text-align: center;
+        color: var(--c-text-inv);
+        font-weight: 500;
+        white-space: pre-line;
+      }
+    }
+
+    @layer layout {
+      body {
+        display: grid;
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr auto;
+        min-height: 100vh;
+      }
+
+      #app-main {
+        overflow-y: auto;
+        overflow-x: hidden;
+        grid-column: 1;
+        grid-row: 1;
+        padding-bottom: 80px;
+      }
+
+      #app-nav {
+        grid-column: 1;
+        grid-row: 2;
+        background-color: var(--c-surface);
+        border-top: 1px solid var(--c-border);
+        display: flex;
+        justify-content: space-around;
+        align-items: center;
+        height: auto;
+        padding: var(--spacing-sm) var(--spacing-xs);
+        gap: var(--spacing-xs);
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: var(--z-nav);
+        flex-wrap: wrap;
+        max-height: 80px;
+      }
+
+      .view {
+        display: none;
+        width: 100%;
+        animation: fadeIn 200ms ease;
+      }
+
+      .view.active,
+      .view:not(.hidden) {
+        display: block;
+      }
+
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      /* View content container */
+      .view-content {
+        padding: var(--spacing-lg);
+        max-width: 100%;
+      }
+
+      .view-header {
+        margin-bottom: var(--spacing-lg);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--spacing-md);
+      }
+
+      .view-header h1 {
+        font-size: clamp(18px, 4vw, 24px);
+        margin: 0;
+      }
+
+      .view-header-actions {
+        display: flex;
+        gap: var(--spacing-sm);
+        flex-wrap: wrap;
+      }
+
+      /* Search bar */
+      .search-box {
+        width: 100%;
+        max-width: 400px;
+        padding: var(--spacing-sm) var(--spacing-md);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        background-color: var(--c-surface2);
+        color: var(--c-text);
+        font-size: 14px;
+      }
+
+      .search-box:focus {
+        outline: 2px solid var(--c-accent);
+      }
+
+      /* Modal */
+      .modal {
+        position: fixed;
+        inset: 0;
+        background-color: rgba(0, 0, 0, 0.5);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: var(--z-modal);
+        padding: var(--spacing-md);
+        overflow-y: auto;
+      }
+
+      .modal.show {
+        display: flex;
+      }
+
+      .modal-content {
+        background-color: var(--c-surface);
+        border-radius: var(--radius-lg);
+        max-width: 95vw;
+        max-height: 95vh;
+        overflow-y: auto;
+        padding: var(--spacing-lg);
+        box-shadow: var(--shadow-lg);
+        border: 1px solid var(--c-border);
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-md);
+      }
+
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--spacing-md);
+      }
+
+      .modal-title {
+        font-size: clamp(16px, 3vw, 20px);
+        font-weight: 700;
+        margin: 0;
+      }
+
+      .modal-close {
+        background: none;
+        border: none;
+        font-size: 24px;
+        cursor: pointer;
+        padding: 0;
+        min-height: auto;
+        min-width: auto;
+        color: var(--c-text);
+      }
+
+      .modal-close:hover {
+        color: var(--c-accent);
+      }
+
+      .modal-cover-wrap {
+        text-align: center;
+        margin-bottom: var(--spacing-md);
+      }
+
+      .modal-cover-wrap img {
+        max-width: 100%;
+        max-height: 300px;
+        border-radius: var(--radius-lg);
+      }
+
+      .modal-actions {
+        display: flex;
+        gap: var(--spacing-sm);
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+
+      .modal-actions button {
+        flex: 1;
+        min-width: 100px;
+      }
+
+      /* Loading overlay */
+      #loading-overlay {
+        position: fixed;
+        inset: 0;
+        background: linear-gradient(135deg, var(--c-bg), var(--c-accent));
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: var(--z-loading);
+        flex-direction: column;
+        gap: var(--spacing-xl);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 200ms ease;
+      }
+
+      #loading-overlay.show {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      /* IP display */
+      .ip-display {
+        font-size: 12px;
+        color: #666;
+        margin-top: var(--spacing-md);
+        font-family: var(--font-mono);
+        word-break: break-all;
+      }
+
+      /* Cover URL section */
+      #cover-url-section {
+        display: none;
+        padding: var(--spacing-md);
+        background-color: var(--c-surface2);
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--c-border);
+      }
+
+      /* Now playing card */
+      .now-playing-card {
+        background: linear-gradient(135deg, rgba(0, 170, 0, 0.1), rgba(0, 170, 0, 0.05));
+        border: 2px solid var(--c-ok);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-md);
+        margin-bottom: var(--spacing-lg);
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+        flex-wrap: wrap;
+      }
+
+      .now-playing-card strong {
+        flex: 1;
+        min-width: 150px;
+      }
+
+      .now-playing-card span {
+        font-size: 13px;
+      }
+    }
+
+    @layer responsive {
+      /* Desktop: 768px+ */
+      @media (min-width: 768px) {
+        body {
+          grid-template-columns: 220px 1fr;
+          grid-template-rows: 1fr;
+        }
+
+        #app-nav {
+          grid-column: 1;
+          grid-row: 1;
+          flex-direction: column;
+          position: static;
+          height: 100vh;
+          max-height: 100vh;
+          border-top: none;
+          border-right: 1px solid var(--c-border);
+          padding: var(--spacing-lg) var(--spacing-md);
+          gap: var(--spacing-md);
+          align-items: stretch;
+          overflow-y: auto;
+          flex-wrap: nowrap;
+          bottom: auto;
+          left: auto;
+          right: auto;
+        }
+
+        #app-nav::before {
+          content: 'GOTEK UI';
+          display: block;
+          text-align: center;
+          font-weight: 700;
+          font-size: 13px;
+          margin-bottom: var(--spacing-lg);
+          padding-bottom: var(--spacing-md);
+          border-bottom: 1px solid var(--c-border);
+        }
+
+        #app-nav .ip-display {
+          margin-top: auto;
+          padding-top: var(--spacing-md);
+          border-top: 1px solid var(--c-border);
+          text-align: center;
+        }
+
+        .tab {
+          justify-content: flex-start;
+          width: 100%;
+          padding: var(--spacing-md);
+        }
+
+        .tab.active {
+          background-color: var(--c-accent);
+        }
+
+        #app-main {
+          grid-column: 2;
+          grid-row: 1;
+          padding: var(--spacing-lg);
+          padding-bottom: var(--spacing-lg);
+        }
+
+        .view-content {
+          padding: 0;
+        }
+
+        .modal-content {
+          max-width: 700px;
+          max-height: 90vh;
+        }
+
+        .toast {
+          bottom: var(--spacing-lg);
+          left: var(--spacing-lg);
+          right: auto;
+          max-width: 400px;
+        }
+
+        .form-row {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      /* Large desktop: 1024px+ */
+      @media (min-width: 1024px) {
+        .form-row {
+          grid-template-columns: repeat(3, 1fr);
+        }
+
+        .stats-grid {
+          grid-template-columns: repeat(5, 1fr);
+        }
+      }
+
+      /* Very small mobile: < 360px */
+      @media (max-width: 359px) {
+        .tab {
+          padding: 4px;
+          font-size: 10px;
+        }
+
+        .badge {
+          font-size: 9px;
+        }
+
+        .btn.btn-sm {
+          padding: 2px 4px;
+          font-size: 9px;
+        }
+      }
+    }
+  </style>
 </head>
 <body>
+  <div id="app-main">
+    <!-- ────────────────────── Dashboard ────────────────────── -->
+    <div class="view" id="view-dashboard">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>Dashboard</h1>
+        </div>
 
-<div class="topbar">
-  <h1>GOTEK SETUP</h1>
-  <span class="ip" id="ip-display">connecting...</span>
-</div>
+        <div class="ip-display" id="ip-display">Loading...</div>
 
-<div class="tabs" id="tab-bar">
-  <div class="tab active" data-view="dashboard">Dashboard</div>
-  <div class="tab" data-view="config">Config</div>
-  <div class="tab" data-view="games">Games</div>
-  <div class="tab" data-view="ftp" id="tab-ftp">FTP</div>
-  <div class="tab" data-view="webdav" id="tab-webdav">WebDAV</div>
-  <div class="tab" data-view="themes">Themes</div>
-  <div class="tab" data-view="log" id="tab-log">Log</div>
-</div>
-
-<!-- DASHBOARD -->
-<div class="content view" id="view-dashboard">
-  <div class="card">
-    <h2>System Status</h2>
-    <div class="stat-grid" id="stats-grid"></div>
-  </div>
-</div>
-
-<!-- CONFIG -->
-<div class="content view hidden" id="view-config">
-  <div class="card">
-    <h2>Device Configuration</h2>
-    <form id="config-form">
-      <label>Display Type</label>
-      <select name="DISPLAY" id="cfg-display">
-        <option value="JC3248">JC3248W535C</option>
-        <option value="WAVESHARE">Waveshare 2.8"</option>
-      </select>
-
-      <label>Default Mode</label>
-      <select name="LASTMODE" id="cfg-lastmode">
-        <option value="ADF">ADF (Amiga)</option>
-        <option value="DSK">DSK (ZX/CPC)</option>
-      </select>
-
-      <label>Active Theme</label>
-      <select name="THEME" id="cfg-theme"></select>
-
-      <h2 style="margin-top:16px">WiFi Access Point</h2>
-      <p style="font-size:12px;color:#555;margin-bottom:8px">Direct connection hotspot — always active for setup</p>
-
-      <label>AP Enabled</label>
-      <select name="WIFI_ENABLED" id="cfg-wifi-enabled">
-        <option value="1">Yes</option>
-        <option value="0">No</option>
-      </select>
-
-      <label>AP SSID</label>
-      <input type="text" name="WIFI_SSID" id="cfg-wifi-ssid">
-
-      <label>AP Password</label>
-      <input type="text" name="WIFI_PASS" id="cfg-wifi-pass">
-
-      <label>AP Channel (1-13)</label>
-      <input type="number" name="WIFI_CHANNEL" id="cfg-wifi-channel" min="1" max="13">
-
-      <h2 style="margin-top:16px">WiFi Client (Internet)</h2>
-      <p style="font-size:12px;color:#555;margin-bottom:8px">Connect to your home network for cover art downloads</p>
-
-      <label>Client Enabled</label>
-      <select name="WIFI_CLIENT_ENABLED" id="cfg-wifi-client-enabled">
-        <option value="0">No</option>
-        <option value="1">Yes</option>
-      </select>
-
-      <label>Home Network SSID</label>
-      <div class="net-row">
-        <input type="text" name="WIFI_CLIENT_SSID" id="cfg-wifi-client-ssid">
-        <button type="button" class="btn btn-sm" onclick="scanNetworks()">Scan</button>
-      </div>
-      <div class="wifi-list hidden" id="wifi-scan-list"></div>
-
-      <label>Home Network Password</label>
-      <div class="pass-wrap"><input type="password" name="WIFI_CLIENT_PASS" id="cfg-wifi-client-pass"><button type="button" class="pass-toggle" onclick="togglePass(this)">&#128065;</button></div>
-
-      <div id="wifi-status-box" style="margin-top:10px;padding:8px;background:var(--light);border:1px inset #999;font-size:13px;display:none"></div>
-
-      <h2 style="margin-top:16px">FTP Network Source</h2>
-      <p style="font-size:12px;color:#555;margin-bottom:4px">Browse and download games from your NAS via FTP (requires WiFi Client)</p>
-      <p style="font-size:11px;color:var(--red);margin-bottom:8px;font-weight:600">Note: plain FTP only — SFTP (SSH) is not supported. Use WebDAV for secure connections.</p>
-
-      <label>FTP Enabled</label>
-      <select name="FTP_ENABLED" id="cfg-ftp-enabled">
-        <option value="0">No</option>
-        <option value="1">Yes</option>
-      </select>
-
-      <label>FTP Host</label>
-      <input type="text" name="FTP_HOST" id="cfg-ftp-host" placeholder="192.168.1.100">
-
-      <label>FTP Port</label>
-      <input type="number" name="FTP_PORT" id="cfg-ftp-port" placeholder="21" value="21">
-
-      <label>FTP User</label>
-      <input type="text" name="FTP_USER" id="cfg-ftp-user" placeholder="anonymous">
-
-      <label>FTP Password</label>
-      <div class="pass-wrap"><input type="password" name="FTP_PASS" id="cfg-ftp-pass"><button type="button" class="pass-toggle" onclick="togglePass(this)">&#128065;</button></div>
-
-      <label>FTP Base Path</label>
-      <input type="text" name="FTP_PATH" id="cfg-ftp-path" placeholder="/" value="/">
-
-      <h2 style="margin-top:16px">WebDAV Network Source</h2>
-      <p style="font-size:12px;color:#555;margin-bottom:8px">Browse and download games via WebDAV (Stackstorage, Nextcloud, etc.)</p>
-
-      <label>WebDAV Enabled</label>
-      <select name="DAV_ENABLED" id="cfg-dav-enabled">
-        <option value="0">No</option>
-        <option value="1">Yes</option>
-      </select>
-
-      <label>WebDAV Host</label>
-      <input type="text" name="DAV_HOST" id="cfg-dav-host" placeholder="username.stackstorage.com">
-
-      <label>WebDAV Port</label>
-      <input type="number" name="DAV_PORT" id="cfg-dav-port" placeholder="443" value="443">
-
-      <label>Use HTTPS</label>
-      <select name="DAV_HTTPS" id="cfg-dav-https">
-        <option value="1">Yes (port 443)</option>
-        <option value="0">No (port 80)</option>
-      </select>
-
-      <label>WebDAV User</label>
-      <input type="text" name="DAV_USER" id="cfg-dav-user" placeholder="username">
-
-      <label>WebDAV Password</label>
-      <div class="pass-wrap"><input type="password" name="DAV_PASS" id="cfg-dav-pass"><button type="button" class="pass-toggle" onclick="togglePass(this)">&#128065;</button></div>
-
-      <label>WebDAV Base Path</label>
-      <input type="text" name="DAV_PATH" id="cfg-dav-path" placeholder="/remote.php/webdav/" value="/remote.php/webdav/">
-
-      <div style="margin-top:16px">
-        <button type="submit" class="btn btn-primary">Save Configuration</button>
-        <button type="button" class="btn" onclick="checkWiFiStatus()">Check WiFi Status</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<!-- GAMES -->
-<div class="content view hidden" id="view-games">
-  <div class="card">
-    <h2>Upload Game</h2>
-    <div class="upload-zone" id="upload-zone">
-      <strong>Drop ADF/DSK files here</strong>
-      <p>or click to browse — supports multiple disk images + JPG cover + NFO</p>
-      <input type="file" id="upload-input" multiple accept=".adf,.dsk,.img,.jpg,.jpeg,.png,.nfo" style="display:none">
-    </div>
-    <div class="progress-bar" id="upload-progress">
-      <div class="progress-fill" id="upload-fill">0%</div>
-    </div>
-  </div>
-
-  <div class="card" id="now-playing-card" style="display:none">
-    <h2>Now Playing</h2>
-    <div id="now-playing" style="display:flex;align-items:center;gap:12px"></div>
-  </div>
-
-  <div class="card">
-    <h2>Game Library <span id="game-count" style="font-weight:400;color:#555"></span></h2>
-    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="game-search" placeholder="Search games..." style="flex:1;min-width:150px;max-width:300px" oninput="filterGames()">
-      <button class="btn" onclick="loadGames()">Refresh</button>
-      <button class="btn" onclick="rescanGames()">Rescan SD</button>
-    </div>
-    <div id="alpha-filter" style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:2px"></div>
-    <div class="game-list" id="game-list"></div>
-  </div>
-</div>
-
-<!-- FTP -->
-<div class="content view hidden" id="view-ftp">
-  <div class="card">
-    <h2>FTP Network Source</h2>
-    <p style="font-size:13px;color:#555;margin-bottom:4px">Browse and download games from your NAS or network FTP server</p>
-    <p style="font-size:11px;color:var(--red);margin-bottom:10px;font-weight:600">Plain FTP only — SFTP (SSH) is not supported. Use the WebDAV tab for secure connections.</p>
-    <div id="ftp-status-bar" class="ftp-status disconnected">Not connected</div>
-    <div id="ftp-no-config" style="display:none;padding:16px;background:#ffe8e8;border:1px solid var(--red);border-radius:2px;margin-bottom:12px">
-      <strong style="color:var(--red)">FTP Not Configured</strong>
-      <p style="font-size:13px;margin-top:4px">Add FTP settings to CONFIG.TXT on the SD card:<br>
-      <code style="font-size:12px">FTP_ENABLED=1<br>FTP_HOST=192.168.1.100<br>FTP_USER=amiga<br>FTP_PASS=games<br>FTP_PATH=/amiga/adf/</code></p>
-    </div>
-    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center">
-      <button class="btn btn-primary" id="ftp-connect-btn" onclick="ftpConnect()">Connect</button>
-      <button class="btn btn-danger" id="ftp-disconnect-btn" onclick="ftpDisconnect()" style="display:none">Disconnect</button>
-      <button class="btn" onclick="ftpRefresh()">Refresh</button>
-    </div>
-    <div id="ftp-breadcrumb" class="ftp-breadcrumb"></div>
-    <div class="game-list" id="ftp-list"></div>
-    <div id="ftp-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading...</div>
-  </div>
-</div>
-
-<!-- WEBDAV -->
-<div class="content view hidden" id="view-webdav">
-  <div class="card">
-    <h2>WebDAV Network Source</h2>
-    <p style="font-size:13px;color:#555;margin-bottom:10px">Browse and download games from Stackstorage, Nextcloud, or any WebDAV server</p>
-    <div id="dav-status-bar" class="ftp-status disconnected">Not connected</div>
-    <div id="dav-no-config" style="display:none;padding:16px;background:#ffe8e8;border:1px solid var(--red);border-radius:2px;margin-bottom:12px">
-      <strong style="color:var(--red)">WebDAV Not Configured</strong>
-      <p style="font-size:13px;margin-top:4px">Add WebDAV settings in the Config tab or in CONFIG.TXT on the SD card.</p>
-    </div>
-    <div id="dav-actions" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="btn btn-primary" id="dav-connect-btn" onclick="davConnect()">Connect</button>
-      <button class="btn btn-danger" id="dav-disconnect-btn" onclick="davDisconnect()" style="display:none">Disconnect</button>
-      <button class="btn" onclick="davRefresh()">Refresh</button>
-    </div>
-  </div>
-
-  <div class="card" id="dav-now-playing-card" style="display:none">
-    <h2>Now Playing</h2>
-    <div id="dav-now-playing" style="display:flex;align-items:center;gap:12px"></div>
-  </div>
-
-  <div class="card" id="dav-game-card" style="display:none">
-    <h2>Game Library <span id="dav-game-count" style="font-weight:400;color:#555"></span></h2>
-    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="dav-search" placeholder="Search games..." style="flex:1;min-width:150px;max-width:300px" oninput="davFilterGames()">
-      <button class="btn" onclick="davRefresh()">Refresh</button>
-    </div>
-    <div id="dav-alpha-filter" style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:2px"></div>
-    <div class="game-list" id="dav-list"></div>
-    <div id="dav-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading...</div>
-  </div>
-
-</div>
-
-<!-- WEBDAV GAME DETAIL MODAL -->
-<div class="modal-overlay" id="modal-dav-detail">
-  <div class="modal">
-    <h3 id="dav-modal-title">Game Details</h3>
-    <div style="text-align:center;margin-bottom:12px">
-      <img id="dav-modal-cover" class="game-cover" style="width:200px;height:auto;max-height:250px">
-    </div>
-    <div id="dav-modal-disk-loader" style="margin-bottom:12px;padding:10px;background:var(--light);border:1px inset #999;border-radius:2px">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span style="font-weight:600;font-size:13px">Load Disk:</span>
-        <select id="dav-modal-disk-select" style="width:auto;min-width:120px;padding:4px 8px"></select>
-        <button class="btn btn-success btn-sm" id="dav-modal-load-btn">Insert</button>
-        <button class="btn btn-sm" id="dav-modal-eject-btn" onclick="davEject();davCloseFolderModal();">Eject</button>
-        <span id="dav-modal-load-status" style="font-size:12px;color:#555"></span>
+        <div class="stats-grid" id="stats-grid"></div>
       </div>
     </div>
-    <div id="dav-modal-disks" style="margin-bottom:8px"></div>
-    <div id="dav-modal-nfo" style="margin-bottom:8px"></div>
-    <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn" onclick="davCloseFolderModal()">Close</button>
-    </div>
-  </div>
-</div>
 
-<!-- THEMES -->
-<div class="content view hidden" id="view-themes">
-  <div class="card">
-    <h2>Installed Themes</h2>
-    <div class="theme-grid" id="theme-grid"></div>
-  </div>
-</div>
+    <!-- ────────────────────── Games ────────────────────── -->
+    <div class="view" id="view-games">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>Games <span id="game-count">(0 games)</span></h1>
+          <div class="view-header-actions">
+            <input type="text" id="game-search" class="search-box" placeholder="Search games...">
+            <button class="btn" onclick="rescanGames()">Rescan</button>
+          </div>
+        </div>
 
-<!-- LOG VIEWER -->
-<div class="content view hidden" id="view-log">
-  <div class="card">
-    <h2>System Log</h2>
-    <p style="font-size:13px;color:#555;margin-bottom:10px">Live device log — updates every 3 seconds. Enable in Config: <code>LOG_ENABLED=1</code></p>
-    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <span id="log-live-dot" class="active-indicator" style="margin:0"></span>
-      <span style="font-size:12px;color:#555">Live</span>
-      <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear</button>
-      <label style="margin:0;font-size:13px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="log-auto-scroll" checked> Auto-scroll</label>
-    </div>
-    <pre id="log-content" style="font-size:11px;background:#1a1a2e;color:#0f0;padding:12px;border-radius:4px;max-height:60vh;overflow:auto;white-space:pre-wrap;min-height:200px;font-family:'Courier New',monospace;border:2px inset #999">Loading...</pre>
-  </div>
-</div>
+        <div class="now-playing-card" id="now-playing-card" style="display: none;">
+          <span id="now-playing"></span>
+        </div>
 
-<!-- GAME DETAIL MODAL -->
-<div class="modal-overlay" id="modal-game-detail">
-  <div class="modal">
-    <h3 id="modal-game-title">Game Details</h3>
-    <div id="modal-game-cover-wrap" style="text-align:center;margin-bottom:12px">
-      <img id="modal-game-cover" class="game-cover" style="width:200px;height:auto;max-height:250px">
-    </div>
-    <div id="modal-disk-loader" style="margin-bottom:12px;padding:10px;background:var(--light);border:1px inset #999;border-radius:2px">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span style="font-weight:600;font-size:13px">Load Disk:</span>
-        <select id="modal-disk-select" style="width:auto;min-width:120px;padding:4px 8px"></select>
-        <button class="btn btn-success btn-sm" id="modal-load-btn">Insert</button>
-        <button class="btn btn-sm" id="modal-eject-btn">Eject</button>
-        <span id="modal-load-status" style="font-size:12px;color:#555"></span>
+        <div style="margin-bottom: var(--spacing-md);">
+          <label>Filter by Letter</label>
+          <div id="alpha-filter" style="display: flex; flex-wrap: wrap; gap: 4px;"></div>
+        </div>
+
+        <div id="game-list"></div>
       </div>
     </div>
-    <div id="modal-game-disks"></div>
-    <label>NFO / Description</label>
-    <textarea id="modal-nfo-editor"></textarea>
-    <div style="margin-top:8px">
-      <label>Upload Cover Art</label>
-      <div class="net-row">
-        <input type="file" id="modal-cover-input" accept=".jpg,.jpeg,.png" style="flex:1">
-        <button type="button" class="btn btn-sm btn-primary" id="modal-cover-upload-btn" disabled>Upload</button>
+
+    <!-- ────────────────────── Upload Zone ────────────────────── -->
+    <div style="display: none;">
+      <div id="upload-zone" class="upload-zone">
+        <span>📁</span>
+        <span>Drag files here or click to browse</span>
       </div>
-      <div id="cover-upload-status" style="font-size:12px;color:#555;margin-top:4px"></div>
-    </div>
-    <div id="cover-url-section" style="margin-top:8px">
-      <label>Or download cover from URL</label>
-      <div class="net-row">
-        <input type="url" id="modal-cover-url" placeholder="https://example.com/cover.jpg">
-        <button type="button" class="btn btn-sm btn-primary" id="modal-cover-url-btn">Download</button>
+      <input type="file" id="upload-input" multiple>
+      <div class="progress-bar" id="upload-progress">
+        <div class="progress-fill" id="upload-fill"></div>
       </div>
-      <div id="cover-url-status" style="font-size:12px;color:#555;margin-top:4px"></div>
     </div>
-    <div class="modal-actions">
-      <button class="btn btn-danger" id="modal-delete-btn">Delete Game</button>
-      <button class="btn btn-primary" id="modal-save-nfo">Save NFO</button>
-      <button class="btn" onclick="closeModal()">Close</button>
+
+    <!-- ────────────────────── FTP ────────────────────── -->
+    <div class="view" id="view-ftp">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>FTP Browser</h1>
+          <div class="view-header-actions">
+            <button class="btn" id="ftp-connect-btn" onclick="ftpConnect()" style="display: none;">Connect</button>
+            <button class="btn" id="ftp-disconnect-btn" onclick="ftpDisconnect()" style="display: none;">Disconnect</button>
+            <button class="btn" onclick="ftpRefresh()">Refresh</button>
+          </div>
+        </div>
+
+        <div class="ftp-status" id="ftp-status-bar">Initializing...</div>
+        <div id="ftp-no-config" style="padding: var(--spacing-md); color: #888; display: none;">FTP is not enabled or configured. Check Config tab.</div>
+        <div id="ftp-breadcrumb" class="ftp-breadcrumb"></div>
+        <div style="display: none;" id="ftp-loading"><span class="spinner"></span> Loading...</div>
+        <div id="ftp-list"></div>
+      </div>
+    </div>
+
+    <!-- ────────────────────── WebDAV ────────────────────── -->
+    <div class="view" id="view-webdav">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>WebDAV <span id="dav-game-count">(0 games)</span></h1>
+          <div class="view-header-actions">
+            <button class="btn" id="dav-connect-btn" onclick="davConnect()" style="display: none;">Connect</button>
+            <button class="btn" id="dav-disconnect-btn" onclick="davDisconnect()" style="display: none;">Disconnect</button>
+            <button class="btn" onclick="davRefresh()">Refresh</button>
+          </div>
+        </div>
+
+        <div class="ftp-status" id="dav-status-bar">Initializing...</div>
+        <div id="dav-no-config" style="padding: var(--spacing-md); color: #888; display: none;">WebDAV is not enabled or configured. Check Config tab.</div>
+
+        <div class="now-playing-card" id="dav-now-playing-card" style="display: none;">
+          <span id="dav-now-playing"></span>
+        </div>
+
+        <div id="dav-game-card" style="display: none;">
+          <div style="margin-bottom: var(--spacing-md);">
+            <input type="text" id="dav-search" class="search-box" placeholder="Search games...">
+          </div>
+
+          <div style="margin-bottom: var(--spacing-md);">
+            <label>Filter by Letter</label>
+            <div id="dav-alpha-filter" style="display: flex; flex-wrap: wrap; gap: 4px;"></div>
+          </div>
+        </div>
+
+        <div style="display: none;" id="dav-loading"><span class="spinner"></span> Loading...</div>
+        <div id="dav-list"></div>
+      </div>
+    </div>
+
+    <!-- ────────────────────── Themes ────────────────────── -->
+    <div class="view" id="view-themes">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>Themes</h1>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--spacing-md);" id="theme-grid"></div>
+      </div>
+    </div>
+
+    <!-- ────────────────────── Config ────────────────────── -->
+    <div class="view" id="view-config">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>Configuration</h1>
+        </div>
+
+        <form id="config-form">
+          <fieldset style="border: none; padding: 0;">
+            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">System</legend>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="cfg-display">Display Type</label>
+                <input type="text" id="cfg-display" name="DISPLAY" placeholder="JC3248">
+              </div>
+              <div class="form-group">
+                <label for="cfg-lastmode">Last Mode</label>
+                <input type="text" id="cfg-lastmode" name="LASTMODE" placeholder="ADF">
+              </div>
+              <div class="form-group">
+                <label for="cfg-theme">Theme</label>
+                <select id="cfg-theme" name="THEME"></select>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset style="border: none; padding: 0; margin-top: var(--spacing-xl);">
+            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">WiFi Access Point</legend>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="cfg-wifi-enabled">Enable AP</label>
+                <select id="cfg-wifi-enabled" name="WIFI_ENABLED">
+                  <option value="1">Yes</option>
+                  <option value="0">No</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="cfg-wifi-ssid">SSID</label>
+                <input type="text" id="cfg-wifi-ssid" name="WIFI_SSID" placeholder="Gotek">
+              </div>
+              <div class="form-group">
+                <label for="cfg-wifi-channel">Channel</label>
+                <input type="number" id="cfg-wifi-channel" name="WIFI_CHANNEL" min="1" max="13" placeholder="6">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="cfg-wifi-pass">AP Password</label>
+              <div class="pass-wrap">
+                <input type="password" id="cfg-wifi-pass" name="WIFI_PASS" placeholder="(leave empty for open)">
+                <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset style="border: none; padding: 0; margin-top: var(--spacing-xl);">
+            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">WiFi Client (Connect to Network)</legend>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="cfg-wifi-client-enabled">Enable Client</label>
+                <select id="cfg-wifi-client-enabled" name="WIFI_CLIENT_ENABLED">
+                  <option value="0">No</option>
+                  <option value="1">Yes</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="cfg-wifi-client-ssid">SSID to Connect</label>
+                <input type="text" id="cfg-wifi-client-ssid" name="WIFI_CLIENT_SSID" placeholder="MyNetwork">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="cfg-wifi-client-pass">Password</label>
+              <div class="pass-wrap">
+                <input type="password" id="cfg-wifi-client-pass" name="WIFI_CLIENT_PASS">
+                <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+              </div>
+            </div>
+
+            <button type="button" class="btn" onclick="scanNetworks()" style="margin-top: var(--spacing-md);">Scan Networks</button>
+            <div id="wifi-scan-list" class="wifi-list hidden" style="margin-top: var(--spacing-md);"></div>
+
+            <button type="button" class="btn" onclick="checkWiFiStatus()" style="margin-top: var(--spacing-md);">Check Status</button>
+            <div id="wifi-status-box" style="display: none; margin-top: var(--spacing-md);" class="net-row"></div>
+          </fieldset>
+
+          <fieldset style="border: none; padding: 0; margin-top: var(--spacing-xl);">
+            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">FTP Server</legend>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="cfg-ftp-enabled">Enable FTP</label>
+                <select id="cfg-ftp-enabled" name="FTP_ENABLED">
+                  <option value="0">No</option>
+                  <option value="1">Yes</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="cfg-ftp-host">Host</label>
+                <input type="text" id="cfg-ftp-host" name="FTP_HOST" placeholder="example.com">
+              </div>
+              <div class="form-group">
+                <label for="cfg-ftp-port">Port</label>
+                <input type="number" id="cfg-ftp-port" name="FTP_PORT" placeholder="21">
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="cfg-ftp-user">Username</label>
+                <input type="text" id="cfg-ftp-user" name="FTP_USER" placeholder="anonymous">
+              </div>
+              <div class="form-group">
+                <label for="cfg-ftp-pass">Password</label>
+                <div class="pass-wrap">
+                  <input type="password" id="cfg-ftp-pass" name="FTP_PASS">
+                  <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="cfg-ftp-path">Path</label>
+                <input type="text" id="cfg-ftp-path" name="FTP_PATH" placeholder="/">
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset style="border: none; padding: 0; margin-top: var(--spacing-xl);">
+            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">WebDAV Server</legend>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="cfg-dav-enabled">Enable WebDAV</label>
+                <select id="cfg-dav-enabled" name="DAV_ENABLED">
+                  <option value="0">No</option>
+                  <option value="1">Yes</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="cfg-dav-host">Host</label>
+                <input type="text" id="cfg-dav-host" name="DAV_HOST" placeholder="example.com">
+              </div>
+              <div class="form-group">
+                <label for="cfg-dav-port">Port</label>
+                <input type="number" id="cfg-dav-port" name="DAV_PORT" placeholder="443">
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="cfg-dav-https">Protocol</label>
+                <select id="cfg-dav-https" name="DAV_HTTPS">
+                  <option value="1">HTTPS</option>
+                  <option value="0">HTTP</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="cfg-dav-user">Username</label>
+                <input type="text" id="cfg-dav-user" name="DAV_USER">
+              </div>
+              <div class="form-group">
+                <label for="cfg-dav-pass">Password</label>
+                <div class="pass-wrap">
+                  <input type="password" id="cfg-dav-pass" name="DAV_PASS">
+                  <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="cfg-dav-path">Base Path</label>
+              <input type="text" id="cfg-dav-path" name="DAV_PATH" placeholder="/remote.php/webdav/">
+            </div>
+          </fieldset>
+
+          <button type="submit" class="btn" style="margin-top: var(--spacing-xl); width: 100%; min-height: 48px;">Save Configuration</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ────────────────────── Log ────────────────────── -->
+    <div class="view" id="view-log">
+      <div class="view-content">
+        <div class="view-header">
+          <h1>System Log</h1>
+          <div class="view-header-actions">
+            <label style="display: flex; align-items: center; gap: var(--spacing-sm); margin: 0; font-weight: normal;">
+              <input type="checkbox" id="log-auto-scroll" checked> Auto-scroll
+            </label>
+            <button class="btn" onclick="clearLog()">Clear</button>
+          </div>
+        </div>
+
+        <div id="log-content" style="
+          background-color: var(--c-surface2);
+          border: 1px solid var(--c-border);
+          border-radius: var(--radius-lg);
+          padding: var(--spacing-md);
+          font-family: var(--font-mono);
+          font-size: 12px;
+          line-height: 1.4;
+          max-height: 500px;
+          overflow-y: auto;
+          white-space: pre-wrap;
+          word-wrap: break-word;
+          color: #444;
+        "></div>
+      </div>
     </div>
   </div>
-</div>
 
-<!-- Global loading overlay -->
-<div id="loading-overlay">
-  <div class="spinner"></div>
-  <div class="loading-msg" id="loading-msg">Loading...</div>
-</div>
+  <!-- ────────────────────── Navigation ────────────────────── -->
+  <nav id="app-nav">
+    <div class="tab active" data-view="dashboard">🏠 Home</div>
+    <div class="tab" data-view="games">🎮 Games</div>
+    <div class="tab" data-view="webdav">📡 Sources</div>
+    <div class="tab" data-view="themes">🎨 Themes</div>
+    <div class="tab" data-view="config">⚙️ Config</div>
+    <div id="tab-ftp" class="tab" data-view="ftp" style="display: none;">📁 FTP</div>
+    <div id="tab-webdav" class="tab" data-view="webdav" style="display: none;">☁️ DAV</div>
+    <div id="tab-log" class="tab" data-view="log" style="display: none;">📋 Log</div>
+    <div class="ip-display" id="ip-display-nav"></div>
+  </nav>
+
+  <!-- ────────────────────── Game Detail Modal ────────────────────── -->
+  <div class="modal" id="modal-game-detail">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modal-game-title">Game</h2>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+
+      <div class="modal-cover-wrap" id="modal-game-cover-wrap">
+        <img id="modal-game-cover" style="display: none;">
+      </div>
+
+      <div id="modal-load-status"></div>
+
+      <div>
+        <label for="modal-disk-select">Select Disk</label>
+        <select id="modal-disk-select"></select>
+      </div>
+
+      <div id="modal-game-disks"></div>
+
+      <div class="modal-actions">
+        <button id="modal-load-btn" class="btn">Load</button>
+        <button id="modal-eject-btn" class="btn">Eject</button>
+      </div>
+
+      <hr style="border: none; border-top: 1px solid var(--c-border); margin: var(--spacing-md) 0;">
+
+      <div>
+        <label for="modal-cover-input">Upload Cover</label>
+        <div style="display: flex; gap: var(--spacing-sm);">
+          <input type="file" id="modal-cover-input" accept="image/*">
+          <button id="modal-cover-upload-btn" class="btn" disabled>Upload</button>
+        </div>
+        <div id="cover-upload-status" style="margin-top: var(--spacing-sm); font-size: 12px;"></div>
+      </div>
+
+      <div id="cover-url-section">
+        <label for="modal-cover-url">Or Download from URL</label>
+        <div style="display: flex; gap: var(--spacing-sm);">
+          <input type="url" id="modal-cover-url" placeholder="https://...">
+          <button id="modal-cover-url-btn" class="btn">Download</button>
+        </div>
+        <div id="cover-url-status" style="margin-top: var(--spacing-sm); font-size: 12px;"></div>
+      </div>
+
+      <hr style="border: none; border-top: 1px solid var(--c-border); margin: var(--spacing-md) 0;">
+
+      <div>
+        <label for="modal-nfo-editor">NFO / Description</label>
+        <textarea id="modal-nfo-editor" style="font-family: var(--font-mono); font-size: 12px; height: 150px; resize: vertical;"></textarea>
+        <button id="modal-save-nfo" class="btn" style="margin-top: var(--spacing-sm); width: 100%;">Save NFO</button>
+      </div>
+
+      <hr style="border: none; border-top: 1px solid var(--c-border); margin: var(--spacing-md) 0;">
+
+      <button id="modal-delete-btn" class="btn btn-danger" style="width: 100%;">Delete Game</button>
+    </div>
+  </div>
+
+  <!-- ────────────────────── WebDAV Folder Modal ────────────────────── -->
+  <div class="modal" id="modal-dav-detail">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="dav-modal-title">Folder</h2>
+        <button class="modal-close" onclick="davCloseFolderModal()">✕</button>
+      </div>
+
+      <div class="modal-cover-wrap">
+        <img id="dav-modal-cover" style="display: none;">
+      </div>
+
+      <div id="dav-modal-load-status"></div>
+
+      <div>
+        <label for="dav-modal-disk-select">Select Disk</label>
+        <select id="dav-modal-disk-select"></select>
+      </div>
+
+      <div id="dav-modal-disks"></div>
+
+      <div class="modal-actions">
+        <button id="dav-modal-load-btn" class="btn">Load</button>
+        <button id="dav-modal-eject-btn" class="btn" onclick="davEject()">Eject</button>
+      </div>
+
+      <div id="dav-modal-nfo"></div>
+    </div>
+  </div>
+
+  <!-- ────────────────────── Loading Overlay ────────────────────── -->
+  <div id="loading-overlay">
+    <div class="spinner"></div>
+    <div class="loading-msg" id="loading-msg">Loading...</div>
+  </div>
 
 <script>
 // Gotek Setup — SPA Controller
@@ -456,6 +1575,57 @@ textarea{min-height:80px;resize:vertical}
 const API = '';
 let currentGame = null;
 let systemInfo = {};
+
+// ═══════════════ THEME SYSTEM ═══════════════
+
+const THEME_PALETTES = {
+  'AMIGA_WB2': {
+    '--c-bg': '#6680aa',
+    '--c-surface': '#aaaaaa',
+    '--c-surface2': '#c0c0c0',
+    '--c-accent': '#0055aa',
+    '--c-accent2': '#ff8800',
+    '--c-text': '#000000',
+    '--c-text-inv': '#ffffff',
+    '--c-ok': '#00aa00',
+    '--c-warn': '#ff8800',
+    '--c-err': '#cc0000',
+    '--c-border': '#888888'
+  },
+  'CYBERPUNK': {
+    '--c-bg': '#0d0d1a',
+    '--c-surface': '#1a1a2e',
+    '--c-surface2': '#16213e',
+    '--c-accent': '#00f5ff',
+    '--c-accent2': '#ff0080',
+    '--c-text': '#e0e0ff',
+    '--c-text-inv': '#000000',
+    '--c-ok': '#00ff88',
+    '--c-warn': '#ffaa00',
+    '--c-err': '#ff3366',
+    '--c-border': '#334466'
+  },
+  'STEAMPUNK': {
+    '--c-bg': '#2c1810',
+    '--c-surface': '#3d2414',
+    '--c-surface2': '#4a2d18',
+    '--c-accent': '#c8860a',
+    '--c-text': '#e8d5b0',
+    '--c-text-inv': '#1a0a00',
+    '--c-accent2': '#8b4513',
+    '--c-ok': '#5a8a3a',
+    '--c-warn': '#c8860a',
+    '--c-err': '#aa2222',
+    '--c-border': '#7a5530'
+  }
+};
+
+function applyTheme(name) {
+  const palette = THEME_PALETTES[name] || THEME_PALETTES['AMIGA_WB2'];
+  Object.entries(palette).forEach(([key, value]) => {
+    document.documentElement.style.setProperty(key, value);
+  });
+}
 
 // Navigation
 document.querySelectorAll('.tab').forEach(tab => {
@@ -511,6 +1681,7 @@ async function api(path, opts = {}) {
 async function loadDashboard() {
   const d = await api('/api/system/info');
   systemInfo = d;
+  applyTheme(d.theme);
 
   // Update tab visibility based on feature flags
   const ftpTab = document.getElementById('tab-ftp');
@@ -607,7 +1778,7 @@ async function scanNetworks() {
         return `<div onclick="selectNetwork('${esc(n.ssid)}')"><span>${esc(n.ssid)} ${n.encrypted ? '🔒' : ''}</span><span class="wifi-signal">${bars} ${n.rssi}dBm</span></div>`;
       }).join('');
   } catch (e) {
-    listEl.innerHTML = '<div style="padding:8px;color:var(--red)">Scan failed — is WiFi client mode enabled?</div>';
+    listEl.innerHTML = '<div style="padding:8px;color:var(--c-err)">Scan failed — is WiFi client mode enabled?</div>';
   }
 }
 
@@ -628,15 +1799,15 @@ async function checkWiFiStatus() {
     let html = '<strong>AP:</strong> ' + (s.ap_active ? s.ap_ip + ' (' + s.ap_clients + ' clients)' : 'Off');
     html += '<br><strong>Internet:</strong> ';
     if (s.sta_connected) {
-      html += '<span style="color:var(--green)">' + s.sta_ip + ' — connected to ' + esc(s.sta_ssid) + '</span>';
+      html += '<span style="color:var(--c-ok)">' + s.sta_ip + ' — connected to ' + esc(s.sta_ssid) + '</span>';
     } else if (s.sta_ssid) {
-      html += '<span style="color:var(--orange)">Connecting to ' + esc(s.sta_ssid) + '...</span>';
+      html += '<span style="color:var(--c-warn)">Connecting to ' + esc(s.sta_ssid) + '...</span>';
     } else {
       html += '<span style="color:#888">Not configured</span>';
     }
     box.innerHTML = html;
   } catch (e) {
-    box.innerHTML = '<span style="color:var(--red)">Failed to get status</span>';
+    box.innerHTML = '<span style="color:var(--c-err)">Failed to get status</span>';
   }
 }
 
@@ -738,7 +1909,7 @@ function renderGameList(games, mode) {
       <div class="game-info">
         <div class="game-name">${g.loaded ? '<span class="active-indicator"></span>' : ''}${esc(g.name)}</div>
         <div class="game-meta">
-          ${g.loaded ? '<span class="badge" style="background:var(--green);color:#fff">PLAYING</span> ' : ''}
+          ${g.loaded ? '<span class="badge" style="background:var(--c-ok);color:#fff">PLAYING</span> ' : ''}
           ${g.disks > 1 ? `<span class="badge badge-disks">${g.disks} disks</span> ` : ''}
           ${g.has_nfo ? '<span class="badge badge-nfo">NFO</span> ' : ''}
           ${g.has_cover ? '<span class="badge badge-cover">Cover</span>' : ''}
@@ -797,7 +1968,7 @@ async function openGameDetail(mode, name) {
   const loadStatus = document.getElementById('modal-load-status');
   const isLoaded = lastGameData && lastGameData.loaded_game === name;
   if (isLoaded) {
-    loadStatus.innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>Active: ' + esc(lastGameData.loaded_file) + '</span>';
+    loadStatus.innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Active: ' + esc(lastGameData.loaded_file) + '</span>';
   } else {
     loadStatus.textContent = '';
   }
@@ -843,18 +2014,18 @@ document.getElementById('modal-load-btn').addEventListener('click', async () => 
   if (!currentGame) return;
   const diskNum = document.getElementById('modal-disk-select').value;
   const statusEl = document.getElementById('modal-load-status');
-  statusEl.innerHTML = '<span style="color:var(--orange)">Loading...</span>';
+  statusEl.innerHTML = '<span style="color:var(--c-warn)">Loading...</span>';
 
   try {
     const params = new URLSearchParams({ disk: diskNum });
     const res = await api(`/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/load`, {
       method: 'POST', body: params
     });
-    statusEl.innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>Active: ' + esc(res.file) + '</span>';
+    statusEl.innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Active: ' + esc(res.file) + '</span>';
     toast(res.game + ' loaded!');
     loadGames();  // refresh list to update active indicator
   } catch (e) {
-    statusEl.innerHTML = '<span style="color:var(--red)">Failed to load</span>';
+    statusEl.innerHTML = '<span style="color:var(--c-err)">Failed to load</span>';
   }
 });
 
@@ -922,19 +2093,19 @@ document.getElementById('modal-cover-upload-btn').addEventListener('click', asyn
     const data = await res.json();
     if (res.ok) {
       statusEl.textContent = 'Uploaded! ' + Math.round(data.bytes / 1024) + ' KB';
-      statusEl.style.color = 'var(--green)';
+      statusEl.style.color = 'var(--c-ok)';
       toast('Cover uploaded!');
       document.getElementById('modal-game-cover').src =
         `${API}/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/cover?t=${Date.now()}`;
       document.getElementById('modal-game-cover').style.display = 'block';
     } else {
       statusEl.textContent = data.error || 'Upload failed';
-      statusEl.style.color = 'var(--red)';
+      statusEl.style.color = 'var(--c-err)';
       toast(data.error || 'Upload failed', 'error');
     }
   } catch (err) {
     statusEl.textContent = 'Upload error';
-    statusEl.style.color = 'var(--red)';
+    statusEl.style.color = 'var(--c-err)';
     toast('Upload failed: ' + err.message, 'error');
   }
   fileInput.value = '';
@@ -960,18 +2131,18 @@ document.getElementById('modal-cover-url-btn').addEventListener('click', async (
 
     if (res.ok) {
       statusEl.textContent = 'Saved! ' + Math.round(data.bytes / 1024) + ' KB';
-      statusEl.style.color = 'var(--green)';
+      statusEl.style.color = 'var(--c-ok)';
       toast('Cover downloaded!');
       document.getElementById('modal-game-cover').src =
         `${API}/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/cover?t=${Date.now()}`;
       document.getElementById('modal-game-cover').style.display = 'block';
     } else {
       statusEl.textContent = data.error || 'Download failed';
-      statusEl.style.color = 'var(--red)';
+      statusEl.style.color = 'var(--c-err)';
     }
   } catch (e) {
     statusEl.textContent = 'Error: ' + e.message;
-    statusEl.style.color = 'var(--red)';
+    statusEl.style.color = 'var(--c-err)';
   }
 });
 
@@ -1196,7 +2367,7 @@ async function ftpBrowse(path) {
     list.innerHTML = html;
   } catch (e) {
     loading.style.display = 'none';
-    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--red)">Failed to list directory: ' + esc(e.message || 'Unknown error') + '</div>';
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--c-err)">Failed to list directory: ' + esc(e.message || 'Unknown error') + '</div>';
   }
 }
 
@@ -1399,7 +2570,7 @@ async function davBrowse(path, forceRefresh) {
     davBuildAlphaFilter(folders);
     list.innerHTML = '<p style="color:#888;padding:12px;font-size:13px">Choose a letter or search to browse games.</p>';
   } catch (e) {
-    list.innerHTML = '<p style="color:var(--red);padding:12px">Error: ' + esc(e.message || 'Failed to list directory') + '</p>';
+    list.innerHTML = '<p style="color:var(--c-err);padding:12px">Error: ' + esc(e.message || 'Failed to list directory') + '</p>';
   } finally {
     loading.style.display = 'none';
   }
@@ -1471,8 +2642,8 @@ function davRenderGameList(folders) {
       '<div class="game-info">' +
         '<div class="game-name">' + (isPlaying ? '<span class="active-indicator"></span>' : '') + esc(f.name) + '</div>' +
         '<div class="game-meta">' +
-          (isPlaying ? '<span class="badge" style="background:var(--green);color:#fff">PLAYING</span> ' : '') +
-          '<span class="badge" style="background:var(--blue);color:#fff">WebDAV</span>' +
+          (isPlaying ? '<span class="badge" style="background:var(--c-ok);color:#fff">PLAYING</span> ' : '') +
+          '<span class="badge" style="background:var(--c-accent);color:#fff">WebDAV</span>' +
         '</div>' +
       '</div>' +
       '</div>';
@@ -1521,9 +2692,9 @@ async function davOpenFolder(folderPath, folderName) {
 
   // Auto-connect if needed (user clicked game from cache while disconnected)
   if (!davConnected) {
-    document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--orange)">Connecting to WebDAV...</p>';
+    document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--c-warn)">Connecting to WebDAV...</p>';
     if (!await davEnsureConnected()) {
-      document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--red)">Could not connect to WebDAV server</p>';
+      document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--c-err)">Could not connect to WebDAV server</p>';
       return;
     }
   }
@@ -1560,7 +2731,7 @@ async function davOpenFolder(folderPath, folderName) {
     if (nfoFile) {
       try {
         const nfoData = await api('/api/dav/nfo?path=' + encodeURIComponent(folderPath + '/' + nfoFile.name));
-        nfoEl.innerHTML = '<label>NFO / Description</label><pre style="font-size:12px;background:var(--light);padding:8px;border:1px inset #999;border-radius:2px;max-height:150px;overflow:auto;white-space:pre-wrap">' + esc(nfoData.content || '') + '</pre>';
+        nfoEl.innerHTML = '<label>NFO / Description</label><pre style="font-size:12px;background:var(--c-surface2);padding:8px;border:1px inset var(--c-border);border-radius:2px;max-height:150px;overflow:auto;white-space:pre-wrap">' + esc(nfoData.content || '') + '</pre>';
       } catch(e) {
         nfoEl.innerHTML = '<label>NFO</label><span class="badge badge-nfo">Available</span>';
       }
@@ -1572,7 +2743,7 @@ async function davOpenFolder(folderPath, folderName) {
     const isPlaying = davLoadedFile && davLoadedFile.startsWith(folderPath + '/');
     if (isPlaying) {
       let loadedName = davLoadedFile.split('/').pop();
-      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>Playing: ' + esc(loadedName) + '</span>';
+      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Playing: ' + esc(loadedName) + '</span>';
     }
 
     // Load button handler
@@ -1583,7 +2754,7 @@ async function davOpenFolder(folderPath, folderName) {
       const remotePath = folderPath + '/' + disk.name;
       this.disabled = true;
       this.textContent = 'Loading...';
-      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--orange)">Loading...</span>';
+      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-warn)">Loading...</span>';
       showLoading('Streaming from WebDAV…\n' + disk.name);
       try {
         const res = await fetch(API + '/api/dav/load', {
@@ -1596,7 +2767,7 @@ async function davOpenFolder(folderPath, folderName) {
         davLoadedFile = remotePath;
         this.textContent = 'Insert';
         this.disabled = false;
-        document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>Playing: ' + esc(disk.name) + '</span>';
+        document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Playing: ' + esc(disk.name) + '</span>';
         let loadMsg = rdata.name + ' loading...';
         if (rdata.bytes) loadMsg = rdata.name + ' loaded! (' + (rdata.bytes / 1024).toFixed(0) + ' KB)';
         toast(loadMsg);
@@ -1611,7 +2782,7 @@ async function davOpenFolder(folderPath, folderName) {
     };
 
   } catch(e) {
-    document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--red)">Failed to load folder contents</p>';
+    document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--c-err)">Failed to load folder contents</p>';
   }
 }
 
@@ -1640,7 +2811,7 @@ async function davInsert(remotePath, displayName, btn) {
     }
     davLoadedFile = remotePath;
     btn.textContent = 'Playing!';
-    btn.style.background = 'var(--green)';
+    btn.style.background = 'var(--c-ok)';
     toast(data.name + ' loaded! (' + (data.bytes / 1024).toFixed(0) + ' KB)');
     // Show eject button
     document.getElementById('dav-disconnect-btn').style.display = '';
