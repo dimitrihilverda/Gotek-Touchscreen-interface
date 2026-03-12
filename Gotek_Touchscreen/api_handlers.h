@@ -1355,6 +1355,28 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
     }
   }
 
+  // For subfolders (game detail): try folder-contents cache first
+  if (path != "/" && !forceRefresh) {
+    std::vector<String> cachedDisks;
+    String cachedCover, cachedNfo;
+    if (davLoadFolderCache(path, cachedDisks, cachedCover, cachedNfo)) {
+      sdLog("API: DAV folder cache HIT for " + path);
+      String json = "{\"path\":\"" + jsonEscape(path) + "\",\"cached\":true";
+      if (cachedCover.length() > 0) json += ",\"cover\":\"" + jsonEscape(cachedCover) + "\"";
+      if (cachedNfo.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(cachedNfo) + "\"";
+      json += ",\"entries\":[";
+      bool first = true;
+      for (const auto &d : cachedDisks) {
+        if (!first) json += ",";
+        first = false;
+        json += "{\"name\":\"" + jsonEscape(d) + "\",\"dir\":false,\"size\":0}";
+      }
+      json += "]}";
+      sendJSON(client, 200, json);
+      return;
+    }
+  }
+
   // No cache available or forced refresh — do PROPFIND
   if (WiFi.status() != WL_CONNECTED) {
     sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}");
@@ -1370,13 +1392,21 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
   }
   sdLog("API: DAV list OK, " + String(entries.size()) + " entries");
 
-  // Separate cover/nfo metadata from browsable entries
+  // Separate disk files, cover and nfo from the full listing
   String coverFile = "", nfoFile = "";
+  std::vector<String> diskFiles;
+  const char* diskExts[] = { ".adf", ".dsk", ".adz", ".img", nullptr };
   for (int i = 0; i < (int)entries.size(); i++) {
     if (entries[i].coverFile.length() > 0 && coverFile.length() == 0)
       coverFile = entries[i].coverFile;
     if (entries[i].nfoFile.length() > 0 && nfoFile.length() == 0)
       nfoFile = entries[i].nfoFile;
+    if (!entries[i].isDir) {
+      String lname = entries[i].name; lname.toLowerCase();
+      for (int e = 0; diskExts[e]; e++) {
+        if (lname.endsWith(diskExts[e])) { diskFiles.push_back(entries[i].name); break; }
+      }
+    }
   }
 
   // Build JSON response — skip cover/nfo files from browsable list
@@ -1399,6 +1429,11 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
   if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
   json += "}";
   sendJSON(client, 200, json);
+
+  // Save folder contents to SD cache for next time
+  if (path != "/") {
+    davSaveFolderCache(path, diskFiles, coverFile, nfoFile);
+  }
 
   // Update in-memory and SD cache for root listing
   if (path == "/") {

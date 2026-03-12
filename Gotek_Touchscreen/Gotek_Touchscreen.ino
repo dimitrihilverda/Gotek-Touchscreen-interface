@@ -2740,6 +2740,70 @@ void davSaveCachedCover(const String &davPath, const uint8_t *buf, size_t size) 
   f.close();
 }
 
+// ── Folder-contents cache ───────────────────────────────────────────────
+// Caches the disk-file list, cover filename and nfo filename for each game
+// folder in /DAV_FOLDER_CACHE/ so the web UI popup is instant on repeat opens.
+// Format (one entry per line):
+//   HOST=stack.hilverda.net
+//   DISK=GameName.adf
+//   DISK=GameName2.adf
+//   COVER=GameName.jpg
+//   NFO=GameName.nfo
+
+#define DAV_FOLDER_CACHE_DIR "/DAV_FOLDER_CACHE"
+
+// Derive a cache filename from a folder path
+// e.g. "/Games/Turrican" -> "/DAV_FOLDER_CACHE/Games_Turrican.txt"
+String davFolderCachePath(const String &folderPath) {
+  String p = folderPath;
+  if (p.startsWith("/")) p = p.substring(1);
+  if (p.endsWith("/")) p = p.substring(0, p.length() - 1);
+  p.replace("/", "_");
+  if (p.length() > 60) p = p.substring(p.length() - 60);
+  return String(DAV_FOLDER_CACHE_DIR) + "/" + p + ".txt";
+}
+
+// Save folder contents to SD cache
+void davSaveFolderCache(const String &folderPath,
+                        const std::vector<String> &disks,
+                        const String &coverFile,
+                        const String &nfoFile) {
+  if (!SD_MMC.exists(DAV_FOLDER_CACHE_DIR)) SD_MMC.mkdir(DAV_FOLDER_CACHE_DIR);
+  String cp = davFolderCachePath(folderPath);
+  File f = SD_MMC.open(cp.c_str(), "w");
+  if (!f) return;
+  f.println("HOST=" + cfg_dav_host);
+  for (const auto &d : disks) f.println("DISK=" + d);
+  if (coverFile.length() > 0) f.println("COVER=" + coverFile);
+  if (nfoFile.length() > 0)   f.println("NFO=" + nfoFile);
+  f.close();
+}
+
+// Load folder contents from SD cache.
+// Returns true and fills vectors/strings on hit; false on miss or stale host.
+bool davLoadFolderCache(const String &folderPath,
+                        std::vector<String> &disks,
+                        String &coverFile,
+                        String &nfoFile) {
+  String cp = davFolderCachePath(folderPath);
+  if (!SD_MMC.exists(cp.c_str())) return false;
+  File f = SD_MMC.open(cp.c_str(), "r");
+  if (!f) return false;
+  disks.clear(); coverFile = ""; nfoFile = "";
+  bool hostOk = false;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.startsWith("HOST=")) { hostOk = (line.substring(5) == cfg_dav_host); continue; }
+    if (!hostOk) { f.close(); return false; }
+    if (line.startsWith("DISK="))  disks.push_back(line.substring(5));
+    else if (line.startsWith("COVER=")) coverFile = line.substring(6);
+    else if (line.startsWith("NFO="))   nfoFile   = line.substring(4);
+  }
+  f.close();
+  return hostOk && disks.size() > 0;
+}
+
 // ── Background cover pre-cacher ────────────────────────────────────────
 // Downloads one cover per loop iteration when idle, so covers are cached
 // on SD card before the user or web UI requests them.
