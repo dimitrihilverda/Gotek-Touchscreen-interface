@@ -333,6 +333,7 @@
         display: grid;
         grid-template-columns: 1fr;
         gap: var(--spacing-md);
+        align-items: start; /* prevent tall cells (scan button, net-row) from stretching siblings */
       }
       /* 2-col on ≥480px */
       @media (min-width: 480px) {
@@ -343,6 +344,62 @@
       @media (min-width: 768px) {
         .form-row.form-row-3 { grid-template-columns: repeat(3, 1fr); }
       }
+
+      /* Collapsible edit section in game modal */
+      .modal-edit-section {
+        margin-top: var(--spacing-md);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+        background: var(--c-surface2);
+        overflow: hidden;
+      }
+      .modal-edit-section summary {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+        padding: var(--spacing-sm) var(--spacing-md);
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--c-text-muted);
+        background: transparent;
+        border: none;
+        list-style: none;
+        user-select: none;
+        transition: background 150ms;
+      }
+      .modal-edit-section summary::-webkit-details-marker { display: none; }
+      .modal-edit-section summary::before {
+        content: '▶';
+        font-size: 10px;
+        transition: transform 150ms;
+        color: var(--c-accent);
+      }
+      .modal-edit-section[open] summary::before { transform: rotate(90deg); }
+      .modal-edit-section summary:hover { background: color-mix(in srgb, var(--c-accent) 8%, transparent); }
+      .modal-edit-body {
+        padding: var(--spacing-md);
+        border-top: 1px solid var(--c-border);
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-md);
+      }
+      .modal-edit-row {
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-xs);
+      }
+      .modal-edit-row label { font-size: 12px; font-weight: 600; color: var(--c-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+      .modal-edit-row input, .modal-edit-row textarea {
+        background: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-md);
+        color: var(--c-text);
+        padding: var(--spacing-sm) var(--spacing-md);
+        font-size: 13px;
+      }
+      .modal-edit-row textarea { resize: vertical; min-height: 90px; font-family: var(--font-mono); }
+      .modal-delete-wrap { border-top: 1px solid var(--c-err); padding-top: var(--spacing-md); }
 
       /* Alpha filter buttons */
       .alpha-btn {
@@ -680,11 +737,17 @@
         min-width: 36px;
       }
 
-      /* Stats grid */
+      /* Stats grid — 2 cols mobile, 3 cols tablet, 4 cols desktop */
       .stats-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(clamp(120px, 20vw, 160px), 1fr));
+        grid-template-columns: repeat(2, 1fr);
         gap: var(--spacing-md);
+      }
+      @media (min-width: 600px) {
+        .stats-grid { grid-template-columns: repeat(3, 1fr); }
+      }
+      @media (min-width: 900px) {
+        .stats-grid { grid-template-columns: repeat(4, 1fr); }
       }
 
       .stat {
@@ -718,35 +781,40 @@
 
       /* Theme cards */
       .theme-card {
-        background-color: var(--c-surface2);
-        border: 2px solid var(--c-border);
+        border: 3px solid transparent;
         border-radius: var(--radius-lg);
-        padding: var(--spacing-md);
+        padding: var(--spacing-lg);
         text-align: center;
         cursor: pointer;
-        transition: all 200ms ease;
-        min-height: 100px;
+        transition: all 150ms ease;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-      }
-
-      .theme-card:hover {
-        border-color: var(--c-accent);
+        gap: var(--spacing-xs);
         box-shadow: var(--shadow-md);
       }
+      .theme-card:active { transform: scale(0.97); }
+      .theme-card.active { border-width: 3px; box-shadow: 0 0 0 2px rgba(255,255,255,.3), var(--shadow-md); }
 
-      .theme-card.active {
-        border-color: var(--c-accent);
-        background-color: var(--c-accent);
-        color: var(--c-text-inv);
+      .theme-swatch {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
         font-weight: 700;
+        color: #fff;
+        margin-bottom: var(--spacing-xs);
+        box-shadow: 0 2px 4px rgba(0,0,0,.3);
       }
 
       .theme-name {
-        font-weight: 600;
-        font-size: clamp(12px, 2vw, 14px);
+        font-weight: 700;
+        font-size: 14px;
+        letter-spacing: .5px;
       }
 
       /* WiFi list */
@@ -1013,13 +1081,9 @@
         word-break: break-all;
       }
 
-      /* Cover URL section */
+      /* Cover URL section — hidden by default, shown by JS if internet available */
       #cover-url-section {
         display: none;
-        padding: var(--spacing-md);
-        background-color: var(--c-surface2);
-        border-radius: var(--radius-lg);
-        border: 1px solid var(--c-border);
       }
 
       /* Now playing card */
@@ -1125,12 +1189,6 @@
 
       }
 
-      /* Large desktop: 1024px+ */
-      @media (min-width: 1024px) {
-        .stats-grid {
-          grid-template-columns: repeat(5, 1fr);
-        }
-      }
 
       /* Very small mobile: < 360px */
       @media (max-width: 359px) {
@@ -1493,7 +1551,7 @@
     <div id="tab-ftp" class="tab" data-view="ftp">📁 FTP</div>
     <div class="tab" data-view="themes">🎨 Themes</div>
     <div class="tab" data-view="config">⚙️ Config</div>
-    <div id="tab-log" class="tab" data-view="log" style="display: none;">📋 Log</div>
+    <div id="tab-log" class="tab" data-view="log">📋 Log</div>
     <div class="ip-display" id="ip-display-nav"></div>
   </nav>
 
@@ -1523,37 +1581,41 @@
         <button id="modal-eject-btn" class="btn">Eject</button>
       </div>
 
-      <hr style="border: none; border-top: 1px solid var(--c-border); margin: var(--spacing-md) 0;">
+      <!-- Collapsible edit / manage section -->
+      <details class="modal-edit-section" id="modal-edit-section">
+        <summary>✏️ Edit / Manage</summary>
+        <div class="modal-edit-body">
 
-      <div>
-        <label for="modal-cover-input">Upload Cover</label>
-        <div style="display: flex; gap: var(--spacing-sm);">
-          <input type="file" id="modal-cover-input" accept="image/*">
-          <button id="modal-cover-upload-btn" class="btn" disabled>Upload</button>
+          <div class="modal-edit-row">
+            <label for="modal-cover-input">Upload Cover Art</label>
+            <div style="display: flex; gap: var(--spacing-sm); align-items: center; flex-wrap: wrap;">
+              <input type="file" id="modal-cover-input" accept="image/*" style="flex: 1; min-width: 0;">
+              <button id="modal-cover-upload-btn" class="btn" disabled>Upload</button>
+            </div>
+            <div id="cover-upload-status" style="font-size: 12px; color: var(--c-text-muted);"></div>
+          </div>
+
+          <div class="modal-edit-row" id="cover-url-section">
+            <label for="modal-cover-url">Or Download Cover from URL</label>
+            <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
+              <input type="url" id="modal-cover-url" placeholder="https://...">
+              <button id="modal-cover-url-btn" class="btn">Download</button>
+            </div>
+            <div id="cover-url-status" style="font-size: 12px; color: var(--c-text-muted);"></div>
+          </div>
+
+          <div class="modal-edit-row">
+            <label for="modal-nfo-editor">NFO / Description</label>
+            <textarea id="modal-nfo-editor"></textarea>
+            <button id="modal-save-nfo" class="btn" style="width: 100%; margin-top: 2px;">Save NFO</button>
+          </div>
+
+          <div class="modal-delete-wrap">
+            <button id="modal-delete-btn" class="btn btn-danger" style="width: 100%;">🗑 Delete Game</button>
+          </div>
+
         </div>
-        <div id="cover-upload-status" style="margin-top: var(--spacing-sm); font-size: 12px;"></div>
-      </div>
-
-      <div id="cover-url-section">
-        <label for="modal-cover-url">Or Download from URL</label>
-        <div style="display: flex; gap: var(--spacing-sm);">
-          <input type="url" id="modal-cover-url" placeholder="https://...">
-          <button id="modal-cover-url-btn" class="btn">Download</button>
-        </div>
-        <div id="cover-url-status" style="margin-top: var(--spacing-sm); font-size: 12px;"></div>
-      </div>
-
-      <hr style="border: none; border-top: 1px solid var(--c-border); margin: var(--spacing-md) 0;">
-
-      <div>
-        <label for="modal-nfo-editor">NFO / Description</label>
-        <textarea id="modal-nfo-editor" style="font-family: var(--font-mono); font-size: 12px; height: 150px; resize: vertical;"></textarea>
-        <button id="modal-save-nfo" class="btn" style="margin-top: var(--spacing-sm); width: 100%;">Save NFO</button>
-      </div>
-
-      <hr style="border: none; border-top: 1px solid var(--c-border); margin: var(--spacing-md) 0;">
-
-      <button id="modal-delete-btn" class="btn btn-danger" style="width: 100%;">Delete Game</button>
+      </details>
     </div>
   </div>
 
@@ -1713,10 +1775,9 @@ async function loadDashboard() {
   // Update tab visibility based on feature flags
   const ftpTab = document.getElementById('tab-ftp');
   const davTab = document.getElementById('tab-webdav');
-  const logTab = document.getElementById('tab-log');
   if (ftpTab) ftpTab.style.display = d.ftp_enabled ? '' : 'none';
   if (davTab) davTab.style.display = d.dav_enabled ? '' : 'none';
-  if (logTab) logTab.style.display = d.log_enabled ? '' : 'none';
+  // Log tab is always visible regardless of LOG_ENABLED flag
 
   const ipEl = document.getElementById('ip-display');
   let ipText = d.wifi_ip || '?';
@@ -1843,12 +1904,22 @@ async function checkWiFiStatus() {
 let lastGameData = null;
 let activeAlpha = '';  // active letter filter, '' = all
 
-async function loadGames() {
+async function loadGames(forceReload) {
+  // If we already have data and user hasn't explicitly refreshed,
+  // just re-render what we have so letter selection is preserved
+  if (lastGameData && !forceReload) {
+    _renderGamesUI(lastGameData);
+    return;
+  }
   const data = await api('/api/games/list');
   lastGameData = data;
+  // Only reset search/alpha on a fresh load
   document.getElementById('game-search').value = '';
   activeAlpha = '';
+  _renderGamesUI(data);
+}
 
+function _renderGamesUI(data) {
   // Now Playing bar
   const npCard = document.getElementById('now-playing-card');
   const npEl = document.getElementById('now-playing');
@@ -1857,19 +1928,23 @@ async function loadGames() {
     npEl.innerHTML = `
       <span class="active-indicator"></span>
       <strong>${esc(data.loaded_game)}</strong>
-      <span style="color:#555;font-size:13px">${esc(data.loaded_file)}</span>
+      <span style="color:var(--c-text-muted);font-size:13px">${esc(data.loaded_file)}</span>
       <button class="btn btn-sm" onclick="ejectDisk()">Eject</button>
     `;
   } else {
     npCard.style.display = 'none';
   }
 
-  // Build A-Z filter buttons (only letters that have games)
+  // Build A-Z filter
   buildAlphaFilter(data.games);
 
-  // Don't show all games at once — wait for letter/search selection
-  const list = document.getElementById('game-list');
-  list.innerHTML = '<p style="color:#888;padding:12px;font-size:13px">Choose a letter or search to browse games.</p>';
+  // Re-render current selection if a letter is active, else show prompt
+  if (activeAlpha || document.getElementById('game-search').value) {
+    filterGames();
+  } else {
+    const list = document.getElementById('game-list');
+    list.innerHTML = '<p style="color:var(--c-text-muted);padding:12px;font-size:13px">Choose a letter or search to browse games.</p>';
+  }
 }
 
 function buildAlphaFilter(games) {
@@ -1953,6 +2028,7 @@ function renderGameList(games, mode) {
 }
 
 async function rescanGames() {
+  lastGameData = null; // force fresh load
   await api('/api/rescan', { method: 'POST' });
   toast('SD card rescanned!');
   loadGames();
@@ -1981,7 +2057,7 @@ async function openGameDetail(mode, name) {
 
   // Show/hide cover URL section based on internet availability
   const urlSection = document.getElementById('cover-url-section');
-  urlSection.style.display = systemInfo.internet ? 'block' : 'none';
+  urlSection.style.display = systemInfo.internet ? 'flex' : 'none';
   document.getElementById('modal-cover-url').value = '';
   document.getElementById('cover-url-status').textContent = '';
 
@@ -2050,7 +2126,7 @@ document.getElementById('modal-load-btn').addEventListener('click', async () => 
     });
     statusEl.innerHTML = '<span style="color:var(--c-ok)"><span class="active-indicator"></span>Active: ' + esc(res.file) + '</span>';
     toast(res.game + ' loaded!');
-    loadGames();  // refresh list to update active indicator
+    lastGameData = null; loadGames();  // refresh list
   } catch (e) {
     statusEl.innerHTML = '<span style="color:var(--c-err)">Failed to load</span>';
   }
@@ -2231,21 +2307,40 @@ async function handleUploadFiles(files) {
 
 // ═══════════════ THEMES ═══════════════
 
+// Theme preview palettes for the theme cards themselves
+const THEME_PREVIEWS = {
+  'AMIGA_WB2':  { bg: '#aaaaaa', accent: '#0055aa', text: '#000000', badge: 'WB2' },
+  'CYBERPUNK':  { bg: '#0d0d1a', accent: '#00f5ff', text: '#e0e0ff', badge: 'CYB' },
+  'STEAMPUNK':  { bg: '#3d2414', accent: '#c8860a', text: '#e8d5b0', badge: 'STP' },
+};
+
 async function loadThemes() {
   const data = await api('/api/themes/list');
   const grid = document.getElementById('theme-grid');
-  grid.innerHTML = data.themes.map(t => `
-    <div class="theme-card ${t === data.active ? 'active' : ''}" onclick="activateTheme('${esc(t)}')">
-      <div class="theme-name">${esc(t)}</div>
-      <div style="font-size:12px;color:#555;margin-top:4px">${t === data.active ? 'Active' : 'Click to activate'}</div>
-    </div>
-  `).join('');
+  grid.innerHTML = data.themes.map(t => {
+    const p = THEME_PREVIEWS[t] || { bg: '#888', accent: '#0055aa', text: '#fff', badge: t.slice(0,3) };
+    const isActive = t === data.active;
+    return `
+    <div class="theme-card ${isActive ? 'active' : ''}" onclick="activateTheme('${esc(t)}')"
+      style="background:${p.bg};border-color:${isActive ? p.accent : 'transparent'};color:${p.text}">
+      <div class="theme-swatch" style="background:${p.accent}">${p.badge}</div>
+      <div class="theme-name" style="color:${p.text}">${esc(t.replace(/_/g,' '))}</div>
+      <div style="font-size:11px;margin-top:4px;opacity:.7;color:${p.text}">${isActive ? '✓ Active' : 'Tap to activate'}</div>
+    </div>`;
+  }).join('');
 }
 
 async function activateTheme(name) {
-  await api(`/api/themes/${encodeURIComponent(name)}/activate`, { method: 'POST' });
-  toast('Theme changed to ' + name);
-  loadThemes();
+  // Apply CSS instantly — don't wait for server round-trip
+  applyTheme(name);
+  try {
+    await api(`/api/themes/${encodeURIComponent(name)}/activate`, { method: 'POST' });
+    toast('Theme: ' + name.replace(/_/g, ' '));
+    loadThemes();
+  } catch(e) {
+    // revert on failure
+    applyTheme(systemInfo.theme || 'AMIGA_WB2');
+  }
 }
 
 // ── FTP Functions ──
@@ -2425,7 +2520,7 @@ async function ftpDownload(remotePath, btn) {
     });
     btn.textContent = 'Done!';
     toast(result.file + ' downloaded (' + (result.bytes / 1024).toFixed(0) + ' KB)');
-    loadGames();  // refresh game list
+    lastGameData = null; loadGames();  // refresh game list
   } catch (e) {
     btn.textContent = 'Failed';
     btn.disabled = false;
@@ -2967,11 +3062,10 @@ async function updateTabVisibility() {
 
     const ftpTab = document.getElementById('tab-ftp');
     const davTab = document.getElementById('tab-webdav');
-    const logTab = document.getElementById('tab-log');
 
     if (ftpTab) ftpTab.style.display = d.ftp_enabled ? '' : 'none';
     if (davTab) davTab.style.display = d.dav_enabled ? '' : 'none';
-    if (logTab) logTab.style.display = d.log_enabled ? '' : 'none';
+    // Log tab always visible
   } catch (e) {
     // If API fails, show all tabs as fallback
   }
