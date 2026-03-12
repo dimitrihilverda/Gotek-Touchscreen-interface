@@ -39,12 +39,13 @@ void davStartCoverPrecache();
 
 #include "../shared/http_utils.h"
 #include "../shared/dav_folder_cache.h"
-#include "../shared/connectivity_api.h"
 
-// davCacheExists() helper — used by handleDAVStatus in connectivity_api.h
+// davCacheExists() must be defined BEFORE connectivity_api.h (called by handleDAVStatus)
 inline bool davCacheExists() {
   return (dav_entries.size() > 0) || SD_MMC.exists(DAV_CACHE_FILE);
 }
+
+#include "../shared/connectivity_api.h"
 
 // ============================================================================
 // SD-specific Helpers
