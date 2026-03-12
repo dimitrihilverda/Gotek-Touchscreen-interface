@@ -118,19 +118,10 @@ public:
     WiFiClient *tcp = nullptr;
     WiFiClientSecure *secure = nullptr;
     if (cfg_dav_https) {
-      // First test raw TCP on port 443 to distinguish TCP vs TLS failure
-      {
-        WiFiClient rawTest;
-        rawTest.setTimeout(5);
-        bool rawOk = rawTest.connect(cfg_dav_host.c_str(), cfg_dav_port);
-        _log("DAV: raw TCP test port " + String(cfg_dav_port) + " -> " + (rawOk ? "OK" : "FAILED"));
-        if (rawOk) rawTest.stop();
-      }
       secure = new WiFiClientSecure();
       if (!secure) { _lastError = "Out of memory"; return false; }
       secure->setInsecure();  // Skip cert validation (ESP32 has no CA store)
-      secure->setTimeout(30);
-      secure->setHandshakeTimeout(30);
+      secure->setTimeout(15);
       tcp = secure;
     } else {
       tcp = new WiFiClient();
@@ -138,27 +129,20 @@ public:
       tcp->setTimeout(15);
     }
 
-    {
-      IPAddress resolved;
-      bool dnsOk = WiFi.hostByName(cfg_dav_host.c_str(), resolved);
-      _log("DAV: DNS " + cfg_dav_host + " -> " + (dnsOk ? resolved.toString() : String("FAILED")) + " GW=" + WiFi.gatewayIP().toString() + " DNS1=" + WiFi.dnsIP(0).toString() + " DNS2=" + WiFi.dnsIP(1).toString());
-      _log("DAV: cfg host=[" + cfg_dav_host + "] port=" + String(cfg_dav_port) + " https=" + String(cfg_dav_https) + " path=[" + cfg_dav_path + "] user=[" + cfg_dav_user + "]");
-    }
-    _log("DAV: TLS connecting to " + cfg_dav_host + ":" + String(cfg_dav_port));
+    _log("DAV: connecting to " + cfg_dav_host + ":" + String(cfg_dav_port) + (cfg_dav_https ? " (TLS)" : ""));
     unsigned long t0 = millis();
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
       unsigned long dt = millis() - t0;
-      _lastError = "TLS connect failed to " + cfg_dav_host + ":" + String(cfg_dav_port) + " (" + String(dt) + "ms)";
-      _log("DAV: " + _lastError);
-      // Try to get mbedTLS error if available
+      _lastError = "TCP connect failed to " + cfg_dav_host + ":" + String(cfg_dav_port) + " (" + String(dt) + "ms)";
       if (secure) {
         int errCode = secure->lastError(nullptr, 0);
-        _log("DAV: TLS lastError code=" + String(errCode));
+        _lastError += " TLS err=" + String(errCode);
       }
+      _log("DAV: " + _lastError);
       delete tcp;
       return false;
     }
-    _log("DAV: TLS connected OK (" + String(millis() - t0) + "ms)");
+    _log("DAV: connected OK (" + String(millis() - t0) + "ms)");
 
     // Build PROPFIND request
     String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
@@ -255,12 +239,12 @@ public:
       secure = new WiFiClientSecure();
       if (!secure) { _lastError = "Out of memory"; return -1; }
       secure->setInsecure();
-      secure->setTimeout(30);
+      secure->setTimeout(15);
       tcp = secure;
     } else {
       tcp = new WiFiClient();
       if (!tcp) { _lastError = "Out of memory"; return -1; }
-      tcp->setTimeout(30);
+      tcp->setTimeout(15);
     }
 
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
@@ -378,24 +362,20 @@ public:
       secure = new WiFiClientSecure();
       if (!secure) { _lastError = "Out of memory"; return -1; }
       secure->setInsecure();
-      secure->setTimeout(30);
+      secure->setTimeout(15);
       tcp = secure;
     } else {
       tcp = new WiFiClient();
       if (!tcp) { _lastError = "Out of memory"; return -1; }
-      tcp->setTimeout(30);
+      tcp->setTimeout(15);
     }
 
-    _log("DAV: stream cfg: host=" + cfg_dav_host + " port=" + String(cfg_dav_port) + " https=" + String(cfg_dav_https) + " path_in=" + remotePath + " full=" + fullRemote);
-    _log("DAV: stream WiFiStatus=" + String(WiFi.status()) + " localIP=" + WiFi.localIP().toString());
-
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
-      _lastError = "TCP connect failed for stream";
-      _log("DAV: " + _lastError + " (host=" + cfg_dav_host + ":" + String(cfg_dav_port) + " WiFiStatus=" + String(WiFi.status()) + ")");
+      _lastError = "TCP connect failed for stream to " + cfg_dav_host + ":" + String(cfg_dav_port);
+      _log("DAV: " + _lastError);
       delete tcp;
       return -1;
     }
-    _log("DAV: TCP connected for stream ok");
 
     String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
 
