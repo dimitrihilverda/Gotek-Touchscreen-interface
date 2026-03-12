@@ -2641,20 +2641,22 @@ async function davLoadStatus() {
       connectBtn.style.display = 'none';
     } else if (status.connected) {
       bar.className = 'ftp-status connected';
-      bar.textContent = 'Connected to ' + status.host + (status.https ? ' (HTTPS)' : ' (HTTP)');
+      bar.textContent = 'Connected — ' + status.host + (status.https ? ' (HTTPS)' : ' (HTTP)');
       noConfig.style.display = 'none';
       connectBtn.style.display = 'none';
       disconnectBtn.style.display = '';
-      // Don't auto-browse — let user pick letter/search for speed
+      // Load entries from cache or network if not yet loaded
+      if (davAllEntries.length === 0) davBrowse('/');
     } else {
       bar.className = 'ftp-status disconnected';
       bar.textContent = status.host ? 'Disconnected — ' + status.host : 'Not connected';
       noConfig.style.display = 'none';
       connectBtn.style.display = '';
       disconnectBtn.style.display = 'none';
-      // Show alpha filter from cache if available so user can browse without connecting
+      // Load from cache if available so user can browse without connecting
       if (status.has_cache && davAllEntries.length === 0) davBrowse('/');
     }
+
     // Re-render list to update playing badges — but only if no modal is open
     // and only through the active filter (never dump the full list)
     const modalOpen = document.getElementById('modal-dav-detail').classList.contains('show');
@@ -2663,7 +2665,7 @@ async function davLoadStatus() {
       if (search || davActiveAlpha) {
         davFilterGames();
       }
-      // If no filter active, leave the empty-state as-is — don't show unfiltered list
+      // If no filter active, leave the empty-state prompt as-is
     }
   } catch (e) {
     document.getElementById('dav-status-bar').className = 'ftp-status error';
@@ -2684,11 +2686,9 @@ async function davConnect() {
       toast('WebDAV connection failed: ' + (data.error || 'HTTP ' + res.status), 'error');
     } else {
       davConnected = true;
-      toast('WebDAV connected! Choose a letter to browse games.');
       davCurrentPath = '/';
+      davAllEntries = [];  // force re-load of entries after fresh connect
       await davLoadStatus();
-      // Don't auto-load game list — user picks a letter or searches
-      // This keeps connect fast; PROPFIND only runs when user browses
     }
   } catch (e) {
     toast('WebDAV connection failed: ' + (e.message || 'Unknown error'), 'error');
@@ -2752,13 +2752,16 @@ async function davBrowse(path, forceRefresh) {
       npCard.style.display = 'none';
     }
 
-    // Reset search/filter
+    // Show total count in header
+    document.getElementById('dav-game-count').textContent = '(' + folders.length + ' games)';
+
+    // Reset search/filter only if entries changed (i.e. fresh load, not re-entry)
     document.getElementById('dav-search').value = '';
     davActiveAlpha = '';
 
     // Build A-Z filter — don't show all games at once
     davBuildAlphaFilter(folders);
-    list.innerHTML = '<p style="color:#888;padding:12px;font-size:13px">Choose a letter or search to browse games.</p>';
+    list.innerHTML = '<p style="color:var(--c-text-muted);padding:12px;font-size:13px">Choose a letter or search to browse games.</p>';
   } catch (e) {
     list.innerHTML = '<p style="color:var(--c-err);padding:12px">Error: ' + esc(e.message || 'Failed to list directory') + '</p>';
   } finally {
