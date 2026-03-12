@@ -33,6 +33,7 @@
         --c-warn: #ff8800;
         --c-err: #cc0000;
         --c-border: #888888;
+        --c-text-muted: #666666;
 
         /* Semantic aliases */
         --c-primary: var(--c-accent);
@@ -304,16 +305,43 @@
 
       /* Forms */
       .form-group {
-        margin-bottom: var(--spacing-lg);
+        margin-bottom: var(--spacing-md);
         display: flex;
         flex-direction: column;
         gap: var(--spacing-xs);
       }
 
+      /* Config sections — card-like grouping */
+      .cfg-section {
+        background: var(--c-surface2);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-lg);
+        margin-bottom: var(--spacing-lg);
+      }
+      .cfg-section-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--c-accent);
+        margin-bottom: var(--spacing-md);
+        padding-bottom: var(--spacing-xs);
+        border-bottom: 1px solid var(--c-border);
+      }
+
+      /* form-row: always 1 column on mobile, explicit variants for wider */
       .form-row {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        grid-template-columns: 1fr;
         gap: var(--spacing-md);
+      }
+      /* 2-col on ≥480px */
+      @media (min-width: 480px) {
+        .form-row.form-row-2 { grid-template-columns: repeat(2, 1fr); }
+        .form-row.form-row-3 { grid-template-columns: repeat(2, 1fr); }
+      }
+      /* 3-col on ≥768px */
+      @media (min-width: 768px) {
+        .form-row.form-row-3 { grid-template-columns: repeat(3, 1fr); }
       }
 
       /* Alpha filter buttons */
@@ -1095,17 +1123,10 @@
           max-width: 400px;
         }
 
-        .form-row {
-          grid-template-columns: repeat(2, 1fr);
-        }
       }
 
       /* Large desktop: 1024px+ */
       @media (min-width: 1024px) {
-        .form-row {
-          grid-template-columns: repeat(3, 1fr);
-        }
-
         .stats-grid {
           grid-template-columns: repeat(5, 1fr);
         }
@@ -1146,7 +1167,7 @@
     </div>
 
     <!-- ────────────────────── Games ────────────────────── -->
-    <div class="view" id="view-games">
+    <div class="view hidden" id="view-games">
       <div class="view-content">
         <div class="view-header">
           <h1>Games <span id="game-count">(0 games)</span></h1>
@@ -1182,7 +1203,7 @@
     </div>
 
     <!-- ────────────────────── FTP ────────────────────── -->
-    <div class="view" id="view-ftp">
+    <div class="view hidden" id="view-ftp">
       <div class="view-content">
         <div class="view-header">
           <h1>FTP Browser</h1>
@@ -1202,7 +1223,7 @@
     </div>
 
     <!-- ────────────────────── WebDAV ────────────────────── -->
-    <div class="view" id="view-webdav">
+    <div class="view hidden" id="view-webdav">
       <div class="view-content">
         <div class="view-header">
           <h1>WebDAV <span id="dav-game-count">(0 games)</span></h1>
@@ -1237,7 +1258,7 @@
     </div>
 
     <!-- ────────────────────── Themes ────────────────────── -->
-    <div class="view" id="view-themes">
+    <div class="view hidden" id="view-themes">
       <div class="view-content">
         <div class="view-header">
           <h1>Themes</h1>
@@ -1248,38 +1269,45 @@
     </div>
 
     <!-- ────────────────────── Config ────────────────────── -->
-    <div class="view" id="view-config">
+    <div class="view hidden" id="view-config">
       <div class="view-content">
         <div class="view-header">
           <h1>Configuration</h1>
         </div>
 
         <form id="config-form">
-          <fieldset style="border: none; padding: 0;">
-            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">System</legend>
 
-            <div class="form-row">
+          <!-- System -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">System</div>
+            <div class="form-row form-row-3">
               <div class="form-group">
                 <label for="cfg-display">Display Type</label>
-                <input type="text" id="cfg-display" name="DISPLAY" placeholder="JC3248">
+                <select id="cfg-display" name="DISPLAY">
+                  <option value="JC3248">JC3248W535C</option>
+                  <option value="WAVESHARE">Waveshare 2.8"</option>
+                </select>
               </div>
               <div class="form-group">
-                <label for="cfg-lastmode">Last Mode</label>
-                <input type="text" id="cfg-lastmode" name="LASTMODE" placeholder="ADF">
+                <label for="cfg-lastmode">Default Mode</label>
+                <select id="cfg-lastmode" name="LASTMODE">
+                  <option value="ADF">ADF (Amiga)</option>
+                  <option value="DSK">DSK (ZX/CPC)</option>
+                </select>
               </div>
               <div class="form-group">
                 <label for="cfg-theme">Theme</label>
                 <select id="cfg-theme" name="THEME"></select>
               </div>
             </div>
-          </fieldset>
+          </div>
 
-          <fieldset style="border: none; padding: 0; margin-top: var(--spacing-xl);">
-            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">WiFi Access Point</legend>
-
-            <div class="form-row">
+          <!-- WiFi AP -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">WiFi Access Point</div>
+            <div class="form-row form-row-3">
               <div class="form-group">
-                <label for="cfg-wifi-enabled">Enable AP</label>
+                <label for="cfg-wifi-enabled">Enabled</label>
                 <select id="cfg-wifi-enabled" name="WIFI_ENABLED">
                   <option value="1">Yes</option>
                   <option value="0">No</option>
@@ -1287,40 +1315,42 @@
               </div>
               <div class="form-group">
                 <label for="cfg-wifi-ssid">SSID</label>
-                <input type="text" id="cfg-wifi-ssid" name="WIFI_SSID" placeholder="Gotek">
+                <input type="text" id="cfg-wifi-ssid" name="WIFI_SSID" placeholder="Gotek-Setup">
               </div>
               <div class="form-group">
-                <label for="cfg-wifi-channel">Channel</label>
+                <label for="cfg-wifi-channel">Channel (1–13)</label>
                 <input type="number" id="cfg-wifi-channel" name="WIFI_CHANNEL" min="1" max="13" placeholder="6">
               </div>
             </div>
-
             <div class="form-group">
-              <label for="cfg-wifi-pass">AP Password</label>
+              <label for="cfg-wifi-pass">Password <small style="font-weight:400;color:var(--c-text-muted)">(leave empty for open)</small></label>
               <div class="pass-wrap">
-                <input type="password" id="cfg-wifi-pass" name="WIFI_PASS" placeholder="(leave empty for open)">
+                <input type="password" id="cfg-wifi-pass" name="WIFI_PASS">
                 <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
               </div>
             </div>
-          </fieldset>
+          </div>
 
-          <fieldset style="border: none; padding: 0; margin-top: var(--spacing-xl);">
-            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">WiFi Client (Connect to Network)</legend>
-
-            <div class="form-row">
+          <!-- WiFi Client -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">WiFi Client <small style="font-weight:400;font-size:13px">connect to your home network</small></div>
+            <div class="form-row form-row-2">
               <div class="form-group">
-                <label for="cfg-wifi-client-enabled">Enable Client</label>
+                <label for="cfg-wifi-client-enabled">Enabled</label>
                 <select id="cfg-wifi-client-enabled" name="WIFI_CLIENT_ENABLED">
                   <option value="0">No</option>
                   <option value="1">Yes</option>
                 </select>
               </div>
               <div class="form-group">
-                <label for="cfg-wifi-client-ssid">SSID to Connect</label>
-                <input type="text" id="cfg-wifi-client-ssid" name="WIFI_CLIENT_SSID" placeholder="MyNetwork">
+                <label for="cfg-wifi-client-ssid">Network SSID</label>
+                <div class="net-row">
+                  <input type="text" id="cfg-wifi-client-ssid" name="WIFI_CLIENT_SSID" placeholder="MyNetwork">
+                  <button type="button" class="btn btn-sm" onclick="scanNetworks()">Scan</button>
+                </div>
+                <div id="wifi-scan-list" class="wifi-list hidden"></div>
               </div>
             </div>
-
             <div class="form-group">
               <label for="cfg-wifi-client-pass">Password</label>
               <div class="pass-wrap">
@@ -1328,20 +1358,18 @@
                 <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
               </div>
             </div>
+            <div style="display:flex;gap:var(--spacing-sm);flex-wrap:wrap;margin-top:var(--spacing-sm)">
+              <button type="button" class="btn btn-sm" onclick="checkWiFiStatus()">Check WiFi Status</button>
+            </div>
+            <div id="wifi-status-box" style="display:none;margin-top:var(--spacing-md);padding:var(--spacing-sm) var(--spacing-md);background:var(--c-surface2);border:1px solid var(--c-border);border-radius:var(--radius-md);font-size:13px"></div>
+          </div>
 
-            <button type="button" class="btn" onclick="scanNetworks()" style="margin-top: var(--spacing-md);">Scan Networks</button>
-            <div id="wifi-scan-list" class="wifi-list hidden" style="margin-top: var(--spacing-md);"></div>
-
-            <button type="button" class="btn" onclick="checkWiFiStatus()" style="margin-top: var(--spacing-md);">Check Status</button>
-            <div id="wifi-status-box" style="display: none; margin-top: var(--spacing-md);" class="net-row"></div>
-          </fieldset>
-
-          <fieldset style="border: none; padding: 0; margin-top: var(--spacing-xl);">
-            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">FTP Server</legend>
-
-            <div class="form-row">
+          <!-- FTP -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">FTP Source <small style="font-weight:400;font-size:13px">plain FTP only, no SFTP</small></div>
+            <div class="form-row form-row-3">
               <div class="form-group">
-                <label for="cfg-ftp-enabled">Enable FTP</label>
+                <label for="cfg-ftp-enabled">Enabled</label>
                 <select id="cfg-ftp-enabled" name="FTP_ENABLED">
                   <option value="0">No</option>
                   <option value="1">Yes</option>
@@ -1349,39 +1377,38 @@
               </div>
               <div class="form-group">
                 <label for="cfg-ftp-host">Host</label>
-                <input type="text" id="cfg-ftp-host" name="FTP_HOST" placeholder="example.com">
+                <input type="text" id="cfg-ftp-host" name="FTP_HOST" placeholder="192.168.1.100">
               </div>
               <div class="form-group">
                 <label for="cfg-ftp-port">Port</label>
                 <input type="number" id="cfg-ftp-port" name="FTP_PORT" placeholder="21">
               </div>
             </div>
-
-            <div class="form-row">
+            <div class="form-row form-row-2">
               <div class="form-group">
                 <label for="cfg-ftp-user">Username</label>
                 <input type="text" id="cfg-ftp-user" name="FTP_USER" placeholder="anonymous">
               </div>
               <div class="form-group">
-                <label for="cfg-ftp-pass">Password</label>
-                <div class="pass-wrap">
-                  <input type="password" id="cfg-ftp-pass" name="FTP_PASS">
-                  <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
-                </div>
-              </div>
-              <div class="form-group">
-                <label for="cfg-ftp-path">Path</label>
+                <label for="cfg-ftp-path">Base Path</label>
                 <input type="text" id="cfg-ftp-path" name="FTP_PATH" placeholder="/">
               </div>
             </div>
-          </fieldset>
+            <div class="form-group">
+              <label for="cfg-ftp-pass">Password</label>
+              <div class="pass-wrap">
+                <input type="password" id="cfg-ftp-pass" name="FTP_PASS">
+                <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+              </div>
+            </div>
+          </div>
 
-          <fieldset style="border: none; padding: 0; margin-top: var(--spacing-xl);">
-            <legend style="font-size: 16px; font-weight: 700; margin-bottom: var(--spacing-lg);">WebDAV Server</legend>
-
-            <div class="form-row">
+          <!-- WebDAV -->
+          <div class="cfg-section">
+            <div class="cfg-section-title">WebDAV Source <small style="font-weight:400;font-size:13px">Nextcloud, Stackstorage, etc.</small></div>
+            <div class="form-row form-row-3">
               <div class="form-group">
-                <label for="cfg-dav-enabled">Enable WebDAV</label>
+                <label for="cfg-dav-enabled">Enabled</label>
                 <select id="cfg-dav-enabled" name="DAV_ENABLED">
                   <option value="0">No</option>
                   <option value="1">Yes</option>
@@ -1389,20 +1416,19 @@
               </div>
               <div class="form-group">
                 <label for="cfg-dav-host">Host</label>
-                <input type="text" id="cfg-dav-host" name="DAV_HOST" placeholder="example.com">
+                <input type="text" id="cfg-dav-host" name="DAV_HOST" placeholder="username.stackstorage.com">
               </div>
               <div class="form-group">
                 <label for="cfg-dav-port">Port</label>
                 <input type="number" id="cfg-dav-port" name="DAV_PORT" placeholder="443">
               </div>
             </div>
-
-            <div class="form-row">
+            <div class="form-row form-row-3">
               <div class="form-group">
                 <label for="cfg-dav-https">Protocol</label>
                 <select id="cfg-dav-https" name="DAV_HTTPS">
-                  <option value="1">HTTPS</option>
-                  <option value="0">HTTP</option>
+                  <option value="1">HTTPS (443)</option>
+                  <option value="0">HTTP (80)</option>
                 </select>
               </div>
               <div class="form-group">
@@ -1410,27 +1436,26 @@
                 <input type="text" id="cfg-dav-user" name="DAV_USER">
               </div>
               <div class="form-group">
-                <label for="cfg-dav-pass">Password</label>
-                <div class="pass-wrap">
-                  <input type="password" id="cfg-dav-pass" name="DAV_PASS">
-                  <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
-                </div>
+                <label for="cfg-dav-path">Base Path</label>
+                <input type="text" id="cfg-dav-path" name="DAV_PATH" placeholder="/remote.php/webdav/">
               </div>
             </div>
-
             <div class="form-group">
-              <label for="cfg-dav-path">Base Path</label>
-              <input type="text" id="cfg-dav-path" name="DAV_PATH" placeholder="/remote.php/webdav/">
+              <label for="cfg-dav-pass">Password</label>
+              <div class="pass-wrap">
+                <input type="password" id="cfg-dav-pass" name="DAV_PASS">
+                <button type="button" class="pass-toggle" onclick="togglePass(this)">👁</button>
+              </div>
             </div>
-          </fieldset>
+          </div>
 
-          <button type="submit" class="btn" style="margin-top: var(--spacing-xl); width: 100%; min-height: 48px;">Save Configuration</button>
+          <button type="submit" class="btn btn-primary" style="width:100%;min-height:48px;margin-top:var(--spacing-md)">Save Configuration</button>
         </form>
       </div>
     </div>
 
     <!-- ────────────────────── Log ────────────────────── -->
-    <div class="view" id="view-log">
+    <div class="view hidden" id="view-log">
       <div class="view-content">
         <div class="view-header">
           <h1>System Log</h1>
@@ -1464,11 +1489,10 @@
   <nav id="app-nav">
     <div class="tab active" data-view="dashboard">🏠 Home</div>
     <div class="tab" data-view="games">🎮 Games</div>
-    <div class="tab" data-view="webdav">📡 Sources</div>
+    <div id="tab-webdav" class="tab" data-view="webdav">☁️ WebDAV</div>
+    <div id="tab-ftp" class="tab" data-view="ftp">📁 FTP</div>
     <div class="tab" data-view="themes">🎨 Themes</div>
     <div class="tab" data-view="config">⚙️ Config</div>
-    <div id="tab-ftp" class="tab" data-view="ftp" style="display: none;">📁 FTP</div>
-    <div id="tab-webdav" class="tab" data-view="webdav" style="display: none;">☁️ DAV</div>
     <div id="tab-log" class="tab" data-view="log" style="display: none;">📋 Log</div>
     <div class="ip-display" id="ip-display-nav"></div>
   </nav>
@@ -1590,7 +1614,8 @@ const THEME_PALETTES = {
     '--c-ok': '#00aa00',
     '--c-warn': '#ff8800',
     '--c-err': '#cc0000',
-    '--c-border': '#888888'
+    '--c-border': '#888888',
+    '--c-text-muted': '#555555'
   },
   'CYBERPUNK': {
     '--c-bg': '#0d0d1a',
@@ -1603,7 +1628,8 @@ const THEME_PALETTES = {
     '--c-ok': '#00ff88',
     '--c-warn': '#ffaa00',
     '--c-err': '#ff3366',
-    '--c-border': '#334466'
+    '--c-border': '#334466',
+    '--c-text-muted': '#8888aa'
   },
   'STEAMPUNK': {
     '--c-bg': '#2c1810',
@@ -1616,7 +1642,8 @@ const THEME_PALETTES = {
     '--c-ok': '#5a8a3a',
     '--c-warn': '#c8860a',
     '--c-err': '#aa2222',
-    '--c-border': '#7a5530'
+    '--c-border': '#7a5530',
+    '--c-text-muted': '#a08060'
   }
 };
 
@@ -2463,15 +2490,15 @@ async function davLoadStatus() {
       noConfig.style.display = 'none';
       connectBtn.style.display = 'none';
       disconnectBtn.style.display = '';
-      if (!document.getElementById('dav-list').innerHTML) davBrowse('/');
+      // Don't auto-browse — let user pick letter/search for speed
     } else {
       bar.className = 'ftp-status disconnected';
-      bar.textContent = 'Disconnected — ' + status.host;
+      bar.textContent = status.host ? 'Disconnected — ' + status.host : 'Not connected';
       noConfig.style.display = 'none';
       connectBtn.style.display = '';
       disconnectBtn.style.display = 'none';
-      // Load cached game list even when disconnected — no need to connect first
-      if (status.has_cache && !document.getElementById('dav-list').innerHTML) davBrowse('/');
+      // Show alpha filter from cache if available so user can browse without connecting
+      if (status.has_cache && davAllEntries.length === 0) davBrowse('/');
     }
     // Re-render list if loaded to update playing badges
     if (davAllEntries.length > 0) davRenderGameList(davAllEntries);
@@ -2494,11 +2521,11 @@ async function davConnect() {
       toast('WebDAV connection failed: ' + (data.error || 'HTTP ' + res.status), 'error');
     } else {
       davConnected = true;
-      toast('WebDAV connected!');
+      toast('WebDAV connected! Choose a letter to browse games.');
       davCurrentPath = '/';
-      showLoading('Loading game list…');
       await davLoadStatus();
-      await davBrowse('/', true);  // fresh connect — get latest from server
+      // Don't auto-load game list — user picks a letter or searches
+      // This keeps connect fast; PROPFIND only runs when user browses
     }
   } catch (e) {
     toast('WebDAV connection failed: ' + (e.message || 'Unknown error'), 'error');
