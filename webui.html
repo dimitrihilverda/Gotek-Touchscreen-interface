@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Gotek Touchscreen Interface</title>
+  <link rel="icon" id="favicon" type="image/svg+xml">
   <style>
     /* ──────────────────────────────────────────────────────────────────
        CSS CUSTOM PROPERTIES & THEME SYSTEM
@@ -1744,6 +1745,25 @@ function applyTheme(name) {
   Object.entries(palette).forEach(([key, value]) => {
     document.documentElement.style.setProperty(key, value);
   });
+  updateFavicon(palette['--c-accent'] || '#0055aa', palette['--c-bg'] || '#6680aa');
+}
+
+function updateFavicon(accent, bg) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+    <rect width="32" height="32" rx="6" fill="${bg}"/>
+    <text x="16" y="24" font-family="Georgia,serif" font-size="22" font-weight="bold"
+      fill="${accent}" text-anchor="middle">&#937;</text>
+  </svg>`;
+  const url = 'data:image/svg+xml,' + encodeURIComponent(svg);
+  let link = document.getElementById('favicon');
+  if (!link) {
+    link = document.createElement('link');
+    link.id = 'favicon';
+    link.rel = 'icon';
+    link.type = 'image/svg+xml';
+    document.head.appendChild(link);
+  }
+  link.href = url;
 }
 
 // Navigation
