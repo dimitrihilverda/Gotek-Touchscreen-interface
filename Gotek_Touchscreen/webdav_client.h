@@ -129,9 +129,10 @@ public:
       tcp->setTimeout(15);
     }
 
+    _log("DAV: connecting to " + cfg_dav_host + ":" + String(cfg_dav_port) + " WiFiStatus=" + String(WiFi.status()) + " localIP=" + WiFi.localIP().toString());
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
       _lastError = "TCP connect failed to " + cfg_dav_host + ":" + String(cfg_dav_port);
-      _log("DAV: " + _lastError);
+      _log("DAV: " + _lastError + " WiFiStatus=" + String(WiFi.status()));
       delete tcp;
       return false;
     }
@@ -143,7 +144,7 @@ public:
                   "<D:prop><D:resourcetype/><D:getcontentlength/><D:displayname/></D:prop>"
                   "</D:propfind>";
 
-    _log("DAV: -> PROPFIND " + encodedPath + " Host: " + cfg_dav_host);
+    _log("DAV: -> PROPFIND " + encodedPath + " host=" + cfg_dav_host + " port=" + String(cfg_dav_port) + " https=" + String(cfg_dav_https));
 
     tcp->println("PROPFIND " + encodedPath + " HTTP/1.1");
     tcp->println("Host: " + cfg_dav_host);
@@ -362,12 +363,16 @@ public:
       tcp->setTimeout(30);
     }
 
+    _log("DAV: stream cfg: host=" + cfg_dav_host + " port=" + String(cfg_dav_port) + " https=" + String(cfg_dav_https) + " path_in=" + remotePath + " full=" + fullRemote);
+    _log("DAV: stream WiFiStatus=" + String(WiFi.status()) + " localIP=" + WiFi.localIP().toString());
+
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
       _lastError = "TCP connect failed for stream";
-      _log("DAV: " + _lastError);
+      _log("DAV: " + _lastError + " (host=" + cfg_dav_host + ":" + String(cfg_dav_port) + " WiFiStatus=" + String(WiFi.status()) + ")");
       delete tcp;
       return -1;
     }
+    _log("DAV: TCP connected for stream ok");
 
     String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
 
