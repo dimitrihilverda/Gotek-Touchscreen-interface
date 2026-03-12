@@ -109,6 +109,13 @@ textarea{min-height:80px;resize:vertical}
 .pass-toggle{position:absolute;right:6px;background:none;border:none;cursor:pointer;font-size:16px;color:#666;padding:4px}
 .pass-toggle:hover{color:#333}
 @media(max-width:600px){.tabs{flex-wrap:wrap}.tab{flex:1;text-align:center;padding:8px 10px;font-size:13px}.stat-grid{grid-template-columns:1fr 1fr}.content{padding:10px}}
+
+/* ── Global loading overlay ── */
+#loading-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:500;align-items:center;justify-content:center;flex-direction:column;gap:16px}
+#loading-overlay.show{display:flex}
+.spinner{width:52px;height:52px;border:5px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#loading-overlay .loading-msg{color:#fff;font-size:15px;font-weight:600;letter-spacing:.5px;text-align:center;max-width:260px;line-height:1.4}
 </style>
 </head>
 <body>
@@ -345,10 +352,6 @@ textarea{min-height:80px;resize:vertical}
     <div id="dav-loading" style="display:none;text-align:center;padding:20px;color:#555">Loading...</div>
   </div>
 
-  <details id="dav-debug-wrap" style="display:none;margin-top:12px">
-    <summary style="cursor:pointer;font-size:12px;color:#888">Debug Log</summary>
-    <pre id="dav-debug-log" style="font-size:11px;background:#1a1a2e;color:#0f0;padding:8px;border-radius:4px;max-height:200px;overflow:auto;white-space:pre-wrap;margin-top:4px"></pre>
-  </details>
 </div>
 
 <!-- WEBDAV GAME DETAIL MODAL -->
@@ -387,13 +390,14 @@ textarea{min-height:80px;resize:vertical}
 <div class="content view hidden" id="view-log">
   <div class="card">
     <h2>System Log</h2>
-    <p style="font-size:13px;color:#555;margin-bottom:10px">Device boot log and runtime events. Enable logging in Config: <code>LOG_ENABLED=1</code></p>
-    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center">
-      <button class="btn btn-primary" onclick="loadLog()">Refresh</button>
-      <button class="btn btn-danger" onclick="clearLog()">Clear Log</button>
+    <p style="font-size:13px;color:#555;margin-bottom:10px">Live device log — updates every 3 seconds. Enable in Config: <code>LOG_ENABLED=1</code></p>
+    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span id="log-live-dot" class="active-indicator" style="margin:0"></span>
+      <span style="font-size:12px;color:#555">Live</span>
+      <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear</button>
       <label style="margin:0;font-size:13px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="log-auto-scroll" checked> Auto-scroll</label>
     </div>
-    <pre id="log-content" style="font-size:11px;background:#1a1a2e;color:#0f0;padding:12px;border-radius:4px;max-height:500px;overflow:auto;white-space:pre-wrap;min-height:200px;font-family:'Courier New',monospace;border:2px inset #999">Loading...</pre>
+    <pre id="log-content" style="font-size:11px;background:#1a1a2e;color:#0f0;padding:12px;border-radius:4px;max-height:60vh;overflow:auto;white-space:pre-wrap;min-height:200px;font-family:'Courier New',monospace;border:2px inset #999">Loading...</pre>
   </div>
 </div>
 
@@ -440,6 +444,12 @@ textarea{min-height:80px;resize:vertical}
   </div>
 </div>
 
+<!-- Global loading overlay -->
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <div class="loading-msg" id="loading-msg">Loading...</div>
+</div>
+
 <script>
 // Gotek Setup — SPA Controller
 
@@ -461,7 +471,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.view === 'ftp') ftpLoadStatus();
     if (tab.dataset.view === 'webdav') davLoadStatus();
     if (tab.dataset.view === 'themes') loadThemes();
-    if (tab.dataset.view === 'log') loadLog();
+    if (tab.dataset.view === 'log') startLogPolling(); else stopLogPolling();
   });
 });
 
@@ -659,8 +669,9 @@ async function loadGames() {
   // Build A-Z filter buttons (only letters that have games)
   buildAlphaFilter(data.games);
 
-  // Render full list
-  renderGameList(data.games, data.mode);
+  // Don't show all games at once — wait for letter/search selection
+  const list = document.getElementById('game-list');
+  list.innerHTML = '<p style="color:#888;padding:12px;font-size:13px">Choose a letter or search to browse games.</p>';
 }
 
 function buildAlphaFilter(games) {
@@ -671,7 +682,7 @@ function buildAlphaFilter(games) {
     else letters.add('#');
   });
   const bar = document.getElementById('alpha-filter');
-  let html = '<span class="alpha-btn' + (activeAlpha === '' ? ' active' : '') + '" onclick="setAlpha(\'\')">All</span>';
+  let html = '';
   for (let i = 0; i < 26; i++) {
     const l = String.fromCharCode(65 + i);
     const has = letters.has(l);
@@ -1205,6 +1216,8 @@ function ftpUpdateBreadcrumb(path) {
 async function ftpDownload(remotePath, btn) {
   btn.disabled = true;
   btn.textContent = 'Downloading...';
+  const fileName = remotePath.split('/').pop();
+  showLoading('Downloading from FTP…\n' + fileName);
 
   try {
     const result = await api('/api/ftp/download', {
@@ -1219,6 +1232,8 @@ async function ftpDownload(remotePath, btn) {
     btn.textContent = 'Failed';
     btn.disabled = false;
     toast('Download failed: ' + (e.message || 'Unknown error'), 'error');
+  } finally {
+    hideLoading();
   }
 }
 
@@ -1230,20 +1245,9 @@ let davAllEntries = [];  // all folder entries from root listing
 let davActiveAlpha = '';
 let davLoadedFile = '';
 
-function davShowDebug(data) {
-  const wrap = document.getElementById('dav-debug-wrap');
-  const log = document.getElementById('dav-debug-log');
-  if (data && data.debug) {
-    wrap.style.display = '';
-    log.textContent = data.debug;
-    log.scrollTop = log.scrollHeight;
-  }
-}
-
 async function davLoadStatus() {
   try {
     const status = await api('/api/dav/status');
-    davShowDebug(status);
     davConnected = status.connected;
     const bar = document.getElementById('dav-status-bar');
     const noConfig = document.getElementById('dav-no-config');
@@ -1310,18 +1314,18 @@ async function davConnect() {
   const btn = document.getElementById('dav-connect-btn');
   btn.disabled = true;
   btn.textContent = 'Connecting...';
-  document.getElementById('dav-loading').style.display = '';
+  showLoading('Connecting to WebDAV server…');
 
   try {
     const res = await fetch(API + '/api/dav/connect', { method: 'POST' });
     const data = await res.json().catch(() => ({}));
-    davShowDebug(data);
     if (!res.ok) {
       toast('WebDAV connection failed: ' + (data.error || 'HTTP ' + res.status), 'error');
     } else {
       davConnected = true;
       toast('WebDAV connected!');
       davCurrentPath = '/';
+      showLoading('Loading game list…');
       await davLoadStatus();
       await davBrowse('/', true);  // fresh connect — get latest from server
     }
@@ -1330,7 +1334,7 @@ async function davConnect() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Connect';
-    document.getElementById('dav-loading').style.display = 'none';
+    hideLoading();
   }
 }
 
@@ -1367,7 +1371,6 @@ async function davBrowse(path, forceRefresh) {
     let url = '/api/dav/list?path=' + encodeURIComponent(path);
     if (forceRefresh) url += '&refresh=1';
     const data = await api(url);
-    davShowDebug(data);
     const entries = data.entries || [];
 
     // Only show folders as "games" — filter out files at root level
@@ -1392,9 +1395,9 @@ async function davBrowse(path, forceRefresh) {
     document.getElementById('dav-search').value = '';
     davActiveAlpha = '';
 
-    // Build A-Z and render
+    // Build A-Z filter — don't show all games at once
     davBuildAlphaFilter(folders);
-    davRenderGameList(folders);
+    list.innerHTML = '<p style="color:#888;padding:12px;font-size:13px">Choose a letter or search to browse games.</p>';
   } catch (e) {
     list.innerHTML = '<p style="color:var(--red);padding:12px">Error: ' + esc(e.message || 'Failed to list directory') + '</p>';
   } finally {
@@ -1410,7 +1413,7 @@ function davBuildAlphaFilter(folders) {
     else letters.add('#');
   });
   const bar = document.getElementById('dav-alpha-filter');
-  let html = '<span class="alpha-btn' + (davActiveAlpha === '' ? ' active' : '') + '" onclick="davSetAlpha(\'\')">All</span>';
+  let html = '';
   for (let i = 0; i < 26; i++) {
     const l = String.fromCharCode(65 + i);
     const has = letters.has(l);
@@ -1528,7 +1531,6 @@ async function davOpenFolder(folderPath, folderName) {
   // PROPFIND the folder to find disk files and NFO
   try {
     const data = await api('/api/dav/list?path=' + encodeURIComponent(folderPath));
-    davShowDebug(data);
     const entries = data.entries || [];
     const diskExts = ['ADF','DSK','ADZ','IMG'];
     const disks = entries.filter(e => !e.dir && diskExts.includes(e.name.split('.').pop().toUpperCase()));
@@ -1582,6 +1584,7 @@ async function davOpenFolder(folderPath, folderName) {
       this.disabled = true;
       this.textContent = 'Loading...';
       document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--orange)">Loading...</span>';
+      showLoading('Streaming from WebDAV…\n' + disk.name);
       try {
         const res = await fetch(API + '/api/dav/load', {
           method: 'POST',
@@ -1589,7 +1592,6 @@ async function davOpenFolder(folderPath, folderName) {
           body: 'path=' + encodeURIComponent(remotePath)
         });
         const rdata = await res.json().catch(() => ({}));
-        davShowDebug(rdata);
         if (!res.ok) throw new Error(rdata.error || 'HTTP ' + res.status);
         davLoadedFile = remotePath;
         this.textContent = 'Insert';
@@ -1603,6 +1605,8 @@ async function davOpenFolder(folderPath, folderName) {
         this.disabled = false;
         document.getElementById('dav-modal-load-status').innerHTML = '';
         toast('Load failed: ' + (e.message || 'Unknown'), 'error');
+      } finally {
+        hideLoading();
       }
     };
 
@@ -1622,6 +1626,7 @@ function davCloseFolderModal() {
 async function davInsert(remotePath, displayName, btn) {
   btn.disabled = true;
   btn.textContent = 'Loading...';
+  showLoading('Streaming from WebDAV…\n' + displayName);
 
   try {
     const res = await fetch(API + '/api/dav/load', {
@@ -1630,7 +1635,6 @@ async function davInsert(remotePath, displayName, btn) {
       body: 'path=' + encodeURIComponent(remotePath)
     });
     const data = await res.json().catch(() => ({}));
-    davShowDebug(data);
     if (!res.ok) {
       throw new Error(data.error || 'HTTP ' + res.status);
     }
@@ -1649,6 +1653,8 @@ async function davInsert(remotePath, displayName, btn) {
     btn.textContent = 'Insert';
     btn.disabled = false;
     toast('Load failed: ' + (e.message || 'Unknown error'), 'error');
+  } finally {
+    hideLoading();
   }
 }
 
@@ -1704,19 +1710,46 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeModal(); davCloseFolderModal(); }
 });
 
+// ═══════════════ GLOBAL LOADING OVERLAY ═══════════════
+
+function showLoading(msg) {
+  const overlay = document.getElementById('loading-overlay');
+  document.getElementById('loading-msg').textContent = msg || 'Loading...';
+  overlay.classList.add('show');
+}
+function hideLoading() {
+  document.getElementById('loading-overlay').classList.remove('show');
+}
+
 // ═══════════════ LOG VIEWER ═══════════════
+
+let logPollTimer = null;
 
 async function loadLog() {
   const el = document.getElementById('log-content');
   try {
     const data = await api('/api/log');
-    el.textContent = data.log || 'Empty log';
-    if (document.getElementById('log-auto-scroll').checked) {
-      el.scrollTop = el.scrollHeight;
+    const text = data.log || '(empty log)';
+    // Only update DOM if content changed to avoid scroll jumping
+    if (el.textContent !== text) {
+      el.textContent = text;
+      if (document.getElementById('log-auto-scroll').checked) {
+        el.scrollTop = el.scrollHeight;
+      }
     }
   } catch (e) {
     el.textContent = 'Failed to load log: ' + e.message;
   }
+}
+
+function startLogPolling() {
+  stopLogPolling();
+  loadLog();
+  logPollTimer = setInterval(loadLog, 3000);
+}
+
+function stopLogPolling() {
+  if (logPollTimer) { clearInterval(logPollTimer); logPollTimer = null; }
 }
 
 async function clearLog() {
