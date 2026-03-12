@@ -2216,7 +2216,7 @@ void drawCracktroSplash() {
   };
   int numCopper = 16;
 
-  // Sine-wave color table for "DEXX" text effect
+  // Sine-wave color table for bouncer text effect
   uint16_t sineColors[] = {
     0xF800, 0xFBE0, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xF81F, 0xF800
   };
@@ -2277,10 +2277,10 @@ void drawCracktroSplash() {
       }
     }
 
-    // ── "DEXX" — large, color-cycling text above copper bars ──
+    // ── "MEZ & DIMMY" — large, color-cycling text above copper bars ──
 #if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
     gfx.setTextSize(3);
-    String cracker = "DEXX";
+    String cracker = "MEZ & DIMMY";
     int tw = cracker.length() * 6 * 3;
     int dexxY = copperY - 8;
     int cx = (gW - tw) / 2;
@@ -2341,7 +2341,7 @@ void drawCracktroSplash() {
     // JC3248: use gfx_* framebuffer (already double-buffered)
     text_transparent = true;
     gfx_setTextSize(3);
-    String cracker = "DEXX";
+    String cracker = "MEZ & DIMMY";
     int tw = gfx_textWidth(cracker);
     int dexxY = copperY - 8;
     int cx = (gW - tw) / 2;
