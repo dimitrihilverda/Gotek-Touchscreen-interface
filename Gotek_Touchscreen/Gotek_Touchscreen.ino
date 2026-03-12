@@ -3125,9 +3125,17 @@ void drawDAVDetail() {
   if (!coverDrawn) {
     gfx_drawRect((gW - imgW) / 2, imgTop, imgW, imgH, 0x4208);
     gfx_setTextColor(0x4208, TFT_BLACK);
-    gfx_setTextSize(2);
-    gfx_setCursor(gW / 2 - 40, imgTop + imgH / 2 - 10);
-    gfx_print("No Cover");
+    gfx_setTextSize(1);
+    if (dav_detail_needs_full_load) {
+      // Lightweight nav after web-triggered load — cover not fetched yet
+      // Prompt user to swipe left/right to trigger full PROPFIND + cover load
+      gfx_setCursor(gW / 2 - 52, imgTop + imgH / 2 - 14);
+      gfx_print("< swipe for cover >");
+    } else {
+      gfx_setTextSize(2);
+      gfx_setCursor(gW / 2 - 40, imgTop + imgH / 2 - 10);
+      gfx_print("No Cover");
+    }
   }
 
   // Title and blurb below cover (like SD detail)
@@ -4660,12 +4668,12 @@ void loop() {
         dav_detail_disks.push_back(diskFile);
         dav_detail_path = dirPath + diskFile;
 
-        // Guess cover path from disk filename (GameName.adf -> GameName.jpg/.png)
-        // drawDAVDetail() will try the cache first, then download if needed
+        // Only use cover if it's already in the SD cache (instant, no network).
+        // Build candidate paths and check the cache — don't guess or download.
         String base = diskFile;
         int dot = base.lastIndexOf('.');
         if (dot > 0) base = base.substring(0, dot);
-        // Remove disk number suffix e.g. " Disk1", "_1", "-1"
+        // Strip trailing disk-number suffix e.g. " Disk1", "_1", "-1"
         base.trim();
         if (base.length() > 2) {
           char last = base.charAt(base.length() - 1);
@@ -4675,13 +4683,33 @@ void loop() {
             base.trim();
           }
         }
-        dav_detail_cover_path = dirPath + base + ".jpg";
+        // Check SD cache for .jpg then .png — no network attempt
+        const char* exts[] = { ".jpg", ".png", nullptr };
+        for (int ei = 0; exts[ei]; ei++) {
+          String candidate = dirPath + base + exts[ei];
+          String cachePath = davCoverCachePath(candidate);
+          if (SD_MMC.exists(cachePath.c_str())) {
+            dav_detail_cover_path = candidate;
+            break;
+          }
+        }
+        // Also try folder-name as cover filename (common convention)
+        if (dav_detail_cover_path.length() == 0) {
+          for (int ei = 0; exts[ei]; ei++) {
+            String candidate = dirPath + folder.name + exts[ei];
+            String cachePath = davCoverCachePath(candidate);
+            if (SD_MMC.exists(cachePath.c_str())) {
+              dav_detail_cover_path = candidate;
+              break;
+            }
+          }
+        }
+        // If not cached, leave empty — user can press ◀/▶ for full load with cover
       }
 
-      // Switch screen and draw — NO network calls for disk list / NFO,
-      // but cover will be attempted from cache or downloaded lazily
+      // Switch screen immediately — no network calls at all
       current_screen = SCR_WEBDAV_DETAIL;
-      dav_detail_needs_full_load = true;  // flag: full PROPFIND/disk-list on next user nav
+      dav_detail_needs_full_load = true;  // full PROPFIND triggered on next ◀/▶ nav
       drawDAVDetail();
     }
   }
