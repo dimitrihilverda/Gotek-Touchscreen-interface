@@ -41,6 +41,14 @@
 #include <Preferences.h>
 #include <SPIFFS.h>
 
+// ─── Device target ───────────────────────────────────────────────────────────
+#define DEVICE_WIFI_DONGLE
+
+// ─── Shared library storage backend — SPIFFS, flat namespace ─────────────────
+#define DAV_CACHE_FS          SPIFFS
+#define DAV_CACHE_FS_IS_SPIFFS
+#define DAV_CACHE_DIR         ""
+
 extern "C" {
   extern bool tud_mounted(void);
   extern void tud_disconnect(void);
@@ -252,79 +260,14 @@ void davClearCache() {
   }
 }
 
+inline bool davCacheExists() {
+  return (dav_entries.size() > 0) || SPIFFS.exists(DAV_CACHE_FILE);
+}
+
 // ==========================================================================
-// DAV FOLDER CACHE — per-folder disk list cache in SPIFFS
-// Mirrors the SD-based DAV_FOLDER_CACHE on JC3248.
-// Format (per file):
-//   HOST=<dav_host>
-//   DISK=<filename>   (repeated for each disk file)
-//   COVER=<filename>  (or empty)
-//   NFO=<filename>    (or empty)
+// SHARED LIBRARY — per-folder DAV cache (SPIFFS backend for dongle)
 // ==========================================================================
-#define DAV_FOLDER_CACHE_PREFIX "/dfc_"   // prefix + sanitised folder name
-
-String davFolderCachePath(const String &folderPath) {
-  // Sanitise: replace non-alphanum with '_', max 24 chars
-  String safe = "";
-  for (unsigned int i = 0; i < folderPath.length() && (int)safe.length() < 24; i++) {
-    char c = folderPath[i];
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-        (c >= '0' && c <= '9') || c == '-') {
-      safe += c;
-    } else {
-      safe += '_';
-    }
-  }
-  return String(DAV_FOLDER_CACHE_PREFIX) + safe + ".txt";
-}
-
-void davSaveFolderCache(const String &folderPath,
-                        const std::vector<String> &disks,
-                        const String &coverFile,
-                        const String &nfoFile) {
-  String path = davFolderCachePath(folderPath);
-  File f = SPIFFS.open(path, "w");
-  if (!f) return;
-  f.println("HOST=" + cfg_dav_host);
-  for (const auto &d : disks) f.println("DISK=" + d);
-  f.println("COVER=" + coverFile);
-  f.println("NFO=" + nfoFile);
-  f.close();
-}
-
-bool davLoadFolderCache(const String &folderPath,
-                        std::vector<String> &disks,
-                        String &coverFile,
-                        String &nfoFile) {
-  String path = davFolderCachePath(folderPath);
-  if (!SPIFFS.exists(path)) return false;
-  File f = SPIFFS.open(path, "r");
-  if (!f) return false;
-
-  disks.clear();
-  coverFile = "";
-  nfoFile   = "";
-  bool hostOk = false;
-
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) continue;
-    if (line.startsWith("HOST=")) {
-      hostOk = (line.substring(5) == cfg_dav_host);
-    } else if (line.startsWith("DISK=") && hostOk) {
-      String d = line.substring(5);
-      if (d.length() > 0) disks.push_back(d);
-    } else if (line.startsWith("COVER=") && hostOk) {
-      coverFile = line.substring(6);
-    } else if (line.startsWith("NFO=") && hostOk) {
-      nfoFile = line.substring(4);
-    }
-  }
-  f.close();
-  if (!hostOk) { disks.clear(); coverFile = ""; nfoFile = ""; return false; }
-  return true;
-}
+#include "../shared/dav_folder_cache.h"
 
 // ==========================================================================
 // RAM DISK — FAT12 floppy in PSRAM
@@ -568,222 +511,12 @@ size_t loadFileFromDAV(const String &remotePath) {
 }
 
 // ==========================================================================
-// LOG BUFFER — simple ring buffer for web-accessible log output
-// ==========================================================================
-#define LOG_BUF_MAX 4096
-static char   log_buf[LOG_BUF_MAX];
-static int    log_buf_len = 0;
-static bool   log_buf_wrapped = false;
-
-void logAppend(const String &line) {
-  if (!cfg_log_enabled) return;
-  String entry = line + "\n";
-  int n = entry.length();
-  if (n >= LOG_BUF_MAX) return;
-  if (log_buf_len + n < LOG_BUF_MAX) {
-    memcpy(log_buf + log_buf_len, entry.c_str(), n);
-    log_buf_len += n;
-  } else {
-    // Wrap: discard oldest to make room
-    int excess = (log_buf_len + n) - LOG_BUF_MAX + 1;
-    memmove(log_buf, log_buf + excess, log_buf_len - excess);
-    log_buf_len -= excess;
-    log_buf_wrapped = true;
-    memcpy(log_buf + log_buf_len, entry.c_str(), n);
-    log_buf_len += n;
-  }
-  log_buf[log_buf_len] = 0;
-  Serial.println(line);
-}
-
-// ==========================================================================
-// HTTP HELPERS
-// ==========================================================================
-
-String jsonEscape(const String &s) {
-  String out;
-  out.reserve(s.length() + 10);
-  for (unsigned int i = 0; i < s.length(); i++) {
-    char c = s[i];
-    if (c == '"') out += "\\\"";
-    else if (c == '\\') out += "\\\\";
-    else if (c == '\n') out += "\\n";
-    else if (c == '\r') out += "\\r";
-    else if (c == '\t') out += "\\t";
-    else out += c;
-  }
-  return out;
-}
-
-void sendResponse(WiFiClient &client, int code, const String &contentType, const String &body) {
-  client.println("HTTP/1.1 " + String(code) + " OK");
-  client.println("Content-Type: " + contentType);
-  client.println("Content-Length: " + String(body.length()));
-  client.println("Access-Control-Allow-Origin: *");
-  client.println("Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS");
-  client.println("Access-Control-Allow-Headers: Content-Type,X-Filename");
-  client.println("Connection: close");
-  client.println();
-  client.print(body);
-}
-
-void sendJSON(WiFiClient &client, int code, const String &json) {
-  sendResponse(client, code, "application/json", json);
-}
-
-String urlDecode(const String &in) {
-  String out;
-  out.reserve(in.length());
-  for (unsigned int i = 0; i < in.length(); i++) {
-    char c = in[i];
-    if (c == '+') {
-      out += ' ';
-    } else if (c == '%' && i + 2 < in.length()) {
-      char hi = in[i + 1];
-      char lo = in[i + 2];
-      int h = (hi >= '0' && hi <= '9') ? hi - '0' : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10 : -1;
-      int l = (lo >= '0' && lo <= '9') ? lo - '0' : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10 : -1;
-      if (h >= 0 && l >= 0) {
-        out += (char)((h << 4) | l);
-        i += 2;
-      } else {
-        out += c;
-      }
-    } else {
-      out += c;
-    }
-  }
-  return out;
-}
-
-String getFormValue(const String &body, const String &key) {
-  String search = key + "=";
-  int start = body.indexOf(search);
-  if (start < 0) return "";
-  if (start > 0 && body[start - 1] != '&') {
-    search = "&" + key + "=";
-    start = body.indexOf(search);
-    if (start < 0) return "";
-    start += 1;
-  }
-  start += key.length() + 1;
-  int end = body.indexOf('&', start);
-  String val = (end < 0) ? body.substring(start) : body.substring(start, end);
-  return urlDecode(val);
-}
-
-// ==========================================================================
-// WEB UI — embedded HTML (gzipped in webui.h)
+// SHARED LIBRARY — HTTP utilities, log buffer, web UI
 // ==========================================================================
 #include "webui.h"
-
-void sendGzipResponse(WiFiClient &client, const String &contentType, const uint8_t *data, size_t len) {
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: " + contentType);
-  client.println("Content-Encoding: gzip");
-  client.println("Content-Length: " + String(len));
-  client.println("Connection: close");
-  client.println();
-
-  size_t sent = 0;
-  while (sent < len) {
-    size_t chunk = len - sent;
-    if (chunk > 2048) chunk = 2048;
-    client.write(&data[sent], chunk);
-    sent += chunk;
-    yield();
-  }
-}
-
-// ==========================================================================
-// HTTP REQUEST PARSER
-// ==========================================================================
-
-struct HttpRequest {
-  String method, path, query, body;
-  int contentLength;
-  String filename;
-  String contentType;
-};
-
-bool parseRequest(WiFiClient &client, HttpRequest &req) {
-  req.method = "";
-  req.path = "";
-  req.query = "";
-  req.body = "";
-  req.contentLength = 0;
-  req.filename = "";
-  req.contentType = "";
-
-  String line = client.readStringUntil('\n');
-  line.trim();
-  if (line.length() == 0) return false;
-
-  int sp1 = line.indexOf(' ');
-  int sp2 = line.indexOf(' ', sp1 + 1);
-  if (sp1 < 0 || sp2 < 0) return false;
-
-  req.method = line.substring(0, sp1);
-  String fullPath = line.substring(sp1 + 1, sp2);
-
-  // Split path and query string
-  int qIdx = fullPath.indexOf('?');
-  if (qIdx >= 0) {
-    req.path = fullPath.substring(0, qIdx);
-    req.query = fullPath.substring(qIdx + 1);
-  } else {
-    req.path = fullPath;
-  }
-
-  // Read headers
-  while (client.connected()) {
-    String hdr = client.readStringUntil('\n');
-    hdr.trim();
-    if (hdr.length() == 0) break;
-
-    String lower = hdr;
-    lower.toLowerCase();
-
-    if (lower.startsWith("content-length:")) {
-      req.contentLength = hdr.substring(15).toInt();
-    } else if (lower.startsWith("x-filename:")) {
-      req.filename = hdr.substring(11);
-      req.filename.trim();
-    } else if (lower.startsWith("content-type:")) {
-      req.contentType = hdr.substring(13);
-      req.contentType.trim();
-    }
-  }
-
-  // Read body for POST requests (non-binary)
-  if (req.method == "POST" && req.contentLength > 0 && req.contentLength < 4096 &&
-      req.contentType.indexOf("octet-stream") < 0) {
-    unsigned long t = millis();
-    while (client.available() < req.contentLength && millis() - t < 3000) {
-      yield(); delay(1);
-    }
-    req.body = client.readString();
-  }
-
-  return true;
-}
-
-// Helper to extract query parameter
-String getQueryParam(const String &query, const String &key) {
-  String search = key + "=";
-  int start = query.indexOf(search);
-  if (start < 0) return "";
-  if (start > 0 && query[start - 1] != '&') {
-    search = "&" + key + "=";
-    start = query.indexOf(search);
-    if (start < 0) return "";
-    start += 1;
-  }
-  start += key.length() + 1;
-  int end = query.indexOf('&', start);
-  String val = (end < 0) ? query.substring(start) : query.substring(start, end);
-  return urlDecode(val);
-}
+#include "../shared/http_utils.h"
+#include "../shared/log_buffer.h"
+#include "../shared/connectivity_api.h"
 
 // ==========================================================================
 // REQUEST HANDLER
@@ -985,69 +718,10 @@ void handleRequest(WiFiClient &client) {
   // FTP API ENDPOINTS
   // ══════════════════════════════════════
 
-  if (req.path == "/api/ftp/status" && req.method == "GET") {
-    String json = "{";
-    json += "\"enabled\":" + String(cfg_ftp_enabled ? "true" : "false");
-    json += ",\"host\":\"" + jsonEscape(cfg_ftp_host) + "\"";
-    json += ",\"port\":" + String(cfg_ftp_port);
-    json += ",\"user\":\"" + jsonEscape(cfg_ftp_user) + "\"";
-    json += ",\"path\":\"" + jsonEscape(cfg_ftp_path) + "\"";
-    json += ",\"connected\":" + String(ftpClient.isConnected() ? "true" : "false");
-    json += ",\"wifi_connected\":" + String(wifi_sta_connected ? "true" : "false");
-    json += "}";
-    sendJSON(client, 200, json);
-    return;
-  }
-
-  if (req.path == "/api/ftp/connect" && req.method == "POST") {
-    if (!cfg_ftp_enabled) { sendJSON(client, 400, "{\"error\":\"FTP not enabled\"}"); return; }
-    if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected to network\"}"); return; }
-    if (ftpClient.isConnected()) ftpClient.disconnect();
-    if (ftpClient.connect()) {
-      sendJSON(client, 200, "{\"status\":\"connected\"}");
-    } else {
-      sendJSON(client, 503, "{\"error\":\"" + jsonEscape(ftpClient.lastError()) + "\"}");
-    }
-    return;
-  }
-
-  if (req.path == "/api/ftp/disconnect" && req.method == "POST") {
-    ftpClient.disconnect();
-    sendJSON(client, 200, "{\"status\":\"disconnected\"}");
-    return;
-  }
-
-  if (req.path == "/api/ftp/list" && req.method == "GET") {
-    if (!ftpClient.isConnected()) {
-      if (cfg_ftp_enabled && wifi_sta_connected) {
-        if (!ftpClient.connect()) {
-          sendJSON(client, 503, "{\"error\":\"" + jsonEscape(ftpClient.lastError()) + "\"}");
-          return;
-        }
-      } else {
-        sendJSON(client, 503, "{\"error\":\"FTP not connected\"}");
-        return;
-      }
-    }
-    String path = getQueryParam(req.query, "path");
-    if (path.length() == 0) path = "/";
-    std::vector<FTPFileEntry> entries;
-    if (!ftpClient.listDir(path, entries)) {
-      sendJSON(client, 500, "{\"error\":\"" + jsonEscape(ftpClient.lastError()) + "\"}");
-      return;
-    }
-    String json = "{\"path\":\"" + jsonEscape(path) + "\",\"entries\":[";
-    for (int i = 0; i < (int)entries.size(); i++) {
-      if (i > 0) json += ",";
-      json += "{\"name\":\"" + jsonEscape(entries[i].name) + "\"";
-      json += ",\"dir\":" + String(entries[i].isDir ? "true" : "false");
-      json += ",\"size\":" + String(entries[i].size);
-      json += "}";
-    }
-    json += "]}";
-    sendJSON(client, 200, json);
-    return;
-  }
+  if (req.path == "/api/ftp/status"     && req.method == "GET")  { handleFTPStatus(client); return; }
+  if (req.path == "/api/ftp/connect"    && req.method == "POST") { handleFTPConnect(client); return; }
+  if (req.path == "/api/ftp/disconnect" && req.method == "POST") { handleFTPDisconnect(client); return; }
+  if (req.path == "/api/ftp/list"       && req.method == "GET")  { handleFTPList(client, getQueryParam(req.query, "path")); return; }
 
   // POST /api/ftp/load — Stream file from FTP directly into RAM
   if (req.path == "/api/ftp/load" && req.method == "POST") {
@@ -1081,195 +755,14 @@ void handleRequest(WiFiClient &client) {
   // WEBDAV API ENDPOINTS
   // ══════════════════════════════════════
 
-  if (req.path == "/api/dav/status" && req.method == "GET") {
-    String json = "{";
-    json += "\"enabled\":" + String(cfg_dav_enabled ? "true" : "false");
-    json += ",\"host\":\"" + jsonEscape(cfg_dav_host) + "\"";
-    json += ",\"port\":" + String(cfg_dav_port);
-    json += ",\"user\":\"" + jsonEscape(cfg_dav_user) + "\"";
-    json += ",\"path\":\"" + jsonEscape(cfg_dav_path) + "\"";
-    json += ",\"https\":" + String(cfg_dav_https ? "true" : "false");
-    json += ",\"connected\":" + String(davClient.isConnected() ? "true" : "false");
-    json += ",\"wifi_connected\":" + String(wifi_sta_connected ? "true" : "false");
-    // Tell web UI if a cache exists (so it can show games without connecting first)
-    bool hasCache = (dav_entries.size() > 0) || SPIFFS.exists(DAV_CACHE_FILE);
-    json += ",\"has_cache\":" + String(hasCache ? "true" : "false");
-    // Include now-playing state so web UI knows what's loaded
-    if (disk_present && loaded_filename.length() > 0) {
-      json += ",\"now_playing\":{";
-      json += "\"source\":\"dav\"";
-      json += ",\"name\":\"" + jsonEscape(loaded_filename) + "\"";
-      json += ",\"path\":\"" + jsonEscape(loaded_filename) + "\"";
-      json += "}";
-    }
-    String dbg = davClient.lastDebug();
-    if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
-    json += "}";
-    sendJSON(client, 200, json);
-    return;
-  }
-
-  if (req.path == "/api/dav/connect" && req.method == "POST") {
+  if (req.path == "/api/dav/status"     && req.method == "GET")  { handleDAVStatus(client); return; }
+  if (req.path == "/api/dav/connect"    && req.method == "POST") { handleDAVConnect(client); return; }
+  if (req.path == "/api/dav/disconnect" && req.method == "POST") { handleDAVDisconnect(client); return; }
+  if (req.path == "/api/dav/list"       && req.method == "GET")  { handleDAVList(client, getQueryParam(req.query, "path"), req.query.indexOf("refresh=1") >= 0); return; }
+  if (req.path == "/api/dav/load"       && req.method == "POST") {
     if (!cfg_dav_enabled) { sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}"); return; }
-    if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected to network\"}"); return; }
-    if (davClient.connect()) {
-      String json = "{\"status\":\"connected\"";
-      String dbg = davClient.lastDebug();
-      if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
-      json += "}";
-      sendJSON(client, 200, json);
-    } else {
-      String json = "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"";
-      String dbg = davClient.lastDebug();
-      if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
-      json += "}";
-      sendJSON(client, 503, json);
-    }
-    return;
-  }
-
-  if (req.path == "/api/dav/disconnect" && req.method == "POST") {
-    davClient.disconnect();
-    sendJSON(client, 200, "{\"status\":\"disconnected\"}");
-    return;
-  }
-
-  if (req.path == "/api/dav/list" && req.method == "GET") {
-    if (!cfg_dav_enabled) { sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}"); return; }
-
-    String path = getQueryParam(req.query, "path");
-    if (path.length() == 0) path = "/";
-    bool forceRefresh = (req.query.indexOf("refresh=1") >= 0);
-
-    // For root path: try returning cached data first (unless forced refresh)
-    if (path == "/" && !forceRefresh) {
-      // Check in-memory cache first
-      if (dav_entries.size() > 0) {
-        String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
-        bool first = true;
-        for (int i = 0; i < (int)dav_entries.size(); i++) {
-          if (!first) json += ",";
-          first = false;
-          json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
-          json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
-          json += ",\"size\":" + String(dav_entries[i].size);
-          json += "}";
-        }
-        json += "]}";
-        sendJSON(client, 200, json);
-        return;
-      }
-      // Try SPIFFS cache
-      if (davLoadCache()) {
-        String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
-        bool first = true;
-        for (int i = 0; i < (int)dav_entries.size(); i++) {
-          if (!first) json += ",";
-          first = false;
-          json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
-          json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
-          json += ",\"size\":" + String(dav_entries[i].size);
-          json += "}";
-        }
-        json += "]}";
-        sendJSON(client, 200, json);
-        return;
-      }
-    }
-
-    // For sub-folder paths: check per-folder SPIFFS cache first
-    if (path != "/" && !forceRefresh) {
-      std::vector<String> cachedDisks;
-      String cachedCover, cachedNfo;
-      if (davLoadFolderCache(path, cachedDisks, cachedCover, cachedNfo)) {
-        String json = "{\"path\":\"" + jsonEscape(path) + "\",\"cached\":true";
-        if (cachedCover.length() > 0) json += ",\"cover\":\"" + jsonEscape(cachedCover) + "\"";
-        if (cachedNfo.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(cachedNfo) + "\"";
-        json += ",\"entries\":[";
-        for (int i = 0; i < (int)cachedDisks.size(); i++) {
-          if (i > 0) json += ",";
-          json += "{\"name\":\"" + jsonEscape(cachedDisks[i]) + "\",\"dir\":false,\"size\":0}";
-        }
-        json += "]}";
-        sendJSON(client, 200, json);
-        return;
-      }
-    }
-
-    // No cache or forced refresh — need WiFi for PROPFIND
-    if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}"); return; }
-
-    std::vector<DAVFileEntry> entries;
-    if (!davClient.listDir(path, entries)) {
-      sendJSON(client, 500, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
-      return;
-    }
-
-    String coverFile = "", nfoFile = "";
-    std::vector<String> diskFiles;
-    static const char *diskExts[] = {".adf", ".dms", ".ipf", ".img", ".ima", ".st", ".adz", nullptr};
-    for (int i = 0; i < (int)entries.size(); i++) {
-      if (entries[i].coverFile.length() > 0 && coverFile.length() == 0) coverFile = entries[i].coverFile;
-      if (entries[i].nfoFile.length() > 0 && nfoFile.length() == 0)     nfoFile   = entries[i].nfoFile;
-      if (!entries[i].isDir && entries[i].coverFile.length() == 0 && entries[i].nfoFile.length() == 0) {
-        String lower = entries[i].name; lower.toLowerCase();
-        for (int k = 0; diskExts[k]; k++) {
-          if (lower.endsWith(diskExts[k])) { diskFiles.push_back(entries[i].name); break; }
-        }
-      }
-    }
-
-    // Save per-folder cache if it's a subfolder
-    if (path != "/") {
-      davSaveFolderCache(path, diskFiles, coverFile, nfoFile);
-    }
-
-    String json = "{\"path\":\"" + jsonEscape(path) + "\"";
-    if (coverFile.length() > 0) json += ",\"cover\":\"" + jsonEscape(coverFile) + "\"";
-    if (nfoFile.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(nfoFile) + "\"";
-    json += ",\"entries\":[";
-    bool first = true;
-    for (int i = 0; i < (int)entries.size(); i++) {
-      if (entries[i].coverFile.length() > 0 || entries[i].nfoFile.length() > 0) continue;
-      if (!first) json += ",";
-      first = false;
-      json += "{\"name\":\"" + jsonEscape(entries[i].name) + "\"";
-      json += ",\"dir\":" + String(entries[i].isDir ? "true" : "false");
-      json += ",\"size\":" + String(entries[i].size);
-      json += "}";
-    }
-    json += "]";
-    String dbg = davClient.lastDebug();
-    if (dbg.length() > 0) json += ",\"debug\":\"" + jsonEscape(dbg) + "\"";
-    json += "}";
-    sendJSON(client, 200, json);
-
-    // Update in-memory + SPIFFS cache for root listing
-    if (path == "/") {
-      dav_entries.clear();
-      for (int i = 0; i < (int)entries.size(); i++) {
-        dav_entries.push_back(entries[i]);
-      }
-      davSaveCache();
-    }
-    return;
-  }
-
-  // POST /api/dav/load — Stream file from WebDAV directly into RAM
-  if (req.path == "/api/dav/load" && req.method == "POST") {
-    if (!cfg_dav_enabled) { sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}"); return; }
-    String remotePath = "";
-    int pathIdx = req.body.indexOf("path=");
-    if (pathIdx >= 0) {
-      remotePath = req.body.substring(pathIdx + 5);
-      int ampIdx = remotePath.indexOf("&");
-      if (ampIdx >= 0) remotePath = remotePath.substring(0, ampIdx);
-      remotePath = urlDecode(remotePath);
-    }
-    if (remotePath.length() == 0) {
-      sendJSON(client, 400, "{\"error\":\"Missing path\"}");
-      return;
-    }
+    String remotePath = getFormValue(req.body, "path");
+    if (remotePath.length() == 0) { sendJSON(client, 400, "{\"error\":\"Missing path\"}"); return; }
     size_t loaded = loadFileFromDAV(remotePath);
     if (loaded > 0) {
       sendJSON(client, 200, "{\"status\":\"ok\",\"file\":\"" + jsonEscape(remotePath) +
@@ -1283,57 +776,8 @@ void handleRequest(WiFiClient &client) {
     }
     return;
   }
-
-  // GET /api/dav/cover?path= — Proxy cover image from WebDAV
-  if (req.path == "/api/dav/cover" && req.method == "GET") {
-    String coverPath = getQueryParam(req.query, "path");
-    if (!cfg_dav_enabled || coverPath.length() == 0) {
-      sendJSON(client, 400, "{\"error\":\"Invalid request\"}");
-      return;
-    }
-    size_t maxCover = 150 * 1024;
-    uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
-    if (!buf) { sendJSON(client, 500, "{\"error\":\"Out of PSRAM\"}"); return; }
-
-    long bytes = davClient.streamToBuffer(coverPath, buf, maxCover);
-    if (bytes <= 0) { free(buf); sendJSON(client, 404, "{\"error\":\"Cover not found\"}"); return; }
-
-    String lp = coverPath; lp.toLowerCase();
-    String ct = lp.endsWith(".png") ? "image/png" : "image/jpeg";
-
-    client.println("HTTP/1.1 200 OK");
-    client.println("Content-Type: " + ct);
-    client.println("Content-Length: " + String(bytes));
-    client.println("Cache-Control: max-age=3600");
-    client.println("Connection: close");
-    client.println();
-
-    size_t sent = 0;
-    while (sent < (size_t)bytes) {
-      size_t chunk = bytes - sent;
-      if (chunk > 4096) chunk = 4096;
-      client.write(&buf[sent], chunk);
-      sent += chunk;
-      yield();
-    }
-    free(buf);
-    return;
-  }
-
-  // GET /api/dav/nfo?path= — Proxy NFO text from WebDAV
-  if (req.path == "/api/dav/nfo" && req.method == "GET") {
-    String nfoPath = getQueryParam(req.query, "path");
-    if (!cfg_dav_enabled || nfoPath.length() == 0) {
-      sendJSON(client, 400, "{\"error\":\"Invalid request\"}");
-      return;
-    }
-    uint8_t buf[2048];
-    long bytes = davClient.streamToBuffer(nfoPath, buf, sizeof(buf) - 1);
-    if (bytes <= 0) { sendJSON(client, 404, "{\"error\":\"NFO not found\"}"); return; }
-    buf[bytes] = 0;
-    sendJSON(client, 200, "{\"nfo\":\"" + jsonEscape(String((char *)buf)) + "\"}");
-    return;
-  }
+  if (req.path == "/api/dav/cover"      && req.method == "GET")  { handleDAVCover(client, getQueryParam(req.query, "path")); return; }
+  if (req.path == "/api/dav/nfo"        && req.method == "GET")  { handleDAVNfo(client, getQueryParam(req.query, "path")); return; }
 
   // ── GET /api/system/info ──
   if (req.path == "/api/system/info" && req.method == "GET") {
@@ -1368,37 +812,8 @@ void handleRequest(WiFiClient &client) {
     return;
   }
 
-  // ── GET /api/wifi/status ──
-  if (req.path == "/api/wifi/status" && req.method == "GET") {
-    String json = "{";
-    json += "\"ap_active\":" + String(wifi_ap_active ? "true" : "false") + ",";
-    json += "\"ap_ip\":\"" + wifi_ap_ip + "\",";
-    json += "\"ap_ssid\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
-    json += "\"ap_clients\":" + String(WiFi.softAPgetStationNum()) + ",";
-    json += "\"sta_connected\":" + String(wifi_sta_connected ? "true" : "false") + ",";
-    json += "\"sta_ip\":\"" + wifi_sta_ip + "\",";
-    json += "\"sta_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\"";
-    json += "}";
-    sendJSON(client, 200, json);
-    return;
-  }
-
-  // ── GET /api/wifi/scan ──
-  if (req.path == "/api/wifi/scan" && req.method == "GET") {
-    int n = WiFi.scanNetworks();
-    String json = "[";
-    for (int i = 0; i < n; i++) {
-      if (i > 0) json += ",";
-      json += "{\"ssid\":\"" + jsonEscape(WiFi.SSID(i)) + "\"";
-      json += ",\"rssi\":" + String(WiFi.RSSI(i));
-      json += ",\"enc\":" + String((int)WiFi.encryptionType(i));
-      json += "}";
-    }
-    json += "]";
-    WiFi.scanDelete();
-    sendJSON(client, 200, json);
-    return;
-  }
+  if (req.path == "/api/wifi/status" && req.method == "GET") { handleWiFiStatus(client); return; }
+  if (req.path == "/api/wifi/scan"   && req.method == "GET") { handleWiFiScan(client); return; }
 
   // ── GET /api/log ──
   if (req.path == "/api/log" && req.method == "GET") {

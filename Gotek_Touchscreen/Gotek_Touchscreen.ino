@@ -32,6 +32,15 @@
 
 #include "default_theme.h"
 
+// ─── Device target ───────────────────────────────────────────────────────────
+#define DEVICE_JC3248
+// SD cover cache available on this device
+#define DEVICE_HAS_SD_COVER_CACHE
+
+// ─── Shared library storage backend — SD_MMC ─────────────────────────────────
+#define DAV_CACHE_FS   SD_MMC
+#define DAV_CACHE_DIR  "/DAV_FOLDER_CACHE"
+
 // ============================================================================
 // DISPLAY SELECTOR
 // ============================================================================
