@@ -22,10 +22,16 @@ struct DAVFileEntry {
   String name;
   bool   isDir;
   size_t size;
-  bool   hasCover;   // true if folder contains a .jpg/.png
-  bool   hasNfo;     // true if folder contains a .nfo
-  String coverFile;  // name of cover file (e.g. "cover.jpg")
-  String nfoFile;    // name of nfo file
+  bool   hasCover;        // true if folder contains a .jpg/.png
+  bool   hasNfo;          // true if folder contains a .nfo
+  String coverFile;       // name only — legacy, kept for compat
+  String nfoFile;         // name only — legacy, kept for compat
+
+  // Full DAV paths — populated by background indexer, empty until indexed
+  String coverPath;       // e.g. "/webdav/files/amiga/Turrican/Turrican.jpg"
+  String nfoPath;         // e.g. "/webdav/files/amiga/Turrican/Turrican.nfo"
+  std::vector<String> diskPaths; // full paths to all disk files in folder
+  bool   indexed;         // true = background indexer has run PROPFIND on this folder
 };
 
 // ============================================================================

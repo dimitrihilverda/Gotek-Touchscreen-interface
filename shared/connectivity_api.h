@@ -280,51 +280,85 @@ inline void handleDAVDisconnect(WiFiClient &client) {
   sendJSON(client, 200, "{\"status\":\"disconnected\"}");
 }
 
-// handleDAVList — shared root + subfolder listing with cache
+// handleDAVList — root + subfolder listing
+// Root: served from in-memory cache or SD cache, falls back to PROPFIND.
+// Subfolder: served from indexed dav_entries (full paths), prioritises
+//            background indexing of this folder if not yet done,
+//            falls back to live PROPFIND only when truly needed.
 inline void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefresh) {
   if (!cfg_dav_enabled) { sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}"); return; }
 
   String path = queryPath.length() > 0 ? queryPath : "/";
 
-  // Root: in-memory cache → persistent cache → PROPFIND
+  // ── Helper: build root JSON (includes disk count per folder) ──────────
+  auto buildRootJson = [&]() {
+    String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
+    bool first = true;
+    for (int i = 0; i < (int)dav_entries.size(); i++) {
+      if (!dav_entries[i].isDir) continue;
+      if (!first) json += ",";
+      first = false;
+      json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+      json += ",\"dir\":true";
+      json += ",\"disks\":" + String(dav_entries[i].diskPaths.size());
+      json += ",\"indexed\":" + String(dav_entries[i].indexed ? "true" : "false");
+      json += ",\"hasCover\":" + String(dav_entries[i].hasCover ? "true" : "false");
+      json += "}";
+    }
+    return json + "]}";
+  };
+
+  // ── Root listing ──────────────────────────────────────────────────────
   if (path == "/" && !forceRefresh) {
-    auto buildRootJson = [&]() {
-      String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
-      bool first = true;
-      for (int i = 0; i < (int)dav_entries.size(); i++) {
-        if (!first) json += ",";
-        first = false;
-        json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
-        json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
-        json += ",\"size\":" + String(dav_entries[i].size) + "}";
-      }
-      return json + "]}";
-    };
     if (dav_entries.size() > 0) { sendJSON(client, 200, buildRootJson()); return; }
     if (davLoadCache())          { sendJSON(client, 200, buildRootJson()); return; }
   }
 
-  // Subfolder: per-folder cache → PROPFIND
+  // ── Subfolder listing ─────────────────────────────────────────────────
   if (path != "/" && !forceRefresh) {
-    std::vector<String> cachedDisks;
-    String cachedCover, cachedNfo;
-    if (davLoadFolderCache(path, cachedDisks, cachedCover, cachedNfo)) {
-      String json = "{\"path\":\"" + jsonEscape(path) + "\",\"cached\":true";
-      if (cachedCover.length() > 0) json += ",\"cover\":\"" + jsonEscape(cachedCover) + "\"";
-      if (cachedNfo.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(cachedNfo) + "\"";
-      json += ",\"entries\":[";
-      bool first = true;
-      for (const auto &d : cachedDisks) {
-        if (!first) json += ",";
-        first = false;
-        json += "{\"name\":\"" + jsonEscape(d) + "\",\"dir\":false,\"size\":0}";
+    // Extract folder name from path (last component)
+    String folderName = path;
+    if (folderName.endsWith("/")) folderName = folderName.substring(0, folderName.length() - 1);
+    int ls = folderName.lastIndexOf('/');
+    if (ls >= 0) folderName = folderName.substring(ls + 1);
+
+    // Find in dav_entries
+    for (int i = 0; i < (int)dav_entries.size(); i++) {
+      if (!dav_entries[i].isDir || dav_entries[i].name != folderName) continue;
+      DAVFileEntry &e = dav_entries[i];
+
+      if (e.indexed) {
+        // Fully cached — return immediately
+        String json = "{\"path\":\"" + jsonEscape(path) + "\",\"cached\":true";
+        if (e.coverPath.length() > 0) json += ",\"cover\":\"" + jsonEscape(e.coverPath) + "\"";
+        if (e.nfoPath.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(e.nfoPath) + "\"";
+        json += ",\"entries\":[";
+        bool first = true;
+        for (const auto &dp : e.diskPaths) {
+          if (!first) json += ",";
+          first = false;
+          // Extract filename from full path
+          String fname = dp;
+          int sl = fname.lastIndexOf('/');
+          if (sl >= 0) fname = fname.substring(sl + 1);
+          json += "{\"name\":\"" + jsonEscape(fname) + "\"";
+          json += ",\"path\":\"" + jsonEscape(dp) + "\"";
+          json += ",\"dir\":false,\"size\":0}";
+        }
+        sendJSON(client, 200, json + "]}");
+        return;
+      } else {
+        // Not yet indexed — bump to front of background indexer queue
+#ifdef ON_DAV_FOLDER_PRIORITY
+        ON_DAV_FOLDER_PRIORITY(folderName);
+#endif
+        // Fall through to live PROPFIND below
+        break;
       }
-      sendJSON(client, 200, json + "]}");
-      return;
     }
   }
 
-  // PROPFIND needed
+  // ── Live PROPFIND (root force-refresh, or unindexed subfolder) ────────
   if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi not connected\"}"); return; }
 
   std::vector<DAVFileEntry> entries;
@@ -332,45 +366,81 @@ inline void handleDAVList(WiFiClient &client, const String &queryPath, bool forc
     sendJSON(client, 500, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}"); return;
   }
 
-  // Separate disk files / cover / nfo
-  String coverFile = "", nfoFile = "";
-  std::vector<String> diskFiles;
-  for (int i = 0; i < (int)entries.size(); i++) {
-    if (entries[i].coverFile.length() > 0 && coverFile.length() == 0) coverFile = entries[i].coverFile;
-    if (entries[i].nfoFile.length() > 0   && nfoFile.length() == 0)   nfoFile   = entries[i].nfoFile;
-    if (!entries[i].isDir && isDiskFile(entries[i].name)) diskFiles.push_back(entries[i].name);
-  }
-
-  // Build response
-  String json = "{\"path\":\"" + jsonEscape(path) + "\"";
-  if (coverFile.length() > 0) json += ",\"cover\":\"" + jsonEscape(coverFile) + "\"";
-  if (nfoFile.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(nfoFile) + "\"";
-  json += ",\"entries\":[";
-  bool first = true;
-  for (int i = 0; i < (int)entries.size(); i++) {
-    if (entries[i].coverFile.length() > 0 || entries[i].nfoFile.length() > 0) continue;
-    if (!first) json += ",";
-    first = false;
-    json += "{\"name\":\"" + jsonEscape(entries[i].name) + "\"";
-    json += ",\"dir\":" + String(entries[i].isDir ? "true" : "false");
-    json += ",\"size\":" + String(entries[i].size) + "}";
-  }
-  String dbg = davClient.lastDebug();
-  if (dbg.length() > 0) json += "],\"debug\":\"" + jsonEscape(dbg) + "\"}";
-  else json += "]}";
-  sendJSON(client, 200, json);
-
-  // Persist caches
-  if (path != "/") davSaveFolderCache(path, diskFiles, coverFile, nfoFile);
   if (path == "/") {
+    // Root refresh — reset entries (keep indexed data if name matches)
+    std::vector<DAVFileEntry> old = dav_entries;
     dav_entries.clear();
-    for (int i = 0; i < (int)entries.size(); i++) dav_entries.push_back(entries[i]);
+    for (int i = 0; i < (int)entries.size(); i++) {
+      if (!entries[i].isDir) continue;
+      // Preserve indexed data from old cache if name matches
+      bool found = false;
+      for (const auto &o : old) {
+        if (o.isDir && o.name == entries[i].name && o.indexed) {
+          dav_entries.push_back(o);
+          found = true;
+          break;
+        }
+      }
+      if (!found) dav_entries.push_back(entries[i]);
+    }
     davSaveCache();
-    // Device-specific post-root-load hook (build letters, start cover pre-cache)
+    sendJSON(client, 200, buildRootJson());
 #ifdef ON_DAV_ROOT_LOADED
     ON_DAV_ROOT_LOADED();
 #endif
+    return;
   }
+
+  // Subfolder live PROPFIND result — find cover/nfo/disks
+  String coverPath = "", nfoPath = "";
+  std::vector<String> diskPaths;
+  for (int i = 0; i < (int)entries.size(); i++) {
+    if (entries[i].isDir) continue;
+    String lname = entries[i].name; lname.toLowerCase();
+    String fullPath = path + (path.endsWith("/") ? "" : "/") + entries[i].name;
+    if ((lname.endsWith(".jpg") || lname.endsWith(".jpeg") || lname.endsWith(".png"))
+        && coverPath.length() == 0) {
+      coverPath = fullPath;
+    } else if (lname.endsWith(".nfo") && nfoPath.length() == 0) {
+      nfoPath = fullPath;
+    } else if (isDiskFile(entries[i].name)) {
+      diskPaths.push_back(fullPath);
+    }
+  }
+
+  // Store result in dav_entries
+  String folderName2 = path;
+  if (folderName2.endsWith("/")) folderName2 = folderName2.substring(0, folderName2.length() - 1);
+  int ls2 = folderName2.lastIndexOf('/');
+  if (ls2 >= 0) folderName2 = folderName2.substring(ls2 + 1);
+  for (int i = 0; i < (int)dav_entries.size(); i++) {
+    if (dav_entries[i].isDir && dav_entries[i].name == folderName2) {
+      dav_entries[i].coverPath = coverPath;
+      dav_entries[i].nfoPath   = nfoPath;
+      dav_entries[i].diskPaths = diskPaths;
+      dav_entries[i].hasCover  = coverPath.length() > 0;
+      dav_entries[i].hasNfo    = nfoPath.length() > 0;
+      dav_entries[i].indexed   = true;
+      break;
+    }
+  }
+  davSaveCache();
+
+  // Build response
+  String json = "{\"path\":\"" + jsonEscape(path) + "\"";
+  if (coverPath.length() > 0) json += ",\"cover\":\"" + jsonEscape(coverPath) + "\"";
+  if (nfoPath.length() > 0)   json += ",\"nfo\":\"" + jsonEscape(nfoPath) + "\"";
+  json += ",\"entries\":[";
+  bool first = true;
+  for (const auto &dp : diskPaths) {
+    if (!first) json += ",";
+    first = false;
+    String fname = dp; int sl = fname.lastIndexOf('/'); if (sl >= 0) fname = fname.substring(sl + 1);
+    json += "{\"name\":\"" + jsonEscape(fname) + "\",\"path\":\"" + jsonEscape(dp) + "\",\"dir\":false,\"size\":0}";
+  }
+  String dbg = davClient.lastDebug();
+  json += (dbg.length() > 0) ? "],\"debug\":\"" + jsonEscape(dbg) + "\"}" : "]}";
+  sendJSON(client, 200, json);
 }
 
 // GET /api/dav/nfo?path=... — proxy NFO text

@@ -2611,19 +2611,22 @@ void davAnimateProgress(const String &status, int targetPct, int durationMs) {
 
 #define DAV_CACHE_FILE "/DAV_CACHE.TXT"
 
+// Cache format v2:
+//   HOST=stack.hilverda.net
+//   V=2
+//   D|name|coverPath|nfoPath|disk1Path|disk2Path|...
+//   (coverPath/nfoPath/diskPaths empty if not yet indexed)
+
 void davSaveCache() {
   File f = SD_MMC.open(DAV_CACHE_FILE, "w");
   if (!f) return;
-  f.println("PATH=" + dav_current_path);
   f.println("HOST=" + cfg_dav_host);
-  f.println("COUNT=" + String(dav_entries.size()));
+  f.println("V=2");
   for (const auto &e : dav_entries) {
-    if (e.isDir) {
-      f.println("D|" + e.name);
-    } else {
-      // F|size|name|coverFile|nfoFile
-      f.println("F|" + String(e.size) + "|" + e.name + "|" + e.coverFile + "|" + e.nfoFile);
-    }
+    if (!e.isDir) continue;  // only cache root-level folders
+    String line = "D|" + e.name + "|" + e.coverPath + "|" + e.nfoPath;
+    for (const auto &dp : e.diskPaths) line += "|" + dp;
+    f.println(line);
   }
   f.close();
 }
@@ -2646,81 +2649,58 @@ static String _davCacheUrlDecode(const String &in) {
 bool davLoadCache() {
   if (!SD_MMC.exists(DAV_CACHE_FILE)) return false;
 
-  // Detect and auto-delete corrupt caches (names stored URL-encoded with leading %2F)
-  {
-    File fc = SD_MMC.open(DAV_CACHE_FILE, "r");
-    if (fc) {
-      while (fc.available()) {
-        String l = fc.readStringUntil('\n'); l.trim();
-        if (l.startsWith("D|%") || l.startsWith("D|/")) {
-          fc.close();
-          SD_MMC.remove(DAV_CACHE_FILE);
-          Serial.println("DAV cache: corrupt names detected, cache deleted");
-          return false;
-        }
-      }
-      fc.close();
-    }
-  }
-
   File f = SD_MMC.open(DAV_CACHE_FILE, "r");
   if (!f) return false;
 
   dav_entries.clear();
-
-  String line;
-  bool pathOk = false, hostOk = false;
+  bool hostOk = false, v2 = false;
 
   while (f.available()) {
-    line = f.readStringUntil('\n');
+    String line = f.readStringUntil('\n');
     line.trim();
     if (line.length() == 0) continue;
 
-    if (line.startsWith("PATH=")) {
-      pathOk = (line.substring(5) == "/");  // only cache root listing
-      continue;
-    }
     if (line.startsWith("HOST=")) {
       hostOk = (line.substring(5) == cfg_dav_host);
       continue;
     }
-    if (line.startsWith("COUNT=")) continue;  // informational only
-
-    if (!pathOk || !hostOk) {
-      // Cache is for a different server or path — discard
+    if (line == "V=2") { v2 = true; continue; }
+    if (line.startsWith("PATH=") || line.startsWith("COUNT=")) {
+      // Old v1 cache — discard and rebuild
       f.close();
       dav_entries.clear();
+      SD_MMC.remove(DAV_CACHE_FILE);
+      Serial.println("DAV cache: old v1 format, discarded");
       return false;
     }
+    if (!hostOk || !v2) continue;
 
     if (line.startsWith("D|")) {
-      DAVFileEntry entry;
-      entry.name = _davCacheUrlDecode(line.substring(2));  // decode in case old cache had URL-encoded names
-      entry.isDir = true;
-      entry.size = 0;
-      entry.hasCover = false;
-      entry.hasNfo = false;
-      dav_entries.push_back(entry);
-    } else if (line.startsWith("F|")) {
-      // F|size|name|coverFile|nfoFile
+      // D|name|coverPath|nfoPath|disk1|disk2|...
       String rest = line.substring(2);
-      int p1 = rest.indexOf('|');
-      if (p1 < 0) continue;
-      int p2 = rest.indexOf('|', p1 + 1);
-      if (p2 < 0) continue;
-      int p3 = rest.indexOf('|', p2 + 1);
 
+      // Split on '|'
+      std::vector<String> parts;
+      int start = 0;
+      while (true) {
+        int sep = rest.indexOf('|', start);
+        if (sep < 0) { parts.push_back(rest.substring(start)); break; }
+        parts.push_back(rest.substring(start, sep));
+        start = sep + 1;
+      }
+
+      if (parts.size() == 0) continue;
       DAVFileEntry entry;
-      entry.isDir = false;
-      entry.size = rest.substring(0, p1).toInt();
-      entry.name = _davCacheUrlDecode(rest.substring(p1 + 1, p2));  // decode in case old cache had URL-encoded names
-      entry.hasCover = false;
-      entry.hasNfo = false;
-      if (p3 >= 0) {
-        entry.coverFile = _davCacheUrlDecode(rest.substring(p2 + 1, p3));
-        entry.nfoFile = _davCacheUrlDecode(rest.substring(p3 + 1));
-        if (entry.coverFile.length() > 0) entry.hasCover = true;
-        if (entry.nfoFile.length() > 0) entry.hasNfo = true;
+      entry.name      = parts[0];
+      entry.isDir     = true;
+      entry.size      = 0;
+      entry.coverPath = parts.size() > 1 ? parts[1] : "";
+      entry.nfoPath   = parts.size() > 2 ? parts[2] : "";
+      entry.hasCover  = entry.coverPath.length() > 0;
+      entry.hasNfo    = entry.nfoPath.length() > 0;
+      entry.indexed   = entry.coverPath.length() > 0 || parts.size() > 3;
+      for (size_t i = 3; i < parts.size(); i++) {
+        if (parts[i].length() > 0) entry.diskPaths.push_back(parts[i]);
       }
       dav_entries.push_back(entry);
     }
@@ -2795,6 +2775,20 @@ void davStartCoverPrecache() {
   Serial.println("DAV cover pre-cache: starting (" + String(dav_entries.size()) + " entries)");
 }
 
+// Prioritize a specific folder name — move it to the front of the indexer queue
+// Call this when the user clicks a folder or loads a disk from it
+void davPrioritizeFolder(const String &folderName) {
+  if (!dav_cover_precache_active) return;
+  for (int i = dav_cover_precache_idx + 1; i < (int)dav_entries.size(); i++) {
+    if (dav_entries[i].isDir && dav_entries[i].name == folderName) {
+      // Swap with the next-to-process position
+      std::swap(dav_entries[i], dav_entries[dav_cover_precache_idx]);
+      Serial.println("DAV indexer: priority bump for " + folderName);
+      return;
+    }
+  }
+}
+
 // Call this once per loop() iteration when idle (no touch activity).
 // Downloads ONE cover per call to keep touch responsive.
 void davPrecacheOneCover() {
@@ -2816,36 +2810,69 @@ void davPrecacheOneCover() {
     return;
   }
 
-  const DAVFileEntry &folder = dav_entries[dav_cover_precache_idx];
-  // Sanitize name — old caches may have stored URL-encoded or leading-slash names
-  String folderName = _davCacheUrlDecode(folder.name);
-  if (folderName.startsWith("/")) folderName = folderName.substring(1);
-  String basePath = dav_current_path;
-  if (!basePath.endsWith("/")) basePath += "/";
-  // Convention: cover = FolderName/FolderName.jpg (or .png)
-  String coverPath = basePath + folderName + "/" + folderName + ".jpg";
+  DAVFileEntry &folder = dav_entries[dav_cover_precache_idx];
 
-  // Check if already cached
-  String cachePath = davCoverCachePath(coverPath);
-  if (!SD_MMC.exists(cachePath.c_str())) {
-    // Also check .png variant
-    String pngCoverPath = basePath + folderName + "/" + folderName + ".png";
-    String pngCachePath = davCoverCachePath(pngCoverPath);
-    if (!SD_MMC.exists(pngCachePath.c_str())) {
-      // Not cached — download .jpg first, fallback to .png
+  // If already indexed, just make sure the cover image is on SD
+  if (folder.indexed && folder.coverPath.length() > 0) {
+    String sdPath = davCoverCachePath(folder.coverPath);
+    if (!SD_MMC.exists(sdPath.c_str())) {
       size_t maxCover = 100 * 1024;
       uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
       if (buf) {
-        long bytes = davClient.streamToBuffer(coverPath, buf, maxCover);
-        if (bytes > 0) {
-          davSaveCachedCover(coverPath, buf, bytes);
-        } else {
-          // Try .png
-          bytes = davClient.streamToBuffer(pngCoverPath, buf, maxCover);
-          if (bytes > 0) {
-            davSaveCachedCover(pngCoverPath, buf, bytes);
-          }
-        }
+        long bytes = davClient.streamToBuffer(folder.coverPath, buf, maxCover);
+        if (bytes > 0) davSaveCachedCover(folder.coverPath, buf, bytes);
+        free(buf);
+      }
+    }
+    dav_cover_precache_idx++;
+    return;
+  }
+
+  // Not yet indexed — do a PROPFIND on this folder to discover its contents
+  String basePath = dav_current_path;
+  if (!basePath.endsWith("/")) basePath += "/";
+  String folderDavPath = basePath + folder.name;
+
+  std::vector<DAVFileEntry> subEntries;
+  if (!davClient.listDir(folderDavPath, subEntries)) {
+    // Can't reach server right now — skip this folder
+    dav_cover_precache_idx++;
+    return;
+  }
+
+  // Parse sub-entries: find cover, nfo, disk files
+  folder.diskPaths.clear();
+  folder.coverPath = "";
+  folder.nfoPath   = "";
+  for (const auto &se : subEntries) {
+    if (se.isDir) continue;
+    String lname = se.name; lname.toLowerCase();
+    String fullPath = folderDavPath + "/" + se.name;
+    if ((lname.endsWith(".jpg") || lname.endsWith(".jpeg") || lname.endsWith(".png"))
+        && folder.coverPath.length() == 0) {
+      folder.coverPath = fullPath;
+    } else if (lname.endsWith(".nfo") && folder.nfoPath.length() == 0) {
+      folder.nfoPath = fullPath;
+    } else if (isDiskFile(se.name)) {
+      folder.diskPaths.push_back(fullPath);
+    }
+  }
+  folder.hasCover  = folder.coverPath.length() > 0;
+  folder.hasNfo    = folder.nfoPath.length() > 0;
+  folder.indexed   = true;
+
+  // Persist updated cache to SD
+  davSaveCache();
+
+  // Download cover image if not already on SD
+  if (folder.coverPath.length() > 0) {
+    String sdPath = davCoverCachePath(folder.coverPath);
+    if (!SD_MMC.exists(sdPath.c_str())) {
+      size_t maxCover = 100 * 1024;
+      uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
+      if (buf) {
+        long bytes = davClient.streamToBuffer(folder.coverPath, buf, maxCover);
+        if (bytes > 0) davSaveCachedCover(folder.coverPath, buf, bytes);
         free(buf);
       }
     }

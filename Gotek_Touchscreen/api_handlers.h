@@ -20,7 +20,9 @@
 // Gotek_Touchscreen.ino.
 void buildDAVActiveLetters();
 void davStartCoverPrecache();
+void davPrioritizeFolder(const String &folderName);
 #define ON_DAV_ROOT_LOADED() do { buildDAVActiveLetters(); davStartCoverPrecache(); } while(0)
+#define ON_DAV_FOLDER_PRIORITY(name) davPrioritizeFolder(name)
 
 // nowPlaying is device-specific — inject into DAV status JSON.
 // The nowPlaying variable is defined in Gotek_Touchscreen.ino as an
