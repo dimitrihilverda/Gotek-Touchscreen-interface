@@ -132,15 +132,59 @@ LASTFILE=Cannon Fodder-1.adf
 
 See the included `CONFIG.TXT` for all available options and documentation.
 
+## Repository Branches
+
+| Branch | Target device | Description |
+|--------|--------------|-------------|
+| **`master`** | JC3248W535C touchscreen | ✅ Main development branch — latest refactored firmware |
+| **`wifi-dongle`** | Gotek WiFi Dongle (headless) | ✅ Headless dongle firmware — same shared/ library as master |
+| `main` | JC3248W535C | Legacy branch with earlier PR merges — superseded by master |
+| `clean-main` | JC3248W535C | Clean baseline snapshot — archived, not maintained |
+
+**For normal use, always flash from `master` (touchscreen) or `wifi-dongle` (dongle).**
+
 ## Architecture
 
-The firmware consists of a single Arduino sketch (`Gotek_Touchscreen.ino`) plus display driver headers. Key components:
+The firmware is split into device-specific sketches and a shared library:
 
-- **Display abstraction** — A `gfx_*` API wraps both display types (QSPI DBI for JC3248, SPI for Waveshare) behind a common framebuffer interface
+```
+JC3248W535EN/
+├── Gotek_Touchscreen/          # JC3248 touchscreen firmware
+│   ├── Gotek_Touchscreen.ino   # Main sketch — display, touch, USB MSC
+│   ├── api_handlers.h          # JC3248-specific HTTP API handlers
+│   ├── webserver.h             # WiFi AP + HTTP router
+│   ├── ftp_client.h            # FTP client
+│   ├── webdav_client.h         # WebDAV client
+│   └── webui.h                 # Embedded web UI (gzipped)
+├── Gotek_WiFi_Dongle/          # Headless WiFi dongle firmware
+│   └── Gotek_WiFi_Dongle.ino   # Main sketch — PSRAM RAM disk, SPIFFS
+└── shared/                     # Shared library (both devices)
+    ├── http_utils.h            # JSON escape, HTTP responses, request parser
+    ├── log_buffer.h            # 4096-byte ring buffer for serial log
+    ├── dav_folder_cache.h      # Persistent folder listing cache (SD or SPIFFS)
+    ├── connectivity_api.h      # FTP, DAV, WiFi, config GET/POST handlers
+    └── README.md               # Shared library architecture docs
+```
+
+Each device selects its storage backend and enables optional features via preprocessor defines in its `.ino`:
+
+| Define | JC3248 | Dongle | Effect |
+|--------|--------|--------|--------|
+| `DEVICE_JC3248` | ✅ | — | Enables SD/display-specific code paths |
+| `DEVICE_WIFI_DONGLE` | — | ✅ | Enables PSRAM/SPIFFS-specific code paths |
+| `DEVICE_HAS_SD_COVER_CACHE` | ✅ | — | Cover art cached on SD card |
+| `DAV_CACHE_FS` | `SD_MMC` | `SPIFFS` | Storage backend for folder cache |
+| `DAV_CACHE_FS_IS_SPIFFS` | — | ✅ | Flat-namespace path generation for SPIFFS |
+
+Key components:
+
+- **Display abstraction** — `gfx_*` API wraps QSPI DBI (JC3248) and SPI (Waveshare) behind a common framebuffer interface
 - **Touch handling** — I2C capacitive touch with coordinate validation, release-based tap detection, and swipe support
 - **USB Mass Storage** — FAT12 filesystem emulation in PSRAM, presented as a USB floppy drive
 - **Theme engine** — PNG buttons with alpha blending, loaded from SD card at runtime
-- **Game grouping** — Multi-disk games are automatically grouped by name prefix into single list entries
+- **Game grouping** — Multi-disk games automatically grouped by name prefix into single list entries
+- **WebDAV / FTP** — Remote disk image browsing with persistent folder cache for instant repeat opens
+- **Web UI** — Browser-based config and file manager served from PROGMEM (gzipped)
 
 ## Contributing
 
