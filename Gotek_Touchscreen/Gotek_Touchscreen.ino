@@ -2719,21 +2719,27 @@ bool davLoadCache() {
 
       if ((int)parts.size() <= nameIdx) continue;
       entry.name      = parts[nameIdx];
-      entry.coverPath = (int)parts.size() > nameIdx+1 ? parts[nameIdx+1] : "";
-      entry.nfoPath   = (int)parts.size() > nameIdx+2 ? parts[nameIdx+2] : "";
-      entry.hasCover  = entry.coverPath.length() > 0;
-      entry.hasNfo    = entry.nfoPath.length() > 0;
-      // In new format: use the explicit flag. Old format: infer from presence of paths.
-      entry.indexed   = (parts[0] == "0" || parts[0] == "1")
-                        ? indexedFlag
-                        : (entry.coverPath.length() > 0 || (int)parts.size() > nameIdx+3);
+      // LAZY LOADING: never load heavy path fields at boot.
+      // This saves ~100-200 KB of heap when 1000+ entries are loaded,
+      // leaving enough RAM for the TLS handshake (~40KB needed).
+      // The background indexer will re-populate paths via PROPFIND.
+      // We DO read hasCover/hasNfo flags so the UI can show disk counts.
+      entry.coverPath = "";
+      entry.nfoPath   = "";
+      entry.hasCover  = (int)parts.size() > nameIdx+1 && parts[nameIdx+1].length() > 0;
+      entry.hasNfo    = (int)parts.size() > nameIdx+2 && parts[nameIdx+2].length() > 0;
+      // Count disk paths from cache without storing the strings in RAM
+      int dc = 0;
       for (int i = nameIdx+3; i < (int)parts.size(); i++) {
-        if (parts[i].length() > 0) entry.diskPaths.push_back(parts[i]);
+        if (parts[i].length() > 0) dc++;
       }
+      entry.diskCount = dc;
+      entry.indexed   = false;  // force re-index to populate paths in RAM
       dav_entries.push_back(entry);
     }
   }
   f.close();
+  Serial.println("DAV cache loaded: " + String(dav_entries.size()) + " entries, free heap=" + String(ESP.getFreeHeap()) + " largest=" + String(ESP.getMaxAllocHeap()));
   return (dav_entries.size() > 0);
 }
 
@@ -2796,10 +2802,14 @@ void davSaveCachedCover(const String &davPath, const uint8_t *buf, size_t size) 
 
 int dav_cover_precache_idx = -1;  // current index in dav_entries being pre-cached, -1 = idle
 bool dav_cover_precache_active = false;
+int dav_precache_fail_count = 0;           // consecutive failures
+unsigned long dav_precache_backoff_until = 0; // millis() timestamp: don't retry before this
 
 void davStartCoverPrecache() {
   dav_cover_precache_idx = 0;
   dav_cover_precache_active = true;
+  dav_precache_fail_count = 0;
+  dav_precache_backoff_until = 0;
   Serial.println("DAV cover pre-cache: starting (" + String(dav_entries.size()) + " entries)");
 }
 
@@ -2825,6 +2835,13 @@ bool isDiskFile(const String &name);
 // Downloads ONE cover per call to keep touch responsive.
 void davPrecacheOneCover() {
   if (!dav_cover_precache_active) return;
+
+  // Backoff: if we hit rate limiting, wait before retrying
+  if (dav_precache_backoff_until > 0 && millis() < dav_precache_backoff_until) {
+    return;  // still in backoff period
+  }
+  dav_precache_backoff_until = 0;
+
   if (dav_cover_precache_idx < 0 || dav_cover_precache_idx >= (int)dav_entries.size()) {
     dav_cover_precache_active = false;
     dav_cover_precache_idx = -1;
@@ -2852,7 +2869,18 @@ void davPrecacheOneCover() {
       uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
       if (buf) {
         long bytes = davClient.streamToBuffer(folder.coverPath, buf, maxCover);
-        if (bytes > 0) davSaveCachedCover(folder.coverPath, buf, bytes);
+        if (bytes > 0) {
+          davSaveCachedCover(folder.coverPath, buf, bytes);
+          dav_precache_fail_count = 0;
+        } else {
+          // Download failed — backoff
+          dav_precache_fail_count++;
+          unsigned long backoffMs = min(60000UL, (unsigned long)(2000UL * dav_precache_fail_count));
+          dav_precache_backoff_until = millis() + backoffMs;
+          Serial.println("DAV indexer: cover download failed, backoff " + String(backoffMs/1000) + "s");
+          free(buf);
+          return;  // retry same folder after backoff
+        }
         free(buf);
       }
     }
@@ -2875,10 +2903,16 @@ void davPrecacheOneCover() {
 
   std::vector<DAVFileEntry> subEntries;
   if (!davClient.listDir(folderDavPath, subEntries)) {
-    // Can't reach server right now — skip this folder
-    dav_cover_precache_idx++;
+    // Server unreachable (likely rate limiting) — exponential backoff
+    dav_precache_fail_count++;
+    unsigned long backoffMs = min(60000UL, (unsigned long)(2000UL * dav_precache_fail_count));
+    dav_precache_backoff_until = millis() + backoffMs;
+    Serial.println("DAV indexer: connect failed, backoff " + String(backoffMs/1000) + "s (fail #" + String(dav_precache_fail_count) + ")");
+    // Do NOT advance index — retry this same folder after backoff
     return;
   }
+  // Success — reset fail counter
+  dav_precache_fail_count = 0;
 
   // Parse sub-entries: use href for full path when available, else construct it
   folder.diskPaths.clear();
@@ -2900,6 +2934,7 @@ void davPrecacheOneCover() {
   }
   folder.hasCover  = folder.coverPath.length() > 0;
   folder.hasNfo    = folder.nfoPath.length() > 0;
+  folder.diskCount = (int)folder.diskPaths.size();
   folder.indexed   = true;
 
   // Persist updated cache to SD
@@ -4477,6 +4512,37 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   return totalRead;
 }
 
+// ── Favorites storage ──────────────────────────────────────────────────
+#define FAVORITES_FILE "/FAVORITES.TXT"
+std::vector<String> favorites;
+
+void favoritesLoad() {
+  favorites.clear();
+  if (!SD_MMC.exists(FAVORITES_FILE)) return;
+  File f = SD_MMC.open(FAVORITES_FILE, "r");
+  if (!f) return;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() > 0) favorites.push_back(line);
+  }
+  f.close();
+}
+
+void favoritesSave() {
+  File f = SD_MMC.open(FAVORITES_FILE, "w");
+  if (!f) return;
+  for (const auto &name : favorites) f.println(name);
+  f.close();
+}
+
+bool isFavorite(const String &name) {
+  for (const auto &fav : favorites) if (fav == name) return true;
+  return false;
+}
+
+// handleFavoritesGet/Add/Remove are in webserver.h (needs sendJSON/jsonEscape)
+
 #include "webserver.h"
 
 void setup() {
@@ -4514,6 +4580,9 @@ void setup() {
   sdLog("Gotek Touchscreen Interface starting...");
   sdLog("Display initialized, touch initialized");
   sdLog("SD card initialized");
+
+  favoritesLoad();
+  sdLog("Favorites loaded: " + String(favorites.size()));
 
   scanThemes();
   sdLog("Themes scanned: " + String(theme_list.size()) + " themes, active: " + cfg_theme);

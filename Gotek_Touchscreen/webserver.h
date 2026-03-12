@@ -214,6 +214,31 @@ void sendFileResponse(WiFiClient &client, const String &path, const String &cont
 
 #include "api_handlers.h"
 
+// ── Favorites API handlers ─────────────────────────────────────────────
+void handleFavoritesGet(WiFiClient &client) {
+  String json = "{\"favorites\":[";
+  for (int i = 0; i < (int)favorites.size(); i++) {
+    if (i > 0) json += ",";
+    json += "\"" + jsonEscape(favorites[i]) + "\"";
+  }
+  json += "]}";
+  sendJSON(client, 200, json);
+}
+
+void handleFavoritesAdd(WiFiClient &client, const String &name) {
+  if (name.length() == 0) { sendJSON(client, 400, "{\"error\":\"No name\"}"); return; }
+  if (!isFavorite(name)) { favorites.push_back(name); favoritesSave(); }
+  sendJSON(client, 200, "{\"ok\":true}");
+}
+
+void handleFavoritesRemove(WiFiClient &client, const String &name) {
+  if (name.length() == 0) { sendJSON(client, 400, "{\"error\":\"No name\"}"); return; }
+  for (auto it = favorites.begin(); it != favorites.end(); ++it) {
+    if (*it == name) { favorites.erase(it); favoritesSave(); break; }
+  }
+  sendJSON(client, 200, "{\"ok\":true}");
+}
+
 // ============================================================================
 // Multipart Upload Handler
 // ============================================================================
@@ -584,14 +609,24 @@ void handleHttpRequest(WiFiClient &client) {
   if (req.path.startsWith("/api/dav/cover") && req.method == "GET") {
     String coverPath = "";
     int qm = req.query.indexOf("path=");
-    if (qm >= 0) coverPath = req.query.substring(qm + 5);
+    if (qm >= 0) {
+      coverPath = req.query.substring(qm + 5);
+      int amp = coverPath.indexOf("&");
+      if (amp >= 0) coverPath = coverPath.substring(0, amp);
+      coverPath = urlDecode(coverPath);
+    }
     handleDAVCover(client, coverPath);
     return;
   }
   if (req.path.startsWith("/api/dav/nfo") && req.method == "GET") {
     String nfoPath = "";
     int qm = req.query.indexOf("path=");
-    if (qm >= 0) nfoPath = req.query.substring(qm + 5);
+    if (qm >= 0) {
+      nfoPath = req.query.substring(qm + 5);
+      int amp = nfoPath.indexOf("&");
+      if (amp >= 0) nfoPath = nfoPath.substring(0, amp);
+      nfoPath = urlDecode(nfoPath);
+    }
     handleDAVNfo(client, nfoPath);
     return;
   }
@@ -603,6 +638,26 @@ void handleHttpRequest(WiFiClient &client) {
   }
   if (req.path == "/api/log/clear" && req.method == "POST") {
     handleLogClear(client);
+    return;
+  }
+
+  // ── Favorites ──
+  if (req.path == "/api/favorites" && req.method == "GET") {
+    handleFavoritesGet(client);
+    return;
+  }
+  if (req.path == "/api/favorites/add" && req.method == "POST") {
+    String fname = "";
+    int ni = req.body.indexOf("name=");
+    if (ni >= 0) { fname = urlDecode(req.body.substring(ni + 5)); int a = fname.indexOf("&"); if (a >= 0) fname = fname.substring(0, a); }
+    handleFavoritesAdd(client, fname);
+    return;
+  }
+  if (req.path == "/api/favorites/remove" && req.method == "POST") {
+    String fname = "";
+    int ni = req.body.indexOf("name=");
+    if (ni >= 0) { fname = urlDecode(req.body.substring(ni + 5)); int a = fname.indexOf("&"); if (a >= 0) fname = fname.substring(0, a); }
+    handleFavoritesRemove(client, fname);
     return;
   }
 

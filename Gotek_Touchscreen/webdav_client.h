@@ -32,7 +32,8 @@ struct DAVFileEntry {
   String coverPath;       // e.g. "/webdav/files/amiga/Turrican/Turrican.jpg"
   String nfoPath;         // e.g. "/webdav/files/amiga/Turrican/Turrican.nfo"
   std::vector<String> diskPaths; // full paths to all disk files in folder
-  bool   indexed;         // true = background indexer has run PROPFIND on this folder
+  int    diskCount = 0;   // number of disks (cached — available before full indexing)
+  bool   indexed = false; // true = background indexer has run PROPFIND on this folder
 };
 
 // ============================================================================
@@ -130,6 +131,7 @@ public:
     }
 
     _log("DAV: connecting to " + cfg_dav_host + ":" + String(cfg_dav_port) + (cfg_dav_https ? " (TLS)" : ""));
+    _log("DAV: free heap=" + String(ESP.getFreeHeap()) + " largest_block=" + String(ESP.getMaxAllocHeap()) + " PSRAM=" + String(ESP.getFreePsram()));
     unsigned long t0 = millis();
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
       unsigned long dt = millis() - t0;

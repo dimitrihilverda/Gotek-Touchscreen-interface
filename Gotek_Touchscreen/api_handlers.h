@@ -505,6 +505,7 @@ void handleGamesList(WiFiClient &client) {
       if (SD_MMC.exists(tryNfo.c_str())) nfoPath = tryNfo;
     }
     json += "\"has_nfo\":" + String(nfoPath.length() > 0 ? "true" : "false") + ",";
+    json += "\"fav\":" + String(isFavorite(game_list[i].name) ? "true" : "false") + ",";
     json += "\"index\":" + String(i);
     json += "}";
   }

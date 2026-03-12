@@ -300,7 +300,8 @@ inline void handleDAVList(WiFiClient &client, const String &queryPath, bool forc
       first = false;
       json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
       json += ",\"dir\":true";
-      json += ",\"disks\":" + String(dav_entries[i].diskPaths.size());
+      int dc = dav_entries[i].diskPaths.size() > 0 ? (int)dav_entries[i].diskPaths.size() : dav_entries[i].diskCount;
+      json += ",\"disks\":" + String(dc);
       json += ",\"indexed\":" + String(dav_entries[i].indexed ? "true" : "false");
       json += ",\"hasCover\":" + String(dav_entries[i].hasCover ? "true" : "false");
       if (dav_entries[i].coverPath.length() > 0)
@@ -423,6 +424,7 @@ inline void handleDAVList(WiFiClient &client, const String &queryPath, bool forc
       dav_entries[i].coverPath = coverPath;
       dav_entries[i].nfoPath   = nfoPath;
       dav_entries[i].diskPaths = diskPaths;
+      dav_entries[i].diskCount = (int)diskPaths.size();
       dav_entries[i].hasCover  = coverPath.length() > 0;
       dav_entries[i].hasNfo    = nfoPath.length() > 0;
       dav_entries[i].indexed   = true;
