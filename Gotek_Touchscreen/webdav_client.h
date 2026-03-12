@@ -26,6 +26,7 @@ struct DAVFileEntry {
   bool   hasNfo;          // true if folder contains a .nfo
   String coverFile;       // name only — legacy, kept for compat
   String nfoFile;         // name only — legacy, kept for compat
+  String href;            // full DAV path from PROPFIND href (URL-decoded), e.g. "/webdav/files/amiga/Turrican/"
 
   // Full DAV paths — populated by background indexer, empty until indexed
   String coverPath;       // e.g. "/webdav/files/amiga/Turrican/Turrican.jpg"
@@ -91,14 +92,22 @@ public:
     entries.clear();
     _lastError = "";
 
-    // Build full path
-    String fullPath = cfg_dav_path;
-    if (!fullPath.endsWith("/")) fullPath += "/";
-    if (path.length() > 0 && path != "/") {
+    // Build full path — if path already starts with cfg_dav_path, use it directly
+    String fullPath;
+    String base = cfg_dav_path;
+    if (!base.endsWith("/")) base += "/";
+    if (path.length() == 0 || path == "/") {
+      fullPath = base;
+    } else if (path.startsWith(base) || path.startsWith(cfg_dav_path)) {
+      // Already a full path
+      fullPath = path;
+      if (!fullPath.endsWith("/")) fullPath += "/";
+    } else {
+      fullPath = base;
       if (path.startsWith("/")) fullPath += path.substring(1);
       else fullPath += path;
+      if (!fullPath.endsWith("/")) fullPath += "/";
     }
-    if (!fullPath.endsWith("/")) fullPath += "/";
 
     // URL-encode spaces in path but keep slashes
     String encodedPath = _urlEncodePath(fullPath);
@@ -197,11 +206,19 @@ public:
       SD_MMC.mkdir(parentDir.c_str());
     }
 
-    // Build full remote path
-    String fullRemote = cfg_dav_path;
-    if (!fullRemote.endsWith("/")) fullRemote += "/";
-    if (remotePath.startsWith("/")) fullRemote += remotePath.substring(1);
-    else fullRemote += remotePath;
+    // Build full remote path — if remotePath already starts with cfg_dav_path, use it directly
+    String fullRemote;
+    {
+      String base3 = cfg_dav_path;
+      if (!base3.endsWith("/")) base3 += "/";
+      if (remotePath.startsWith(base3) || remotePath.startsWith(cfg_dav_path)) {
+        fullRemote = remotePath;
+      } else {
+        fullRemote = base3;
+        if (remotePath.startsWith("/")) fullRemote += remotePath.substring(1);
+        else fullRemote += remotePath;
+      }
+    }
 
     String encodedPath = _urlEncodePath(fullRemote);
 
@@ -315,11 +332,17 @@ public:
   long streamToBuffer(const String &remotePath, uint8_t *buf, size_t bufSize) {
     _lastError = "";
 
-    // Build full remote path
-    String fullRemote = cfg_dav_path;
-    if (!fullRemote.endsWith("/")) fullRemote += "/";
-    if (remotePath.startsWith("/")) fullRemote += remotePath.substring(1);
-    else fullRemote += remotePath;
+    // Build full remote path — if remotePath already starts with cfg_dav_path, use it directly
+    String fullRemote;
+    String base2 = cfg_dav_path;
+    if (!base2.endsWith("/")) base2 += "/";
+    if (remotePath.startsWith(base2) || remotePath.startsWith(cfg_dav_path)) {
+      fullRemote = remotePath;
+    } else {
+      fullRemote = base2;
+      if (remotePath.startsWith("/")) fullRemote += remotePath.substring(1);
+      else fullRemote += remotePath;
+    }
 
     String encodedPath = _urlEncodePath(fullRemote);
     _log("DAV: GET->RAM " + encodedPath + " bufSize=" + String(bufSize));
@@ -648,6 +671,7 @@ private:
 
       DAVFileEntry entry;
       entry.name = displayName;
+      entry.href = href;   // full decoded path from PROPFIND response
       entry.isDir = isDir;
       entry.size = fileSize;
       entry.hasCover = false;

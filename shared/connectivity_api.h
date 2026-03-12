@@ -392,12 +392,15 @@ inline void handleDAVList(WiFiClient &client, const String &queryPath, bool forc
   }
 
   // Subfolder live PROPFIND result — find cover/nfo/disks
+  // Prefer entry.href (authoritative full path from PROPFIND) over constructing path.
   String coverPath = "", nfoPath = "";
   std::vector<String> diskPaths;
   for (int i = 0; i < (int)entries.size(); i++) {
     if (entries[i].isDir) continue;
     String lname = entries[i].name; lname.toLowerCase();
-    String fullPath = path + (path.endsWith("/") ? "" : "/") + entries[i].name;
+    String fullPath = entries[i].href.length() > 0
+                      ? entries[i].href
+                      : (path + (path.endsWith("/") ? "" : "/") + entries[i].name);
     if ((lname.endsWith(".jpg") || lname.endsWith(".jpeg") || lname.endsWith(".png"))
         && coverPath.length() == 0) {
       coverPath = fullPath;

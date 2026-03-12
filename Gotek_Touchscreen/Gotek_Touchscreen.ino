@@ -2832,10 +2832,18 @@ void davPrecacheOneCover() {
     return;
   }
 
-  // Not yet indexed — do a PROPFIND on this folder to discover its contents
-  String basePath = dav_current_path;
-  if (!basePath.endsWith("/")) basePath += "/";
-  String folderDavPath = basePath + folder.name;
+  // Not yet indexed — do a PROPFIND on this folder to discover its contents.
+  // Use the href from the PROPFIND response if available (it's the authoritative full path);
+  // fall back to constructing from dav_current_path + folder name.
+  String folderDavPath;
+  if (folder.href.length() > 0) {
+    folderDavPath = folder.href;
+    if (folderDavPath.endsWith("/")) folderDavPath = folderDavPath.substring(0, folderDavPath.length() - 1);
+  } else {
+    String basePath = dav_current_path;
+    if (!basePath.endsWith("/")) basePath += "/";
+    folderDavPath = basePath + folder.name;
+  }
 
   std::vector<DAVFileEntry> subEntries;
   if (!davClient.listDir(folderDavPath, subEntries)) {
@@ -2844,14 +2852,15 @@ void davPrecacheOneCover() {
     return;
   }
 
-  // Parse sub-entries: find cover, nfo, disk files
+  // Parse sub-entries: use href for full path when available, else construct it
   folder.diskPaths.clear();
   folder.coverPath = "";
   folder.nfoPath   = "";
   for (const auto &se : subEntries) {
     if (se.isDir) continue;
     String lname = se.name; lname.toLowerCase();
-    String fullPath = folderDavPath + "/" + se.name;
+    // Prefer the href from PROPFIND — it's the authoritative path
+    String fullPath = se.href.length() > 0 ? se.href : (folderDavPath + "/" + se.name);
     if ((lname.endsWith(".jpg") || lname.endsWith(".jpeg") || lname.endsWith(".png"))
         && folder.coverPath.length() == 0) {
       folder.coverPath = fullPath;
@@ -3112,12 +3121,14 @@ void davOpenFolderDetail(int folderIndex) {
     if (lname.endsWith(".adf") || lname.endsWith(".dsk") || lname.endsWith(".adz") || lname.endsWith(".img")) {
       dav_detail_disks.push_back(f.name);
     }
+    // Use href from PROPFIND (authoritative full path) when available
+    String fFullPath = f.href.length() > 0 ? f.href : dirPath + f.name;
     if (f.coverFile.length() > 0 && dav_detail_cover_path.length() == 0) {
-      dav_detail_cover_path = dirPath + f.coverFile;
+      dav_detail_cover_path = fFullPath;
     }
     if (f.nfoFile.length() > 0 && dav_detail_nfo_text.length() == 0) {
       uint8_t nfoBuf[1024];
-      long nfoBytes = davClient.streamToBuffer(dirPath + f.nfoFile, nfoBuf, sizeof(nfoBuf) - 1);
+      long nfoBytes = davClient.streamToBuffer(fFullPath, nfoBuf, sizeof(nfoBuf) - 1);
       if (nfoBytes > 0) {
         nfoBuf[nfoBytes] = 0;
         dav_detail_nfo_text = String((char *)nfoBuf);
