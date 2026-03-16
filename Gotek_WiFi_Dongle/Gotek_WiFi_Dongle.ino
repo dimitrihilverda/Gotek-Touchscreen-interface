@@ -65,6 +65,10 @@ extern "C" {
   extern void* ps_malloc(size_t size);
 }
 
+// ─── Increase Arduino loop() stack size — TLS needs ~16KB+ stack ──────────
+// Default is 8192, which causes stack overflow during WiFiClientSecure::connect()
+SET_LOOP_TASK_STACK_SIZE(16384);
+
 #define FW_VERSION "v2.1.0-WiFiDongle"
 
 // ==========================================================================

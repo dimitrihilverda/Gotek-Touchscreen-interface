@@ -260,6 +260,8 @@ inline void handleDAVStatus(WiFiClient &client) {
 inline void handleDAVConnect(WiFiClient &client) {
   if (!cfg_dav_enabled) { sendJSON(client, 400, "{\"error\":\"WebDAV not enabled in config\"}"); return; }
   if (!wifi_sta_connected) { sendJSON(client, 503, "{\"error\":\"WiFi client not connected to network\"}"); return; }
+  logAppend("DAV connect requested — heap=" + String(ESP.getFreeHeap()) + " stack=" + String(uxTaskGetStackHighWaterMark(NULL)));
+  Serial.println("DAV connect starting..."); Serial.flush();
   if (davClient.connect()) {
     String json = "{\"status\":\"connected\"";
     String dbg = davClient.lastDebug();
