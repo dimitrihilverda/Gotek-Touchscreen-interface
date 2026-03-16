@@ -44,13 +44,14 @@
 #include <WiFiClientSecure.h>
 #include <Preferences.h>
 #include <SPIFFS.h>
+#include <esp_task_wdt.h>
 
 // ─── Device target ───────────────────────────────────────────────────────────
 #define DEVICE_WIFI_DONGLE
 
 // ─── Board selection (uncomment ONE) ─────────────────────────────────────────
-#define BOARD_XIAO_ESP32S3
-// #define BOARD_SUPERMINI_ESP32S3
+//#define BOARD_XIAO_ESP32S3
+#define BOARD_SUPERMINI_ESP32S3
 
 // ─── Shared library storage backend — SPIFFS, flat namespace ─────────────────
 #define DAV_CACHE_FS          SPIFFS
@@ -214,8 +215,11 @@ void saveConfig() {
 // ==========================================================================
 // FTP & WebDAV CLIENTS — shared library (no SD storage on dongle)
 // ==========================================================================
-// sdLog stub — dongle has no SD card, logging goes to Serial + ring buffer only
-inline void sdLog(const String &msg) { (void)msg; }
+// sdLog — dongle has no SD card, log to in-memory ring buffer + Serial
+// Include log_buffer.h EARLY so logAppend() is available for shared libraries
+#include "../shared/log_buffer.h"
+
+inline void sdLog(const String &msg) { logAppend(msg); }
 
 #include "../shared/ftp_client.h"
 #include "../shared/webdav_client.h"
@@ -614,7 +618,7 @@ size_t loadFileFromDAV(const String &remotePath) {
 // ==========================================================================
 #include "webui.h"
 #include "../shared/http_utils.h"
-#include "../shared/log_buffer.h"
+// log_buffer.h already included early (before shared libs, for sdLog→logAppend routing)
 #include "../shared/connectivity_api.h"
 
 // ==========================================================================
@@ -1050,6 +1054,10 @@ void setup() {
   #endif
   Serial.println("PSRAM: " + String(ESP.getPsramSize() / 1024) + " KB");
 
+  // Watchdog — 30 second timeout (generous for TLS handshakes)
+  esp_task_wdt_init(30, true);
+  esp_task_wdt_add(NULL);
+
   // LED
   ledInit();
   ledBlink(1, 200);
@@ -1106,6 +1114,8 @@ void setup() {
 unsigned long lastWiFiCheck = 0;
 
 void loop() {
+  esp_task_wdt_reset();  // feed watchdog every loop iteration
+
   WiFiClient client = httpServer.available();
   if (client) {
     unsigned long start = millis();
@@ -1119,6 +1129,16 @@ void loop() {
     }
     delay(1);
     client.stop();
+  }
+
+  // Heap health check — log warning if getting low
+  static unsigned long lastHeapLog = 0;
+  if (millis() - lastHeapLog > 30000) {
+    lastHeapLog = millis();
+    size_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 30000) {
+      logAppend("WARNING: Low heap: " + String(freeHeap) + " bytes free");
+    }
   }
 
   // Check WiFi STA connection periodically (auto-reconnect)

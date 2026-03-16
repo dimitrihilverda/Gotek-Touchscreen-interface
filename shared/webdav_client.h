@@ -314,20 +314,21 @@ public:
             totalBytes += got;
             bytesRead += got;
             timeout = millis();
-          } else { delay(1); }
+          } else { yield(); delay(1); }
         }
         while (bytesRead < chunkSize && _tcp->connected() && millis() - timeout < 30000) {
           if (_tcp->available()) { _tcp->read(); bytesRead++; timeout = millis(); }
-          else delay(1);
+          else { yield(); delay(1); }
         }
         if (_tcp->available()) _tcp->read();  // \r
         if (_tcp->available()) _tcp->read();  // \n
         timeout = millis();
+        yield();
       }
     } else {
       while ((_tcp->connected() || _tcp->available()) && millis() - timeout < 30000) {
         size_t avail = _tcp->available();
-        if (avail == 0) { delay(5); continue; }
+        if (avail == 0) { yield(); delay(5); continue; }
         size_t space = bufSize - totalBytes;
         if (space == 0) break;
         if (avail > space) avail = space;
@@ -410,12 +411,12 @@ private:
       _secure = new WiFiClientSecure();
       if (!_secure) { _lastError = "Out of memory"; return false; }
       _secure->setInsecure();
-      _secure->setTimeout(15);
+      _secure->setTimeout(15000);   // 15 seconds — TLS handshake needs time
       _tcp = _secure;
     } else {
       _tcp = new WiFiClient();
       if (!_tcp) { _lastError = "Out of memory"; return false; }
-      _tcp->setTimeout(15);
+      _tcp->setTimeout(15000);
     }
 
     unsigned long t0 = millis();
@@ -548,6 +549,8 @@ private:
          (chunked ? " chunked" : "") + (connectionClose ? " close" : " keep-alive"));
 
     // Read body — BUFFERED (not char-by-char)
+    // Safety limit: max 128KB response to prevent OOM on small-PSRAM devices
+    const long MAX_BODY = 131072;
     timeout = millis();
     if (chunked) {
       while (_tcp->connected() && millis() - timeout < 15000) {
@@ -557,12 +560,16 @@ private:
         if (sizeLine.length() == 0) { timeout = millis(); continue; }
         long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
         if (chunkSize <= 0) break;
+        if ((long)body.length() + chunkSize > MAX_BODY) {
+          _log("DAV: body too large, truncating at " + String(body.length()) + " bytes");
+          break;
+        }
 
         // Read chunk data in blocks
         long bytesRead = 0;
         while (bytesRead < chunkSize && _tcp->connected() && millis() - timeout < 15000) {
           size_t avail = _tcp->available();
-          if (avail == 0) { delay(1); continue; }
+          if (avail == 0) { yield(); delay(1); continue; }
           size_t want = (size_t)(chunkSize - bytesRead);
           if (avail > want) avail = want;
           // Read into temporary buffer, then append to body
@@ -573,6 +580,7 @@ private:
             body.concat((const char *)tmpBuf, got);
             bytesRead += got;
             timeout = millis();
+            yield();  // feed WDT during large reads
           }
         }
         // Read trailing \r\n
@@ -581,12 +589,16 @@ private:
         timeout = millis();
       }
     } else if (contentLength > 0) {
+      if (contentLength > MAX_BODY) {
+        _log("DAV: content-length " + String(contentLength) + " exceeds max, limiting to " + String(MAX_BODY));
+        contentLength = MAX_BODY;
+      }
       body.reserve(contentLength);
       long totalRead = 0;
       uint8_t tmpBuf[512];
       while (totalRead < contentLength && millis() - timeout < 15000) {
         size_t avail = _tcp->available();
-        if (avail == 0) { delay(1); continue; }
+        if (avail == 0) { yield(); delay(1); continue; }
         size_t want = (size_t)(contentLength - totalRead);
         if (avail > want) avail = want;
         size_t toRead = (avail > sizeof(tmpBuf)) ? sizeof(tmpBuf) : avail;
@@ -595,6 +607,7 @@ private:
           body.concat((const char *)tmpBuf, got);
           totalRead += got;
           timeout = millis();
+          yield();  // feed WDT during large reads
         }
       }
     } else {
