@@ -460,7 +460,7 @@ static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t 
 
 void loadDisk(const String &filename, size_t size) {
   tud_disconnect();
-  delay(50);
+  delay(200);
 
   build_boot_sector(&ram_disk[0]);
   uint8_t *fat1 = &ram_disk[FAT1_OFFSET];
@@ -488,7 +488,7 @@ void loadDisk(const String &filename, size_t size) {
 
 void ejectDisk() {
   tud_disconnect();
-  delay(50);
+  delay(200);
 
   build_empty_volume();
   loaded_filename = "";
@@ -505,7 +505,7 @@ void ejectDisk() {
 // Stream a file from FTP directly into RAM disk
 size_t loadFileFromFTP(const String &remotePath) {
   tud_disconnect();
-  delay(50);
+  delay(200);
 
   build_empty_volume();
 
@@ -537,7 +537,7 @@ size_t loadFileFromFTP(const String &remotePath) {
 // Stream a file from WebDAV directly into RAM disk
 size_t loadFileFromDAV(const String &remotePath) {
   tud_disconnect();
-  delay(50);
+  delay(200);
 
   build_empty_volume();
 
@@ -580,7 +580,7 @@ size_t loadFileFromDAV(const String &remotePath) {
 WiFiServer httpServer(80);
 
 void handleRequest(WiFiClient &client) {
-  client.setTimeout(5);
+  client.setTimeout(5000);
 
   HttpRequest req;
   if (!parseRequest(client, req)) { client.stop(); return; }
