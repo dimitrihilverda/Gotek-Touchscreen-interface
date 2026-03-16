@@ -133,6 +133,9 @@ String cfg_ftp_path    = "/";
 // Logging config
 bool   cfg_log_enabled = true;
 
+// Theme config (web UI only, dongle has no display)
+String cfg_theme = "CYBERPUNK";
+
 // WebDAV config
 bool   cfg_dav_enabled = false;
 String cfg_dav_host    = "";
@@ -174,6 +177,7 @@ void loadConfig() {
   cfg_dav_https   = prefs.getBool("dav_https", true);
 
   cfg_log_enabled = prefs.getBool("log_en", true);
+  cfg_theme       = prefs.getString("theme", "CYBERPUNK");
   prefs.end();
 }
 
@@ -203,6 +207,7 @@ void saveConfig() {
   prefs.putBool("dav_https", cfg_dav_https);
 
   prefs.putBool("log_en", cfg_log_enabled);
+  prefs.putString("theme", cfg_theme);
   prefs.end();
 }
 
@@ -518,7 +523,7 @@ void loadDisk(const String &filename, size_t size) {
   tud_connect();
 
   Serial.println("Loaded: " + filename + " (" + String(size) + " bytes)");
-  ledBlink(2, 50);
+  ledColor(0, 200, 0);  // green = disk loaded
 }
 
 void ejectDisk() {
@@ -534,11 +539,12 @@ void ejectDisk() {
   tud_connect();
 
   Serial.println("Disk ejected");
-  ledBlink(3, 50);
+  ledOff();  // off = idle, no disk
 }
 
 // Stream a file from FTP directly into RAM disk
 size_t loadFileFromFTP(const String &remotePath) {
+  ledColor(255, 165, 0);  // orange = transferring
   tud_disconnect();
   delay(200);
 
@@ -549,6 +555,7 @@ size_t loadFileFromFTP(const String &remotePath) {
 
   if (totalRead <= 0) {
     tud_connect();
+    ledColor(255, 0, 0);  // red = error
     return 0;
   }
 
@@ -565,12 +572,13 @@ size_t loadFileFromFTP(const String &remotePath) {
 
   msc.mediaPresent(true);
   tud_connect();
-  ledBlink(2, 50);
+  ledColor(0, 200, 0);  // green = loaded
   return totalRead;
 }
 
 // Stream a file from WebDAV directly into RAM disk
 size_t loadFileFromDAV(const String &remotePath) {
+  ledColor(255, 165, 0);  // orange = transferring
   tud_disconnect();
   delay(200);
 
@@ -581,6 +589,7 @@ size_t loadFileFromDAV(const String &remotePath) {
 
   if (totalRead <= 0) {
     tud_connect();
+    ledColor(255, 0, 0);  // red = error
     return 0;
   }
 
@@ -596,7 +605,7 @@ size_t loadFileFromDAV(const String &remotePath) {
 
   msc.mediaPresent(true);
   tud_connect();
-  ledBlink(2, 50);
+  ledColor(0, 200, 0);  // green = loaded
   return totalRead;
 }
 
@@ -674,7 +683,7 @@ void handleRequest(WiFiClient &client) {
     String filename = req.filename;
     if (filename.length() == 0) filename = "DISK.ADF";
 
-    ledBlink(1, 50);
+    ledColor(0, 80, 255);  // blue = receiving upload
 
     int toRead = req.contentLength;
     int pos = 0;
@@ -730,7 +739,8 @@ void handleRequest(WiFiClient &client) {
     json += "\"DAV_PASS\":\"" + jsonEscape(cfg_dav_pass) + "\",";
     json += "\"DAV_PATH\":\"" + jsonEscape(cfg_dav_path) + "\",";
     json += "\"DAV_HTTPS\":\"" + String(cfg_dav_https ? "1" : "0") + "\",";
-    json += "\"LOG_ENABLED\":\"" + String(cfg_log_enabled ? "1" : "0") + "\"";
+    json += "\"LOG_ENABLED\":\"" + String(cfg_log_enabled ? "1" : "0") + "\",";
+    json += "\"THEME\":\"" + jsonEscape(cfg_theme) + "\"";
     json += "}";
     sendJSON(client, 200, json);
     return;
@@ -804,6 +814,9 @@ void handleRequest(WiFiClient &client) {
 
     val = getFormValue(req.body, "LOG_ENABLED");
     if (val.length() > 0) cfg_log_enabled = (val == "1" || val == "true");
+
+    val = getFormValue(req.body, "THEME");
+    if (val.length() > 0) cfg_theme = val;
 
     saveConfig();
     sendJSON(client, 200, "{\"status\":\"ok\"}");
@@ -880,14 +893,35 @@ void handleRequest(WiFiClient &client) {
     String json = "{";
     json += "\"firmware\":\"" + String(FW_VERSION) + "\",";
     json += "\"device\":\"WiFi-Dongle\",";
+    json += "\"is_dongle\":true,";
+    #if defined(BOARD_SUPERMINI_ESP32S3)
+      json += "\"board\":\"Super Mini ESP32-S3\",";
+    #else
+      json += "\"board\":\"Seeed XIAO ESP32-S3\",";
+    #endif
     json += "\"chip\":\"ESP32-S3\",";
+    // Fields the web UI needs for tabs + dashboard
+    json += "\"ftp_enabled\":" + String(cfg_ftp_enabled ? "true" : "false") + ",";
+    json += "\"dav_enabled\":" + String(cfg_dav_enabled ? "true" : "false") + ",";
+    json += "\"theme\":\"CYBERPUNK\",";  // default dongle theme
+    json += "\"internet\":" + String(wifi_sta_connected ? "true" : "false") + ",";
+    json += "\"internet_ip\":\"" + wifi_sta_ip + "\",";
+    json += "\"internet_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\",";
+    // Dashboard stat fields (dongle equivalents)
+    json += "\"heap_free\":" + String(ESP.getFreeHeap()) + ",";
+    json += "\"psram_free\":" + String(ESP.getFreePsram()) + ",";
     json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
     json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
     json += "\"total_psram\":" + String(ESP.getPsramSize()) + ",";
+    json += "\"sd_used_mb\":0,\"sd_total_mb\":0,";
+    json += "\"game_count\":0,\"file_count\":0,";
+    json += "\"loaded_game\":\"" + jsonEscape(loaded_filename.length() > 0 ? loaded_filename : "none") + "\",";
+    json += "\"mode\":\"Dongle\",";
     json += "\"spiffs_total\":" + String(SPIFFS.totalBytes()) + ",";
     json += "\"spiffs_used\":" + String(SPIFFS.usedBytes()) + ",";
     json += "\"uptime_ms\":" + String(millis()) + ",";
     json += "\"wifi_ap_ssid\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
+    json += "\"wifi_ip\":\"" + (wifi_sta_connected ? wifi_sta_ip : wifi_ap_ip) + "\",";
     json += "\"wifi_ap_ip\":\"" + wifi_ap_ip + "\",";
     json += "\"wifi_sta_ip\":\"" + wifi_sta_ip + "\",";
     json += "\"wifi_sta_connected\":" + String(wifi_sta_connected ? "true" : "false") + ",";
@@ -933,8 +967,9 @@ void handleRequest(WiFiClient &client) {
 
   // ── GET /api/themes/list ──
   if (req.path == "/api/themes/list" && req.method == "GET") {
-    // Dongle has no display so no active theme stored, return static list
-    sendJSON(client, 200, "{\"themes\":[\"default\",\"dark\",\"amber\",\"green\",\"matrix\"],\"active\":\"default\"}");
+    // Return palette names matching web UI's THEME_PALETTES + NVS-stored active
+    String activeTheme = cfg_theme.length() > 0 ? cfg_theme : "CYBERPUNK";
+    sendJSON(client, 200, "{\"themes\":[\"AMIGA_WB2\",\"CYBERPUNK\",\"STEAMPUNK\"],\"active\":\"" + jsonEscape(activeTheme) + "\"}");
     return;
   }
 
@@ -1056,7 +1091,8 @@ void setup() {
   USB.begin();
   Serial.println("USB MSC ready (no disk)");
 
-  ledBlink(3, 100);
+  ledBlink(2, 100);
+  ledOff();  // idle: LED off until disk loaded
   Serial.println("\nReady! Connect to '" + cfg_wifi_ssid + "' → http://" + wifi_ap_ip);
   if (wifi_sta_connected) {
     Serial.println("Or use http://" + wifi_sta_ip + " from your home network");
