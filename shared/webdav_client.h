@@ -750,42 +750,112 @@ private:
 
   // ── XML parsing ───────────────────────────────────────────────────────────
 
-  // Raw char* version: finds each <response> block in the PSRAM buffer,
-  // extracts it as a small String (~200-500 bytes), and reuses the
-  // existing String-based tag extraction on each block individually.
-  // This avoids copying the entire 122KB+ XML into a heap String.
+  // ── Raw char* XML helpers (work directly on PSRAM buffer, no heap Strings) ──
+
+  // Find a substring in a bounded region (like strstr but with length limit)
+  static const char* _findIn(const char *haystack, long hayLen, const char *needle) {
+    if (!haystack || hayLen <= 0 || !needle) return nullptr;
+    size_t nLen = strlen(needle);
+    if (nLen == 0 || (long)nLen > hayLen) return nullptr;
+    for (long i = 0; i <= hayLen - (long)nLen; i++) {
+      if (memcmp(haystack + i, needle, nLen) == 0) return haystack + i;
+    }
+    return nullptr;
+  }
+
+  // Extract text between <tag>...</tag> from a char* region.
+  // Writes result into outBuf (max outMax-1 chars), returns length.
+  int _extractTagRaw(const char *block, int blockLen, const char *tagName,
+                     char *outBuf, int outMax) {
+    // Try D:tag, d:tag, and plain tag
+    char openTag[64], closeTag[64];
+    const char *prefixes[] = { "D:", "d:", "" };
+    for (int pf = 0; pf < 3; pf++) {
+      snprintf(openTag, sizeof(openTag), "<%s%s", prefixes[pf], tagName);
+      snprintf(closeTag, sizeof(closeTag), "</%s%s>", prefixes[pf], tagName);
+      const char *start = _findIn(block, blockLen, openTag);
+      if (!start) continue;
+      // Find > after the open tag
+      const char *gt = (const char *)memchr(start, '>', block + blockLen - start);
+      if (!gt) continue;
+      if (*(gt - 1) == '/') { outBuf[0] = '\0'; return 0; }  // self-closing
+      gt++;
+      const char *end = _findIn(gt, block + blockLen - gt, closeTag);
+      if (!end) continue;
+      int len = end - gt;
+      if (len >= outMax) len = outMax - 1;
+      memcpy(outBuf, gt, len);
+      outBuf[len] = '\0';
+      // XML decode basic entities in-place
+      _xmlDecodeInPlace(outBuf);
+      return strlen(outBuf);
+    }
+    outBuf[0] = '\0';
+    return 0;
+  }
+
+  // XML decode &amp; &lt; &gt; &quot; &apos; in-place
+  static void _xmlDecodeInPlace(char *s) {
+    char *r = s, *w = s;
+    while (*r) {
+      if (*r == '&') {
+        if (strncmp(r, "&amp;", 5) == 0) { *w++ = '&'; r += 5; }
+        else if (strncmp(r, "&lt;", 4) == 0) { *w++ = '<'; r += 4; }
+        else if (strncmp(r, "&gt;", 4) == 0) { *w++ = '>'; r += 4; }
+        else if (strncmp(r, "&quot;", 6) == 0) { *w++ = '"'; r += 6; }
+        else if (strncmp(r, "&apos;", 6) == 0) { *w++ = '\''; r += 6; }
+        else { *w++ = *r++; }
+      } else { *w++ = *r++; }
+    }
+    *w = '\0';
+  }
+
+  // URL-decode in-place
+  static void _urlDecodeInPlace(char *s) {
+    char *r = s, *w = s;
+    while (*r) {
+      if (*r == '%' && r[1] && r[2]) {
+        char hex[3] = { r[1], r[2], 0 };
+        *w++ = (char)strtol(hex, nullptr, 16);
+        r += 3;
+      } else { *w++ = *r++; }
+    }
+    *w = '\0';
+  }
+
+  // Parse the full PROPFIND response from PSRAM buffer — zero heap String usage
   void _parsePropfindResponseRaw(const char *xml, long xmlLen, const String &basePath,
                                   std::vector<DAVFileEntry> &entries) {
     bool firstEntry = true;
     const char *p = xml;
-    const char *end = xml + xmlLen;
+    const char *xmlEnd = xml + xmlLen;
+    char tmpBuf[512];  // reusable extraction buffer on stack
 
-    while (p < end) {
+    while (p < xmlEnd) {
       // Find <D:response>, <d:response>, or <response>
       const char *respStart = nullptr;
-      const char *tags[] = { "<D:response", "<d:response", "<response" };
-      for (int t = 0; t < 3 && !respStart; t++) {
-        const char *f = strstr(p, tags[t]);
+      const char *openTags[] = { "<D:response", "<d:response", "<response" };
+      long remain = xmlEnd - p;
+      for (int t = 0; t < 3; t++) {
+        const char *f = _findIn(p, remain, openTags[t]);
         if (f && (!respStart || f < respStart)) respStart = f;
       }
       if (!respStart) break;
 
-      // Find closing </D:response>, </d:response>, or </response>
+      // Find closing tag
       const char *respEnd = nullptr;
       const char *closeTags[] = { "</D:response>", "</d:response>", "</response>" };
-      for (int t = 0; t < 3 && !respEnd; t++) {
-        const char *f = strstr(respStart + 1, closeTags[t]);
+      long blockRemain = xmlEnd - (respStart + 1);
+      for (int t = 0; t < 3; t++) {
+        const char *f = _findIn(respStart + 1, blockRemain, closeTags[t]);
         if (f && (!respEnd || f < respEnd)) respEnd = f;
       }
-      if (!respEnd) respEnd = end;
-      else respEnd += 14;  // skip past closing tag
+      int closeTagLen = 14;  // length of longest close tag + safety
+      if (!respEnd) { p = respStart + 1; continue; }  // malformed, skip
+      respEnd += closeTagLen;
+      if (respEnd > xmlEnd) respEnd = xmlEnd;
 
-      // Extract this one <response> block as a small heap String
       int blockLen = respEnd - respStart;
-      if (blockLen > 8192) blockLen = 8192;  // safety cap per entry
-      String block;
-      block.reserve(blockLen);
-      for (int i = 0; i < blockLen; i++) block += respStart[i];
 
       if (firstEntry) {
         firstEntry = false;
@@ -793,17 +863,27 @@ private:
         continue;
       }
 
-      // Parse this individual block using existing String helpers
-      String href = _extractTagValue(block, "href");
-      href = _urlDecodePath(href);
+      // Extract href
+      _extractTagRaw(respStart, blockLen, "href", tmpBuf, sizeof(tmpBuf));
+      _urlDecodeInPlace(tmpBuf);
+      String href(tmpBuf);
 
-      String displayName = _extractTagValue(block, "displayname");
+      // Extract displayname
+      _extractTagRaw(respStart, blockLen, "displayname", tmpBuf, sizeof(tmpBuf));
+      String displayName(tmpBuf);
+
       if (displayName.length() == 0 && href.length() > 0) {
-        String h = href;
-        if (h.endsWith("/")) h = h.substring(0, h.length() - 1);
-        int ls = h.lastIndexOf('/');
-        if (ls >= 0) displayName = h.substring(ls + 1);
-        else displayName = h;
+        // Extract name from href path
+        int lastSlash = href.lastIndexOf('/');
+        if (lastSlash >= 0 && lastSlash < (int)href.length() - 1) {
+          displayName = href.substring(lastSlash + 1);
+        } else if (lastSlash == (int)href.length() - 1) {
+          String h = href.substring(0, href.length() - 1);
+          int ls = h.lastIndexOf('/');
+          displayName = (ls >= 0) ? h.substring(ls + 1) : h;
+        } else {
+          displayName = href;
+        }
       }
 
       if (displayName.length() == 0 || displayName == "." || displayName == "..") {
@@ -811,10 +891,12 @@ private:
         continue;
       }
 
-      bool isDir = (block.indexOf("collection") >= 0);
+      bool isDir = (_findIn(respStart, blockLen, "collection") != nullptr);
+
       size_t fileSize = 0;
-      String sizeStr = _extractTagValue(block, "getcontentlength");
-      if (sizeStr.length() > 0) fileSize = sizeStr.toInt();
+      if (_extractTagRaw(respStart, blockLen, "getcontentlength", tmpBuf, sizeof(tmpBuf)) > 0) {
+        fileSize = atol(tmpBuf);
+      }
 
       DAVFileEntry entry;
       entry.name = displayName;
@@ -825,6 +907,7 @@ private:
       entry.hasNfo = false;
 
       if (!entry.isDir) {
+        // Check file extension
         String lname = displayName;
         lname.toLowerCase();
         bool isDiskImage = lname.endsWith(".adf") || lname.endsWith(".dsk") ||
@@ -833,13 +916,14 @@ private:
         bool isCover = lname.endsWith(".jpg") || lname.endsWith(".jpeg") || lname.endsWith(".png");
         bool isNfo = lname.endsWith(".nfo");
         if (!isDiskImage && !isCover && !isNfo) { p = respEnd; continue; }
-        if (isCover) { entry.coverFile = displayName; }
-        if (isNfo)   { entry.nfoFile = displayName; }
+        if (isCover) entry.coverFile = displayName;
+        if (isNfo)   entry.nfoFile = displayName;
       }
 
       entries.push_back(entry);
       p = respEnd;
-      // Periodically yield to prevent WDT
+
+      // Periodically yield + WDT reset
       if (entries.size() % 50 == 0) { esp_task_wdt_reset(); yield(); }
     }
   }
