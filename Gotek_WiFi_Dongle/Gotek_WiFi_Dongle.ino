@@ -72,8 +72,20 @@ SET_LOOP_TASK_STACK_SIZE(16384);
 #define FW_VERSION "v2.1.0-WiFiDongle"
 
 // USB is in Mass Storage mode — Serial over USB does not work.
-// Silence all Serial output to save CPU cycles and avoid blocking.
-#define Serial if(0) Serial
+// Provide a no-op serial sink so all Serial.xxx() calls compile away.
+class NullSerial {
+public:
+  void begin(unsigned long) {}
+  void println(const String &) {}
+  void println(const char *) {}
+  void println() {}
+  void print(const String &) {}
+  void print(const char *) {}
+  void flush() {}
+  operator bool() { return false; }
+};
+static NullSerial nullSerial;
+#define Serial nullSerial
 
 // ==========================================================================
 // STATUS LED — board-specific
