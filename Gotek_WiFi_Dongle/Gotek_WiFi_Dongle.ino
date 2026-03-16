@@ -71,6 +71,10 @@ SET_LOOP_TASK_STACK_SIZE(16384);
 
 #define FW_VERSION "v2.1.0-WiFiDongle"
 
+// USB is in Mass Storage mode — Serial over USB does not work.
+// Silence all Serial output to save CPU cycles and avoid blocking.
+#define Serial if(0) Serial
+
 // ==========================================================================
 // STATUS LED — board-specific
 // ==========================================================================
