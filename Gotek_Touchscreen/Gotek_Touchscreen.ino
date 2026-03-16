@@ -36,6 +36,10 @@
 #define DEVICE_JC3248
 // SD cover cache available on this device
 #define DEVICE_HAS_SD_COVER_CACHE
+// SD storage available — enables downloadFile() in shared FTP/WebDAV clients
+#define DEVICE_HAS_SD_STORAGE
+// SD logging available — routes shared client logs to sdLog()
+#define DEVICE_HAS_SDLOG
 
 // ─── Shared library storage backend — SD_MMC ─────────────────────────────────
 #define DAV_CACHE_FS   SD_MMC
@@ -473,12 +477,12 @@ String detail_jpg_path = "";
 vector<int> disk_set;         // file_list indices for all disks of current game
 int loaded_disk_index = -1;   // file_list index of currently loaded disk (-1 = none)
 
-// Forward declaration: sdLog() is defined later but needed by FTP/WebDAV clients
+// Forward declaration: sdLog() is defined later but needed by shared FTP/WebDAV clients
 void sdLog(const String &msg);
 
-// FTP and WebDAV clients (included here so types are available for state vars below)
-#include "ftp_client.h"
-#include "webdav_client.h"
+// FTP and WebDAV clients — shared library (same code for touchscreen + dongle)
+#include "../shared/ftp_client.h"
+#include "../shared/webdav_client.h"
 
 // WebDAV browsing state
 std::vector<DAVFileEntry> dav_entries;   // current directory listing
