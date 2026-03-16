@@ -148,28 +148,31 @@ public:
     _tcp->print(body);
 
     esp_task_wdt_reset();  // feed WDT before waiting for response
-    // Read response using chunked buffer reading
-    String response = _readHTTPBody();
+    // Read response — body ends up in PSRAM buffer (_psramBody)
+    _readHTTPBody();
     esp_task_wdt_reset();  // feed WDT after reading response
 
-    if (response.length() == 0) {
+    if (!_psramBody || _psramBodyLen == 0) {
       _lastError = "Empty response from server";
       _log("DAV: " + _lastError);
-      // Connection might be stale — close it for next retry
       _closeConnection();
+      _freePsramBody();
       return false;
     }
 
     if (_httpStatus >= 400) {
-      String excerpt = response.substring(0, 120);
-      excerpt.replace("\"", "'");
-      excerpt.replace("\n", " ");
-      excerpt.replace("\r", "");
-      _lastError = "HTTP " + String(_httpStatus) + ": " + excerpt;
+      char excerpt[128];
+      int n = _psramBodyLen > 120 ? 120 : _psramBodyLen;
+      memcpy(excerpt, _psramBody, n);
+      excerpt[n] = '\0';
+      _lastError = "HTTP " + String(_httpStatus) + ": " + String(excerpt);
+      _freePsramBody();
       return false;
     }
 
-    _parsePropfindResponse(response, fullPath, entries);
+    // Parse XML directly from PSRAM buffer (no heap copy needed!)
+    _parsePropfindResponseRaw(_psramBody, _psramBodyLen, fullPath, entries);
+    _freePsramBody();
     _log("DAV: listed " + String(entries.size()) + " entries in " + fullPath);
     _connected = true;
     return true;
@@ -602,11 +605,11 @@ private:
     return result;
   }
 
-  // ── HTTP body reader (chunked buffer, NOT char-by-char) ───────────────────
+  // ── HTTP body reader — reads into PSRAM buffer to avoid heap fragmentation ──
+  // Result stored in _psramBody / _psramBodyLen. Caller must call _freePsramBody().
 
-  String _readHTTPBody() {
+  void _readHTTPBody() {
     _httpStatus = 0;
-    String body = "";
     long contentLength = -1;
     bool chunked = false;
     bool connectionClose = false;
@@ -634,42 +637,46 @@ private:
     _log("DAV: HTTP " + String(_httpStatus) + " len=" + String(contentLength) +
          (chunked ? " chunked" : "") + (connectionClose ? " close" : " keep-alive"));
 
-    // Read body — BUFFERED (not char-by-char)
-    // Large PROPFIND responses (hundreds of folders) can exceed 200KB.
-    // Allocate body in PSRAM if available, with generous limit.
-    const long MAX_BODY = 524288;  // 512KB — safe because we use PSRAM-backed String
+    // Allocate body buffer in PSRAM — keeps internal heap free for TLS etc.
+    const long MAX_BODY = 524288;  // 512KB max
+    _freePsramBody();  // clean up any previous buffer
+    char *bodyBuf = (char *)ps_malloc(MAX_BODY + 1);
+    if (!bodyBuf) {
+      _log("DAV: FATAL — cannot allocate " + String(MAX_BODY / 1024) + "KB in PSRAM for body");
+      _closeConnection();
+      return;
+    }
+    long bodyLen = 0;
     bool bodyTruncated = false;
+
     timeout = millis();
     if (chunked) {
-      while (_tcp->connected() && millis() - timeout < 15000) {
+      while (_tcp->connected() && millis() - timeout < 30000) {
         if (!_tcp->available()) { yield(); delay(1); continue; }
         String sizeLine = _tcp->readStringUntil('\n');
         sizeLine.trim();
         if (sizeLine.length() == 0) { timeout = millis(); continue; }
         long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
         if (chunkSize <= 0) break;
-        if ((long)body.length() + chunkSize > MAX_BODY) {
-          _log("DAV: body too large, truncating at " + String(body.length()) + " bytes");
+        if (bodyLen + chunkSize > MAX_BODY) {
+          _log("DAV: body too large, truncating at " + String(bodyLen) + " bytes");
           bodyTruncated = true;
           break;
         }
 
-        // Read chunk data in blocks
         long bytesRead = 0;
-        while (bytesRead < chunkSize && _tcp->connected() && millis() - timeout < 15000) {
+        while (bytesRead < chunkSize && _tcp->connected() && millis() - timeout < 30000) {
           size_t avail = _tcp->available();
           if (avail == 0) { yield(); delay(1); continue; }
           size_t want = (size_t)(chunkSize - bytesRead);
           if (avail > want) avail = want;
-          // Read into temporary buffer, then append to body
-          uint8_t tmpBuf[512];
-          size_t toRead = (avail > sizeof(tmpBuf)) ? sizeof(tmpBuf) : avail;
-          size_t got = _tcp->read(tmpBuf, toRead);
+          size_t toRead = avail > 4096 ? 4096 : avail;  // read in bigger chunks from PSRAM buf
+          size_t got = _tcp->read((uint8_t *)&bodyBuf[bodyLen], toRead);
           if (got > 0) {
-            body.concat((const char *)tmpBuf, got);
+            bodyLen += got;
             bytesRead += got;
             timeout = millis();
-            esp_task_wdt_reset();  // keep WDT happy during large reads
+            esp_task_wdt_reset();
             yield();
           }
         }
@@ -680,43 +687,44 @@ private:
         esp_task_wdt_reset();
       }
     } else if (contentLength > 0) {
+      long maxRead = contentLength > MAX_BODY ? MAX_BODY : contentLength;
       if (contentLength > MAX_BODY) {
-        _log("DAV: content-length " + String(contentLength) + " exceeds max, limiting to " + String(MAX_BODY));
-        contentLength = MAX_BODY;
+        _log("DAV: content-length " + String(contentLength) + " exceeds max, limiting");
+        bodyTruncated = true;
       }
-      body.reserve(contentLength);
-      long totalRead = 0;
-      uint8_t tmpBuf[512];
-      while (totalRead < contentLength && millis() - timeout < 15000) {
+      while (bodyLen < maxRead && millis() - timeout < 30000) {
         size_t avail = _tcp->available();
         if (avail == 0) { yield(); delay(1); continue; }
-        size_t want = (size_t)(contentLength - totalRead);
+        size_t want = (size_t)(maxRead - bodyLen);
         if (avail > want) avail = want;
-        size_t toRead = (avail > sizeof(tmpBuf)) ? sizeof(tmpBuf) : avail;
-        size_t got = _tcp->read(tmpBuf, toRead);
+        size_t toRead = avail > 4096 ? 4096 : avail;
+        size_t got = _tcp->read((uint8_t *)&bodyBuf[bodyLen], toRead);
         if (got > 0) {
-          body.concat((const char *)tmpBuf, got);
-          totalRead += got;
+          bodyLen += got;
           timeout = millis();
           esp_task_wdt_reset();
           yield();
         }
       }
     } else {
-      // Read until connection closes
-      uint8_t tmpBuf[512];
       while (_tcp->connected() && millis() - timeout < 10000) {
         size_t avail = _tcp->available();
         if (avail == 0) { yield(); delay(1); continue; }
-        size_t toRead = (avail > sizeof(tmpBuf)) ? sizeof(tmpBuf) : avail;
-        size_t got = _tcp->read(tmpBuf, toRead);
+        size_t space = MAX_BODY - bodyLen;
+        if (space == 0) { bodyTruncated = true; break; }
+        if (avail > space) avail = space;
+        size_t toRead = avail > 4096 ? 4096 : avail;
+        size_t got = _tcp->read((uint8_t *)&bodyBuf[bodyLen], toRead);
         if (got > 0) {
-          body.concat((const char *)tmpBuf, got);
+          bodyLen += got;
           timeout = millis();
           esp_task_wdt_reset();
         }
       }
     }
+
+    bodyBuf[bodyLen] = '\0';
+    _log("DAV: body read " + String(bodyLen) + " bytes (PSRAM), heap=" + String(ESP.getFreeHeap()));
 
     // If body was truncated, remaining data is still on the TCP stream.
     // We MUST close the connection to avoid corrupting the next request.
@@ -728,10 +736,113 @@ private:
       _closeConnection();
     }
 
-    return body;
+    _psramBody = bodyBuf;
+    _psramBodyLen = bodyLen;
+  }
+
+  // PSRAM body pointer for large responses (caller must call _freePsramBody after use)
+  char *_psramBody = nullptr;
+  long  _psramBodyLen = 0;
+
+  void _freePsramBody() {
+    if (_psramBody) { free(_psramBody); _psramBody = nullptr; _psramBodyLen = 0; }
   }
 
   // ── XML parsing ───────────────────────────────────────────────────────────
+
+  // Raw char* version: finds each <response> block in the PSRAM buffer,
+  // extracts it as a small String (~200-500 bytes), and reuses the
+  // existing String-based tag extraction on each block individually.
+  // This avoids copying the entire 122KB+ XML into a heap String.
+  void _parsePropfindResponseRaw(const char *xml, long xmlLen, const String &basePath,
+                                  std::vector<DAVFileEntry> &entries) {
+    bool firstEntry = true;
+    const char *p = xml;
+    const char *end = xml + xmlLen;
+
+    while (p < end) {
+      // Find <D:response>, <d:response>, or <response>
+      const char *respStart = nullptr;
+      const char *tags[] = { "<D:response", "<d:response", "<response" };
+      for (int t = 0; t < 3 && !respStart; t++) {
+        const char *f = strstr(p, tags[t]);
+        if (f && (!respStart || f < respStart)) respStart = f;
+      }
+      if (!respStart) break;
+
+      // Find closing </D:response>, </d:response>, or </response>
+      const char *respEnd = nullptr;
+      const char *closeTags[] = { "</D:response>", "</d:response>", "</response>" };
+      for (int t = 0; t < 3 && !respEnd; t++) {
+        const char *f = strstr(respStart + 1, closeTags[t]);
+        if (f && (!respEnd || f < respEnd)) respEnd = f;
+      }
+      if (!respEnd) respEnd = end;
+      else respEnd += 14;  // skip past closing tag
+
+      // Extract this one <response> block as a small heap String
+      int blockLen = respEnd - respStart;
+      if (blockLen > 8192) blockLen = 8192;  // safety cap per entry
+      String block;
+      block.reserve(blockLen);
+      for (int i = 0; i < blockLen; i++) block += respStart[i];
+
+      if (firstEntry) {
+        firstEntry = false;
+        p = respEnd;
+        continue;
+      }
+
+      // Parse this individual block using existing String helpers
+      String href = _extractTagValue(block, "href");
+      href = _urlDecodePath(href);
+
+      String displayName = _extractTagValue(block, "displayname");
+      if (displayName.length() == 0 && href.length() > 0) {
+        String h = href;
+        if (h.endsWith("/")) h = h.substring(0, h.length() - 1);
+        int ls = h.lastIndexOf('/');
+        if (ls >= 0) displayName = h.substring(ls + 1);
+        else displayName = h;
+      }
+
+      if (displayName.length() == 0 || displayName == "." || displayName == "..") {
+        p = respEnd;
+        continue;
+      }
+
+      bool isDir = (block.indexOf("collection") >= 0);
+      size_t fileSize = 0;
+      String sizeStr = _extractTagValue(block, "getcontentlength");
+      if (sizeStr.length() > 0) fileSize = sizeStr.toInt();
+
+      DAVFileEntry entry;
+      entry.name = displayName;
+      entry.href = href;
+      entry.isDir = isDir;
+      entry.size = fileSize;
+      entry.hasCover = false;
+      entry.hasNfo = false;
+
+      if (!entry.isDir) {
+        String lname = displayName;
+        lname.toLowerCase();
+        bool isDiskImage = lname.endsWith(".adf") || lname.endsWith(".dsk") ||
+                           lname.endsWith(".adz") || lname.endsWith(".img") ||
+                           lname.endsWith(".zip");
+        bool isCover = lname.endsWith(".jpg") || lname.endsWith(".jpeg") || lname.endsWith(".png");
+        bool isNfo = lname.endsWith(".nfo");
+        if (!isDiskImage && !isCover && !isNfo) { p = respEnd; continue; }
+        if (isCover) { entry.coverFile = displayName; }
+        if (isNfo)   { entry.nfoFile = displayName; }
+      }
+
+      entries.push_back(entry);
+      p = respEnd;
+      // Periodically yield to prevent WDT
+      if (entries.size() % 50 == 0) { esp_task_wdt_reset(); yield(); }
+    }
+  }
 
   void _parsePropfindResponse(const String &xml, const String &basePath,
                                std::vector<DAVFileEntry> &entries) {
