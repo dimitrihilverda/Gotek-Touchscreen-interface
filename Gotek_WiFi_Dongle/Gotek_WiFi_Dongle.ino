@@ -1038,6 +1038,10 @@ void setupWiFi() {
     WiFi.mode(WIFI_AP);
   }
 
+  // Reduce WiFi TX power to prevent brownout during TLS handshakes
+  // (same as touchscreen — full power draws too much from 3.3V rail)
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+
   // Start AP
   WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
   delay(200);

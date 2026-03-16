@@ -375,6 +375,8 @@ private:
     }
 #ifdef DEVICE_HAS_SDLOG
     sdLog(msg);
+#elif defined(DEVICE_WIFI_DONGLE)
+    logAppend(msg);  // persist to SPIFFS on dongle
 #endif
   }
 
