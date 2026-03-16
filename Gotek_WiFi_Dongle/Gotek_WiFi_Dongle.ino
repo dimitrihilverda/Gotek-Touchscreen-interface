@@ -11,20 +11,24 @@
     4. Dongle loads it into PSRAM → presents as USB floppy to Gotek
     5. Play!
 
-  Target board: Seeed XIAO ESP32-S3 (21 x 17.5 mm)
-    - ESP32-S3 dual-core 240MHz
-    - 8MB PSRAM (plenty for a 1.44MB floppy image)
-    - 8MB Flash
-    - WiFi 802.11 b/g/n
-    - USB-C with OTG support
-    - No SD card needed!
+  Supported boards:
+    1. Seeed XIAO ESP32-S3 (21 x 17.5 mm)
+       - Define: BOARD_XIAO_ESP32S3 (default)
+       - LED: GPIO21 (simple digital)
+       - 8MB PSRAM, 8MB Flash
+
+    2. Super Mini ESP32-S3 (22.5 x 18 mm)
+       - Define: BOARD_SUPERMINI_ESP32S3
+       - LED: WS2818 RGB on GPIO48 (Neopixel)
+       - 2MB PSRAM, 4MB Flash
+
+  Both boards share: ESP32-S3, WiFi 802.11 b/g/n, USB-C OTG, no SD card.
 
   Board settings (Arduino IDE):
-    Board: XIAO_ESP32S3
-    USB CDC On Boot → Enabled
-    PSRAM → OPI PSRAM
-    Flash Size → 8MB
-    Partition → Default 4MB with spiffs
+    XIAO:       Board: XIAO_ESP32S3, PSRAM: OPI, Flash: 8MB
+    Super Mini: Board: ESP32S3 Dev Module, PSRAM: QSPI, Flash: 4MB
+
+  To select board, uncomment ONE of the BOARD_xxx defines below.
 
   Wiring:
     USB-A plug → Gotek USB port
@@ -44,6 +48,10 @@
 // ─── Device target ───────────────────────────────────────────────────────────
 #define DEVICE_WIFI_DONGLE
 
+// ─── Board selection (uncomment ONE) ─────────────────────────────────────────
+#define BOARD_XIAO_ESP32S3
+// #define BOARD_SUPERMINI_ESP32S3
+
 // ─── Shared library storage backend — SPIFFS, flat namespace ─────────────────
 #define DAV_CACHE_FS          SPIFFS
 #define DAV_CACHE_FS_IS_SPIFFS
@@ -56,21 +64,48 @@ extern "C" {
   extern void* ps_malloc(size_t size);
 }
 
-#define FW_VERSION "v2.0.0-WiFiDongle"
+#define FW_VERSION "v2.1.0-WiFiDongle"
 
 // ==========================================================================
-// STATUS LED (XIAO ESP32-S3 built-in LED on IO21)
+// STATUS LED — board-specific
 // ==========================================================================
-#define LED_PIN 21
+#if defined(BOARD_SUPERMINI_ESP32S3)
+  // Super Mini: WS2818 RGB Neopixel on GPIO48
+  #include <Adafruit_NeoPixel.h>
+  #define LED_PIN       48
+  #define LED_NEOPIXEL
+  Adafruit_NeoPixel ledPixel(1, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-void ledBlink(int times = 1, int ms = 100) {
-  for (int i = 0; i < times; i++) {
-    digitalWrite(LED_PIN, HIGH);
-    delay(ms);
-    digitalWrite(LED_PIN, LOW);
-    if (i < times - 1) delay(ms);
+  void ledInit() {
+    ledPixel.begin();
+    ledPixel.setBrightness(30);  // subtle — not blinding
+    ledPixel.clear();
+    ledPixel.show();
   }
-}
+  void ledOn()  { ledPixel.setPixelColor(0, ledPixel.Color(0, 80, 255)); ledPixel.show(); }  // blue
+  void ledOff() { ledPixel.clear(); ledPixel.show(); }
+  void ledColor(uint8_t r, uint8_t g, uint8_t b) { ledPixel.setPixelColor(0, ledPixel.Color(r, g, b)); ledPixel.show(); }
+  void ledBlink(int times = 1, int ms = 100) {
+    for (int i = 0; i < times; i++) {
+      ledOn(); delay(ms); ledOff();
+      if (i < times - 1) delay(ms);
+    }
+  }
+#else
+  // XIAO ESP32-S3: simple digital LED on GPIO21
+  #define LED_PIN 21
+  void ledInit()  { pinMode(LED_PIN, OUTPUT); digitalWrite(LED_PIN, LOW); }
+  void ledOn()    { digitalWrite(LED_PIN, HIGH); }
+  void ledOff()   { digitalWrite(LED_PIN, LOW); }
+  void ledColor(uint8_t r, uint8_t g, uint8_t b) { (void)r; (void)g; (void)b; ledOn(); }  // no color, just on
+  void ledBlink(int times = 1, int ms = 100) {
+    for (int i = 0; i < times; i++) {
+      digitalWrite(LED_PIN, HIGH); delay(ms);
+      digitalWrite(LED_PIN, LOW);
+      if (i < times - 1) delay(ms);
+    }
+  }
+#endif
 
 // ==========================================================================
 // CONFIG — stored in NVS flash (no SD card on dongle)
@@ -606,8 +641,14 @@ void handleRequest(WiFiClient &client) {
     json += "\"filename\":\"" + jsonEscape(loaded_filename) + "\",";
     json += "\"size\":" + String(loaded_size) + ",";
     json += "\"firmware\":\"" + String(FW_VERSION) + "\",";
+    #if defined(BOARD_SUPERMINI_ESP32S3)
+      json += "\"board\":\"Super Mini ESP32-S3\",";
+    #else
+      json += "\"board\":\"Seeed XIAO ESP32-S3\",";
+    #endif
     json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
     json += "\"free_psram\":" + String(ESP.getFreePsram()) + ",";
+    json += "\"total_psram\":" + String(ESP.getPsramSize()) + ",";
     json += "\"wifi_ap_ip\":\"" + wifi_ap_ip + "\",";
     json += "\"wifi_sta_ip\":\"" + wifi_sta_ip + "\",";
     json += "\"wifi_sta_connected\":" + String(wifi_sta_connected ? "true" : "false") + ",";
@@ -967,10 +1008,15 @@ void setup() {
   delay(500);
   Serial.println("=== Gotek WiFi Dongle ===");
   Serial.println("Firmware: " + String(FW_VERSION));
+  #if defined(BOARD_SUPERMINI_ESP32S3)
+    Serial.println("Board: Super Mini ESP32-S3 (RGB LED on GPIO48)");
+  #else
+    Serial.println("Board: Seeed XIAO ESP32-S3 (LED on GPIO21)");
+  #endif
+  Serial.println("PSRAM: " + String(ESP.getPsramSize() / 1024) + " KB");
 
   // LED
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
+  ledInit();
   ledBlink(1, 200);
 
   // Load saved config from NVS
