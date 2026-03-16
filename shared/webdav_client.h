@@ -635,8 +635,10 @@ private:
          (chunked ? " chunked" : "") + (connectionClose ? " close" : " keep-alive"));
 
     // Read body — BUFFERED (not char-by-char)
-    // Safety limit: max 128KB response to prevent OOM on small-PSRAM devices
-    const long MAX_BODY = 131072;
+    // Large PROPFIND responses (hundreds of folders) can exceed 200KB.
+    // Allocate body in PSRAM if available, with generous limit.
+    const long MAX_BODY = 524288;  // 512KB — safe because we use PSRAM-backed String
+    bool bodyTruncated = false;
     timeout = millis();
     if (chunked) {
       while (_tcp->connected() && millis() - timeout < 15000) {
@@ -648,6 +650,7 @@ private:
         if (chunkSize <= 0) break;
         if ((long)body.length() + chunkSize > MAX_BODY) {
           _log("DAV: body too large, truncating at " + String(body.length()) + " bytes");
+          bodyTruncated = true;
           break;
         }
 
@@ -715,8 +718,12 @@ private:
       }
     }
 
-    // If server said Connection: close, tear down our persistent connection
-    if (connectionClose) {
+    // If body was truncated, remaining data is still on the TCP stream.
+    // We MUST close the connection to avoid corrupting the next request.
+    if (bodyTruncated) {
+      _log("DAV: closing connection after truncated body");
+      _closeConnection();
+    } else if (connectionClose) {
       _log("DAV: server closed connection");
       _closeConnection();
     }

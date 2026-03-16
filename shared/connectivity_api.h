@@ -296,31 +296,55 @@ inline void handleDAVList(WiFiClient &client, const String &queryPath, bool forc
 
   String path = queryPath.length() > 0 ? queryPath : "/";
 
-  // ── Helper: build root JSON (includes disk count per folder) ──────────
-  auto buildRootJson = [&]() {
-    String json = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
+  // ── Helper: stream root JSON directly to client (avoids huge String) ──
+  auto sendRootJson = [&]() {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: application/json");
+    client.println("Transfer-Encoding: chunked");
+    client.println("Connection: close");
+    client.println();
+    // Send in chunks — each entry is small, flush every ~20 entries
+    String buf = "{\"path\":\"/\",\"cached\":true,\"entries\":[";
     bool first = true;
+    int count = 0;
     for (int i = 0; i < (int)dav_entries.size(); i++) {
       if (!dav_entries[i].isDir) continue;
-      if (!first) json += ",";
+      if (!first) buf += ",";
       first = false;
-      json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
-      json += ",\"dir\":true";
+      buf += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+      buf += ",\"dir\":true";
       int dc = dav_entries[i].diskPaths.size() > 0 ? (int)dav_entries[i].diskPaths.size() : dav_entries[i].diskCount;
-      json += ",\"disks\":" + String(dc);
-      json += ",\"indexed\":" + String(dav_entries[i].indexed ? "true" : "false");
-      json += ",\"hasCover\":" + String(dav_entries[i].hasCover ? "true" : "false");
+      buf += ",\"disks\":" + String(dc);
+      buf += ",\"indexed\":" + String(dav_entries[i].indexed ? "true" : "false");
+      buf += ",\"hasCover\":" + String(dav_entries[i].hasCover ? "true" : "false");
       if (dav_entries[i].coverPath.length() > 0)
-        json += ",\"coverPath\":\"" + jsonEscape(dav_entries[i].coverPath) + "\"";
-      json += "}";
+        buf += ",\"coverPath\":\"" + jsonEscape(dav_entries[i].coverPath) + "\"";
+      buf += "}";
+      count++;
+      // Flush buffer every 20 entries to keep memory low
+      if (count % 20 == 0) {
+        String hex = String(buf.length(), HEX);
+        client.println(hex);
+        client.println(buf);
+        buf = "";
+        esp_task_wdt_reset();
+        yield();
+      }
     }
-    return json + "]}";
+    buf += "]}";
+    // Send remaining buffer
+    String hex = String(buf.length(), HEX);
+    client.println(hex);
+    client.println(buf);
+    // End chunked encoding
+    client.println("0");
+    client.println();
   };
 
   // ── Root listing ──────────────────────────────────────────────────────
   if (path == "/" && !forceRefresh) {
-    if (dav_entries.size() > 0) { sendJSON(client, 200, buildRootJson()); return; }
-    if (davLoadCache())          { sendJSON(client, 200, buildRootJson()); return; }
+    if (dav_entries.size() > 0) { sendRootJson(); return; }
+    if (davLoadCache())          { sendRootJson(); return; }
   }
 
   // ── Subfolder listing ─────────────────────────────────────────────────
@@ -393,7 +417,7 @@ inline void handleDAVList(WiFiClient &client, const String &queryPath, bool forc
       if (!found) dav_entries.push_back(entries[i]);
     }
     davSaveCache();
-    sendJSON(client, 200, buildRootJson());
+    sendRootJson();
 #ifdef ON_DAV_ROOT_LOADED
     ON_DAV_ROOT_LOADED();
 #endif
