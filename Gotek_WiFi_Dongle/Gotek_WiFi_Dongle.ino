@@ -74,14 +74,18 @@ extern "C" {
   // Super Mini: WS2818 RGB Neopixel on GPIO48
   #include <Adafruit_NeoPixel.h>
   #define LED_PIN       48
-  #define LED_BLUE_PIN  10    // annoying built-in blue LED — turn it off
+  #define LED_BLUE_PIN  8     // built-in blue LED (GPIO8 on most Super Mini boards)
+  #define LED_RED_PIN   10    // built-in red LED — also turn it off
   #define LED_NEOPIXEL
   Adafruit_NeoPixel ledPixel(1, LED_PIN, NEO_GRB + NEO_KHZ800);
 
   void ledInit() {
-    // Kill the built-in blue LED
+    // Kill the built-in blue LED (try LOW first; if still on, it's active-high)
     pinMode(LED_BLUE_PIN, OUTPUT);
-    digitalWrite(LED_BLUE_PIN, LOW);
+    digitalWrite(LED_BLUE_PIN, HIGH);   // HIGH = off on most Super Mini (active-low LED)
+    // Also kill the red LED on GPIO10
+    pinMode(LED_RED_PIN, OUTPUT);
+    digitalWrite(LED_RED_PIN, LOW);
     // Init RGB Neopixel
     ledPixel.begin();
     ledPixel.setBrightness(30);  // subtle — not blinding
