@@ -1055,7 +1055,12 @@ void setup() {
   Serial.println("PSRAM: " + String(ESP.getPsramSize() / 1024) + " KB");
 
   // Watchdog — 30 second timeout (generous for TLS handshakes)
-  esp_task_wdt_init(30, true);
+  const esp_task_wdt_config_t wdt_cfg = {
+    .timeout_ms = 30000,
+    .idle_core_mask = 0,
+    .trigger_panic = true
+  };
+  esp_task_wdt_init(&wdt_cfg);
   esp_task_wdt_add(NULL);
 
   // LED
