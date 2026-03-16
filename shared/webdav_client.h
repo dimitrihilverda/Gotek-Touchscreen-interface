@@ -400,6 +400,23 @@ private:
     return true;
   }
 
+  // ── TLS connect on separate task (needs ~20KB+ stack, main loop may not have enough) ──
+
+  struct TLSConnectParams {
+    WiFiClient *tcp;
+    const char *host;
+    int port;
+    bool success;
+    volatile bool done;
+  };
+
+  static void _tlsConnectTask(void *param) {
+    TLSConnectParams *p = (TLSConnectParams *)param;
+    p->success = p->tcp->connect(p->host, p->port);
+    p->done = true;
+    vTaskDelete(NULL);  // self-delete
+  }
+
   // Get or create a TCP connection (reuses existing TLS session when possible)
   bool _ensureConnection() {
     if (_isConnectionAlive()) {
@@ -439,10 +456,55 @@ private:
     }
 
     _log("DAV: connecting... (heap after alloc=" + String(ESP.getFreeHeap()) + ")");
-    esp_task_wdt_reset();  // feed WDT again right before connect
+    esp_task_wdt_reset();
 
     unsigned long t0 = millis();
-    if (!_tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
+    bool connectOk = false;
+
+    if (cfg_dav_https) {
+      // Run TLS connect on a dedicated task with 32KB stack
+      // mbedTLS handshake needs much more stack than the Arduino loop provides
+      TLSConnectParams params;
+      params.tcp = _tcp;
+      params.host = cfg_dav_host.c_str();
+      params.port = cfg_dav_port;
+      params.success = false;
+      params.done = false;
+
+      _log("DAV: spawning TLS task (32KB stack)...");
+      TaskHandle_t taskHandle = NULL;
+      BaseType_t created = xTaskCreatePinnedToCore(
+        _tlsConnectTask, "tls_conn", 32768, &params, 5, &taskHandle, 1
+      );
+
+      if (created != pdPASS) {
+        _lastError = "Failed to create TLS connect task";
+        _log("DAV: " + _lastError);
+        _closeConnection();
+        return false;
+      }
+
+      // Wait for task to complete (max 20 seconds)
+      while (!params.done && millis() - t0 < 20000) {
+        esp_task_wdt_reset();
+        delay(100);
+      }
+
+      if (!params.done) {
+        _lastError = "TLS connect timeout (20s)";
+        _log("DAV: " + _lastError);
+        // Task may still be running — can't safely delete it, just abandon
+        _closeConnection();
+        return false;
+      }
+
+      connectOk = params.success;
+    } else {
+      // Plain TCP — connect on main task is fine
+      connectOk = _tcp->connect(cfg_dav_host.c_str(), cfg_dav_port);
+    }
+
+    if (!connectOk) {
       unsigned long dt = millis() - t0;
       _lastError = "TCP connect failed (" + String(dt) + "ms)";
       if (_secure) {
@@ -450,7 +512,7 @@ private:
         _lastError += " TLS err=" + String(errCode);
       }
       _log("DAV: " + _lastError);
-      esp_task_wdt_reset();  // feed WDT after failed connect
+      esp_task_wdt_reset();
       _closeConnection();
       return false;
     }
