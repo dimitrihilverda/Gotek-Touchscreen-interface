@@ -74,10 +74,15 @@ extern "C" {
   // Super Mini: WS2818 RGB Neopixel on GPIO48
   #include <Adafruit_NeoPixel.h>
   #define LED_PIN       48
+  #define LED_BLUE_PIN  10    // annoying built-in blue LED — turn it off
   #define LED_NEOPIXEL
   Adafruit_NeoPixel ledPixel(1, LED_PIN, NEO_GRB + NEO_KHZ800);
 
   void ledInit() {
+    // Kill the built-in blue LED
+    pinMode(LED_BLUE_PIN, OUTPUT);
+    digitalWrite(LED_BLUE_PIN, LOW);
+    // Init RGB Neopixel
     ledPixel.begin();
     ledPixel.setBrightness(30);  // subtle — not blinding
     ledPixel.clear();
@@ -1070,11 +1075,15 @@ void setup() {
   // Load saved config from NVS
   loadConfig();
 
-  // Initialize SPIFFS for DAV cache
+  // Initialize SPIFFS for DAV cache + persistent logging
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS mount failed — cache disabled");
   } else {
     Serial.println("SPIFFS mounted (" + String(SPIFFS.totalBytes() / 1024) + " KB total, " + String(SPIFFS.usedBytes() / 1024) + " KB used)");
+    // Restore previous log from flash
+    logLoadFromFlash();
+    logAppend("=== Gotek WiFi Dongle boot (" + String(FW_VERSION) + ") ===");
+    logAppend("Heap: " + String(ESP.getFreeHeap()) + " PSRAM: " + String(ESP.getFreePsram()));
   }
 
   // Allocate RAM disk in PSRAM
@@ -1088,6 +1097,12 @@ void setup() {
 
   // WiFi (AP + optional STA)
   setupWiFi();
+  logAppend("WiFi AP: " + cfg_wifi_ssid + " @ " + wifi_ap_ip);
+  if (wifi_sta_connected) {
+    logAppend("WiFi STA: connected to " + cfg_wifi_client_ssid + " IP=" + wifi_sta_ip);
+  } else if (cfg_wifi_client_enabled) {
+    logAppend("WiFi STA: enabled but not connected");
+  }
 
   // HTTP server
   httpServer.begin();
