@@ -1063,9 +1063,9 @@ void setup() {
   #endif
   Serial.println("PSRAM: " + String(ESP.getPsramSize() / 1024) + " KB");
 
-  // Watchdog — 30 second timeout (generous for TLS handshakes)
+  // Watchdog — 60 second timeout (TLS handshake + PROPFIND can take 20+ seconds)
   const esp_task_wdt_config_t wdt_cfg = {
-    .timeout_ms = 30000,
+    .timeout_ms = 60000,
     .idle_core_mask = 0,
     .trigger_panic = true
   };

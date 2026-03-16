@@ -19,6 +19,7 @@
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_task_wdt.h>
 
 // WebDAV config variables are defined in the main .ino file:
 // cfg_dav_enabled, cfg_dav_host, cfg_dav_port, cfg_dav_user, cfg_dav_pass, cfg_dav_path, cfg_dav_https
@@ -135,6 +136,7 @@ public:
                   "<D:prop><D:resourcetype/><D:getcontentlength/><D:displayname/></D:prop>"
                   "</D:propfind>";
 
+    esp_task_wdt_reset();  // feed WDT before sending request
     _tcp->println("PROPFIND " + encodedPath + " HTTP/1.1");
     _tcp->println("Host: " + cfg_dav_host);
     _tcp->println("Authorization: Basic " + auth);
@@ -145,8 +147,10 @@ public:
     _tcp->println();
     _tcp->print(body);
 
+    esp_task_wdt_reset();  // feed WDT before waiting for response
     // Read response using chunked buffer reading
     String response = _readHTTPBody();
+    esp_task_wdt_reset();  // feed WDT after reading response
 
     if (response.length() == 0) {
       _lastError = "Empty response from server";
@@ -268,12 +272,13 @@ public:
     _tcp->println("Connection: keep-alive");
     _tcp->println();
 
+    esp_task_wdt_reset();  // feed WDT before waiting for response
     // Read HTTP headers
     long contentLength = -1;
     bool chunked = false;
     unsigned long timeout = millis();
     while (_tcp->connected() && millis() - timeout < 15000) {
-      if (!_tcp->available()) { delay(1); continue; }
+      if (!_tcp->available()) { yield(); delay(1); continue; }
       String line = _tcp->readStringUntil('\n');
       line.trim();
       if (line.startsWith("HTTP/")) {
@@ -403,21 +408,36 @@ private:
       return true;
     }
 
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t freePsram = ESP.getFreePsram();
     _log("DAV: opening new connection to " + cfg_dav_host + ":" + String(cfg_dav_port) +
          (cfg_dav_https ? " (TLS)" : ""));
-    _log("DAV: free heap=" + String(ESP.getFreeHeap()) + " PSRAM=" + String(ESP.getFreePsram()));
+    _log("DAV: free heap=" + String(freeHeap) + " PSRAM=" + String(freePsram));
+
+    // TLS needs ~45KB free heap — bail out early instead of crashing
+    if (cfg_dav_https && freeHeap < 50000) {
+      _lastError = "Not enough heap for TLS (" + String(freeHeap) + " free, need 50000)";
+      _log("DAV: " + _lastError);
+      return false;
+    }
+
+    // Feed WDT before long-running TLS handshake
+    esp_task_wdt_reset();
 
     if (cfg_dav_https) {
-      _secure = new WiFiClientSecure();
-      if (!_secure) { _lastError = "Out of memory"; return false; }
+      _secure = new (std::nothrow) WiFiClientSecure();
+      if (!_secure) { _lastError = "Out of memory allocating WiFiClientSecure"; _log("DAV: " + _lastError); return false; }
       _secure->setInsecure();
       _secure->setTimeout(15000);   // 15 seconds — TLS handshake needs time
       _tcp = _secure;
     } else {
-      _tcp = new WiFiClient();
-      if (!_tcp) { _lastError = "Out of memory"; return false; }
+      _tcp = new (std::nothrow) WiFiClient();
+      if (!_tcp) { _lastError = "Out of memory allocating WiFiClient"; _log("DAV: " + _lastError); return false; }
       _tcp->setTimeout(15000);
     }
+
+    _log("DAV: connecting... (heap after alloc=" + String(ESP.getFreeHeap()) + ")");
+    esp_task_wdt_reset();  // feed WDT again right before connect
 
     unsigned long t0 = millis();
     if (!_tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
@@ -428,14 +448,16 @@ private:
         _lastError += " TLS err=" + String(errCode);
       }
       _log("DAV: " + _lastError);
+      esp_task_wdt_reset();  // feed WDT after failed connect
       _closeConnection();
       return false;
     }
 
+    esp_task_wdt_reset();  // feed WDT after successful connect
     _persistHost = cfg_dav_host;
     _persistPort = cfg_dav_port;
     _persistHttps = cfg_dav_https;
-    _log("DAV: connected in " + String(millis() - t0) + "ms");
+    _log("DAV: connected in " + String(millis() - t0) + "ms, heap=" + String(ESP.getFreeHeap()));
     return true;
   }
 
@@ -528,7 +550,7 @@ private:
     // Read headers
     unsigned long timeout = millis();
     while (_tcp->connected() && millis() - timeout < 15000) {
-      if (!_tcp->available()) { delay(1); continue; }
+      if (!_tcp->available()) { yield(); delay(1); continue; }
       String line = _tcp->readStringUntil('\n');
       line.trim();
 
@@ -554,7 +576,7 @@ private:
     timeout = millis();
     if (chunked) {
       while (_tcp->connected() && millis() - timeout < 15000) {
-        if (!_tcp->available()) { delay(1); continue; }
+        if (!_tcp->available()) { yield(); delay(1); continue; }
         String sizeLine = _tcp->readStringUntil('\n');
         sizeLine.trim();
         if (sizeLine.length() == 0) { timeout = millis(); continue; }
@@ -580,13 +602,15 @@ private:
             body.concat((const char *)tmpBuf, got);
             bytesRead += got;
             timeout = millis();
-            yield();  // feed WDT during large reads
+            esp_task_wdt_reset();  // keep WDT happy during large reads
+            yield();
           }
         }
         // Read trailing \r\n
         if (_tcp->available()) _tcp->read();
         if (_tcp->available()) _tcp->read();
         timeout = millis();
+        esp_task_wdt_reset();
       }
     } else if (contentLength > 0) {
       if (contentLength > MAX_BODY) {
@@ -607,7 +631,8 @@ private:
           body.concat((const char *)tmpBuf, got);
           totalRead += got;
           timeout = millis();
-          yield();  // feed WDT during large reads
+          esp_task_wdt_reset();
+          yield();
         }
       }
     } else {
@@ -615,12 +640,13 @@ private:
       uint8_t tmpBuf[512];
       while (_tcp->connected() && millis() - timeout < 10000) {
         size_t avail = _tcp->available();
-        if (avail == 0) { delay(1); continue; }
+        if (avail == 0) { yield(); delay(1); continue; }
         size_t toRead = (avail > sizeof(tmpBuf)) ? sizeof(tmpBuf) : avail;
         size_t got = _tcp->read(tmpBuf, toRead);
         if (got > 0) {
           body.concat((const char *)tmpBuf, got);
           timeout = millis();
+          esp_task_wdt_reset();
         }
       }
     }
