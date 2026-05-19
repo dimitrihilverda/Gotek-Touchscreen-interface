@@ -121,7 +121,12 @@ bool initWiFiAP() {
 
 // Call from loop() periodically to track client/remote connection state
 unsigned long _lastWifiCheck = 0;
+extern bool boot_skip_wifi;
 void checkWiFiClient() {
+  // Long-press splash override: skip ALL WiFi activity this boot, including
+  // STA / remote dongle reconnect attempts.
+  if (boot_skip_wifi) return;
+
   bool needCheck = (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) ||
                    (cfg_remote_enabled && cfg_remote_ssid.length() > 0);
   if (!needCheck) return;
