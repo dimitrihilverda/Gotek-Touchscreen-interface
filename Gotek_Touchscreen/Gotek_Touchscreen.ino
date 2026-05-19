@@ -69,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.018"
+#define FW_INTERNAL "power-lite.019"
 
 using std::vector;
 using std::sort;
@@ -4732,6 +4732,15 @@ void setup() {
     if (autoloaded) {
       loaded_disk_index = selected_index;
       game_selected = findGameIndex(selected_index);
+      // Populate nowPlaying so "NOW PLAYING" on the list and "Loaded: ..." on
+      // System Info reflect the auto-loaded disk from the very first frame.
+      // Without this, the device shows blank until the user manually inserts
+      // a disk through the UI.
+      nowPlaying.source         = NP_SD;
+      nowPlaying.name           = getGameBaseName(file_list[selected_index]);
+      nowPlaying.path           = file_list[selected_index];
+      nowPlaying.sdIndex        = selected_index;
+      nowPlaying.davFolderIndex = -1;
     }
     sdLog("Auto-loaded: " + file_list[selected_index] + " (" + String(loaded) + " bytes)");
   }
