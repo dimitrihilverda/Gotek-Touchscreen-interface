@@ -70,11 +70,12 @@ extern "C" {
   extern void* ps_malloc(size_t size);
 }
 
-#define FW_VERSION "v0.8.0-WebServer"
+#define FW_VERSION "v0.9.1"
 
-// Internal build tag — bumped every time the firmware is changed on the power-lite
-// branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.020"
+// Internal build tag — bumped every time the firmware is changed so you can
+// confirm you flashed the latest commit. Format mirrors the active branch name
+// (or "release" once a tag is cut).
+#define FW_INTERNAL "release.001"
 
 using std::vector;
 using std::sort;
