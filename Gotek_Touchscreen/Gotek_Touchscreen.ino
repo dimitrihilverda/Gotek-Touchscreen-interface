@@ -97,7 +97,7 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT;
 }
 
-#define FW_VERSION "v0.9.1"
+#define FW_VERSION "v0.9.2"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
