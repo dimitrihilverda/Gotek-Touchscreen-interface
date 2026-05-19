@@ -69,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.015"
+#define FW_INTERNAL "power-lite.016"
 
 using std::vector;
 using std::sort;
@@ -1056,6 +1056,13 @@ bool touchRead(uint16_t *x, uint16_t *y) {
   } else {
     *x = (LCD_HEIGHT - 1) - raw_y;
     *y = raw_x;
+  }
+  // Periodic debug: throttle so we don't drown the serial output during a drag.
+  static unsigned long lastTouchLog = 0;
+  if (millis() - lastTouchLog > 200) {
+    Serial.printf("touch raw=(%d,%d) flip=%d virt=(%d,%d) gW=%d gH=%d ALPHA=%d\n",
+                  raw_x, raw_y, (int)cfg_display_flip, *x, *y, gW, gH, ALPHA_BAR_X);
+    lastTouchLog = millis();
   }
   return true;
 }
