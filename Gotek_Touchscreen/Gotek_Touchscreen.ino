@@ -68,7 +68,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.003"
+#define FW_INTERNAL "power-lite.004"
 
 using std::vector;
 using std::sort;
@@ -2564,9 +2564,10 @@ void hideBusyIndicator() {
 // ============================================================================
 // Info / Status screen
 // ============================================================================
-// Toggle switch Y positions on info screen (for touch detection)
+// Toggle switch hit-zone positions on info screen (set each frame in drawInfoScreen)
 int info_toggle_ap_y = -1;
 int info_toggle_net_y = -1;
+int info_toggle_x    = -1;   // left edge of toggle hit-zone (same for both rows)
 
 // Draw a small toggle switch: [ON] green or [OFF] red
 void drawToggle(int x, int y, bool state) {
@@ -3296,181 +3297,215 @@ void drawDAVDetail() {
   gfx_flush();
 }
 
+// Helper: format milliseconds as H:MM:SS (or M:SS if <1h)
+String formatUptime(uint32_t ms) {
+  uint32_t s = ms / 1000;
+  uint32_t h = s / 3600;
+  uint32_t m = (s / 60) % 60;
+  uint32_t sec = s % 60;
+  char buf[16];
+  if (h > 0) snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu", (unsigned long)h, (unsigned long)m, (unsigned long)sec);
+  else       snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)m, (unsigned long)sec);
+  return String(buf);
+}
+
+// Helper: draw a single key/value row inside a tile at textSize 1.
+// Label is rendered in `labelCol`, value in `valueCol`. y is advanced by the caller.
+static void drawTileRow(int x, int y, const String &label, const String &value,
+                        uint16_t labelCol, uint16_t valueCol) {
+  gfx_setTextSize(1);
+  gfx_setTextColor(labelCol, TFT_BLACK);
+  gfx_setCursor(x, y);
+  gfx_print(label);
+  gfx_setTextColor(valueCol, TFT_BLACK);
+  gfx_print(value);
+}
+
+// Helper: draw a titled tile with a thin accent underline.
+static void drawTile(int x, int y, int w, int h, const char *title, uint16_t accent) {
+  gfx_drawRect(x, y, w, h, WB_MED_GREY);
+  gfx_drawRect(x + 1, y + 1, w - 2, h - 2, 0x18C3);  // inner darker line
+  // Title
+  gfx_setTextSize(1);
+  gfx_setTextColor(accent, TFT_BLACK);
+  gfx_setCursor(x + 8, y + 6);
+  gfx_print(title);
+  // Accent underline below title
+  gfx_fillRect(x + 8, y + 17, 40, 2, accent);
+}
+
 void drawInfoScreen() {
   gfx_fillScreen(TFT_BLACK);
 
-  // Title
+  // ── Header ──
   gfx_setTextColor(TFT_CYAN, TFT_BLACK);
   gfx_setTextSize(2);
-  gfx_setCursor(20, 8);
+  gfx_setCursor(10, 6);
   gfx_print("SYSTEM INFO");
+  // Right-aligned theme indicator
+  gfx_setTextSize(1);
+  gfx_setTextColor(WB_ORANGE, TFT_BLACK);
+  String themeLbl = "Theme: " + cfg_theme;
+  int tlw = gfx_textWidth(themeLbl);
+  gfx_setCursor(gW - tlw - 10, 12);
+  gfx_print(themeLbl);
+  // Header underline
+  gfx_fillRect(10, 28, gW - 20, 1, WB_MED_GREY);
 
-  int y = 35;
-  int lineH = 24;
+  // ── Tile geometry ──
+  // Layout: two columns when wide (>= 400 px), stacked when narrow.
+  int btnAreaH = 42 + 10;         // bottom button row + gap
+  int versionLineH = 12;          // firmware version line above buttons
+  int top    = 36;
+  int bottom = gH - btnAreaH - versionLineH;
+  int margin = 10;
+  int gap    = 8;
+  int tilePad = 8;
 
-  gfx_setTextSize(2);
+  bool twoCol = (gW >= 400);
+  int  tileW  = twoCol ? (gW - 2 * margin - gap) / 2 : (gW - 2 * margin);
+  int  tileH  = twoCol ? (bottom - top)              : (bottom - top - gap) / 2;
 
-  // --- Free heap ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Heap: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_print(String(ESP.getFreeHeap() / 1024) + " KB free");
-  y += lineH;
+  int sysX = margin,                       sysY = top;
+  int netX = twoCol ? (margin + tileW + gap) : margin;
+  int netY = twoCol ? top                    : (top + tileH + gap);
 
-  // --- Free PSRAM ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("PSRAM: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_print(String(ESP.getFreePsram() / 1024) + " KB free");
-  y += lineH;
+  // ── SYSTEM tile ──
+  drawTile(sysX, sysY, tileW, tileH, "SYSTEM", TFT_CYAN);
+  int rowX = sysX + tilePad;
+  int rowY = sysY + 26;
+  int rowH = 11;
+  uint16_t labelCol = WB_MED_GREY;
+  uint16_t valueCol = TFT_WHITE;
 
-  // --- SD card info ---
-  uint64_t totalBytes = SD_MMC.totalBytes();
-  uint64_t usedBytes  = SD_MMC.usedBytes();
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("SD: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_print(String((uint32_t)(usedBytes / (1024*1024))) + " / " +
-            String((uint32_t)(totalBytes / (1024*1024))) + " MB");
-  y += lineH;
+#if ACTIVE_DISPLAY == DISPLAY_JC3248
+  drawTileRow(rowX, rowY, "Display:  ", "JC3248 480x320", labelCol, valueCol); rowY += rowH;
+#elif ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+  drawTileRow(rowX, rowY, "Display:  ", "Waveshare 320x240", labelCol, valueCol); rowY += rowH;
+#endif
+  drawTileRow(rowX, rowY, "CPU:      ", String(getCpuFrequencyMhz()) + " MHz", labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "Backlight:", String(cfg_backlight) + " (" + String((cfg_backlight * 100) / 255) + "%)", labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "Uptime:   ", formatUptime(millis()), labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "Heap:     ", String(ESP.getFreeHeap() / 1024) + " KB free", labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "PSRAM:    ", String(ESP.getFreePsram() / 1024) + " KB free", labelCol, valueCol); rowY += rowH;
 
-  // --- File count ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Files: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_print(String(file_list.size()) + " " +
-            String((g_mode == MODE_ADF) ? "ADF" : "DSK"));
-  y += lineH;
+  // SD info
+  uint64_t totalMB = SD_MMC.totalBytes() / (1024 * 1024);
+  uint64_t usedMB  = SD_MMC.usedBytes()  / (1024 * 1024);
+  drawTileRow(rowX, rowY, "SD:       ", String((uint32_t)usedMB) + " / " + String((uint32_t)totalMB) + " MB", labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "Files:    ", String(file_list.size()) + " " + String(g_mode == MODE_ADF ? "ADF" : "DSK"), labelCol, valueCol); rowY += rowH;
 
-  // --- Currently loaded file (global nowPlaying) ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Loaded: ");
+  // Loaded disk (may wrap; truncate)
+  gfx_setTextSize(1);
+  gfx_setTextColor(labelCol, TFT_BLACK);
+  gfx_setCursor(rowX, rowY);
+  gfx_print("Loaded:   ");
   if (nowPlaying.source != NP_NONE) {
     gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-    gfx_print(nowPlaying.name);
-    gfx_setTextColor(0x7BEF, TFT_BLACK);  // dim grey
-    gfx_print(nowPlaying.source == NP_DAV ? " (DAV)" : " (SD)");
+    int maxChars = (tileW - (gfx_getCursorX() - sysX) - tilePad - 30) / 6;
+    String n = nowPlaying.name;
+    if ((int)n.length() > maxChars) n = n.substring(0, maxChars - 1) + "~";
+    gfx_print(n);
+    gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+    gfx_print(nowPlaying.source == NP_DAV ? " DAV" : " SD");
   } else {
-    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
     gfx_print("(none)");
   }
-  y += lineH;
+  rowY += rowH;
 
-  // --- Display type ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Display: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-#if ACTIVE_DISPLAY == DISPLAY_JC3248
-  gfx_print("JC3248W535C 480x320");
-#elif ACTIVE_DISPLAY == DISPLAY_WAVESHARE
-  gfx_print("Waveshare 320x240");
-#endif
-  y += lineH;
+  // ── NETWORK tile ──
+  uint16_t netAccent = isWiFiActive() ? TFT_GREEN : WB_MED_GREY;
+  drawTile(netX, netY, tileW, tileH, "NETWORK", netAccent);
+  rowX = netX + tilePad;
+  rowY = netY + 26;
+  // All toggles in the NETWORK tile share the same X. Store with slack for fat-finger taps.
+  info_toggle_x = netX + tileW - 50;
 
-  // --- Active theme ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Theme: ");
-  gfx_setTextColor(WB_ORANGE, TFT_BLACK);
-  gfx_print(cfg_theme);
-  y += lineH;
-
-  // --- WiFi AP status + toggle ---
-  info_toggle_ap_y = y;  // store Y for touch detection
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("AP: ");
+  // AP row
+  info_toggle_ap_y = rowY - 2;  // store Y for touch detection (give a few px of slack)
+  drawTileRow(rowX, rowY, "AP:  ", "", labelCol, valueCol);
   if (isWiFiActive()) {
     gfx_setTextColor(TFT_CYAN, TFT_BLACK);
     gfx_print(wifi_ap_ip);
-    gfx_setTextColor(0x7BEF, TFT_BLACK);
-    gfx_print(" (" + String(WiFi.softAPgetStationNum()) + ")");
+  } else if (boot_skip_wifi) {
+    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+    gfx_print("Off (skipped)");
   } else {
-    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
     gfx_print("Off");
   }
-  // Toggle reflects actual runtime state, not config — otherwise after a long-press
-  // splash skip the toggle would still read ON even though the AP is down.
-  drawToggle(gW - 52, y, isWiFiActive());
-  gfx_setTextSize(2);  // restore after drawToggle sets textSize(1)
-  y += lineH;
+  drawToggle(netX + tileW - 44, rowY - 5, isWiFiActive());
+  rowY += rowH + 4;
 
-  // --- Remote dongle / WiFi Client status + toggle ---
-  info_toggle_net_y = y;  // store Y for touch detection
+  // AP clients sub-line (if active)
+  if (isWiFiActive()) {
+    drawTileRow(rowX + 24, rowY, "Clients: ", String(WiFi.softAPgetStationNum()), labelCol, valueCol);
+    rowY += rowH;
+  } else {
+    rowY += rowH;
+  }
+  if (isWiFiActive() && cfg_wifi_ssid.length() > 0) {
+    drawTileRow(rowX + 24, rowY, "SSID:    ", cfg_wifi_ssid, labelCol, valueCol);
+    rowY += rowH;
+  }
+  rowY += 4;
+
+  // Net / Dongle row
+  info_toggle_net_y = rowY - 2;
   if (cfg_remote_enabled) {
-    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-    gfx_setCursor(20, y);
-    gfx_print("Dongle: ");
+    drawTileRow(rowX, rowY, "Dongle: ", "", labelCol, valueCol);
     if (remote_connected) {
-      gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-      gfx_print("Connected");
-      gfx_setTextColor(0x7BEF, TFT_BLACK);
-      gfx_print(" (" + cfg_remote_ssid + ")");
+      gfx_setTextColor(TFT_CYAN, TFT_BLACK); gfx_print("Connected");
     } else {
-      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-      gfx_print("Connecting...");
+      gfx_setTextColor(TFT_YELLOW, TFT_BLACK); gfx_print("Connecting...");
     }
-    drawToggle(gW - 52, y, cfg_remote_enabled);
-    gfx_setTextSize(2);  // restore after drawToggle
-    y += lineH;
-
-    // Show what's loaded on the dongle
+    drawToggle(netX + tileW - 44, rowY - 5, cfg_remote_enabled);
+    rowY += rowH + 4;
+    if (cfg_remote_ssid.length() > 0) {
+      drawTileRow(rowX + 24, rowY, "SSID:    ", cfg_remote_ssid, labelCol, valueCol);
+      rowY += rowH;
+    }
     if (remote_connected && remote_dongle_file.length() > 0) {
-      gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-      gfx_setCursor(20, y);
-      gfx_print("Remote: ");
-      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-      gfx_print(basenameNoExt(remote_dongle_file));
+      drawTileRow(rowX + 24, rowY, "On disk: ", basenameNoExt(remote_dongle_file), labelCol, valueCol);
+      rowY += rowH;
     }
-  }
-  // --- WiFi Client (internet) status ---
-  else {
-    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-    gfx_setCursor(20, y);
-    gfx_print("Net: ");
+  } else {
+    drawTileRow(rowX, rowY, "Net: ", "", labelCol, valueCol);
     if (wifi_sta_connected) {
-      gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-      gfx_print(wifi_sta_ip);
-      gfx_setTextColor(0x7BEF, TFT_BLACK);
-      gfx_print(" (" + cfg_wifi_client_ssid + ")");
+      gfx_setTextColor(TFT_CYAN, TFT_BLACK); gfx_print(wifi_sta_ip);
     } else if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
-      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-      gfx_print("Connecting...");
+      gfx_setTextColor(TFT_YELLOW, TFT_BLACK); gfx_print("Connecting...");
     } else if (cfg_wifi_client_ssid.length() == 0) {
-      gfx_setTextColor(0x7BEF, TFT_BLACK);
-      gfx_print("No SSID (use web UI)");
+      gfx_setTextColor(WB_MED_GREY, TFT_BLACK); gfx_print("No SSID");
     } else {
-      gfx_setTextColor(0x7BEF, TFT_BLACK);
-      gfx_print("Off");
+      gfx_setTextColor(WB_MED_GREY, TFT_BLACK); gfx_print("Off");
     }
-    drawToggle(gW - 52, y, cfg_wifi_client_enabled);
-    gfx_setTextSize(2);  // restore after drawToggle
+    drawToggle(netX + tileW - 44, rowY - 5, cfg_wifi_client_enabled);
+    rowY += rowH + 4;
+    if (cfg_wifi_client_ssid.length() > 0) {
+      drawTileRow(rowX + 24, rowY, "SSID:    ", cfg_wifi_client_ssid, labelCol, valueCol);
+      rowY += rowH;
+    }
   }
 
-  // Firmware version line above the bottom buttons
+  // ── Firmware version centered above bottom buttons ──
   gfx_setTextSize(1);
-  gfx_setTextColor(TFT_DARKGREY, TFT_BLACK);
+  gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
   String buildTag = String(FW_VERSION) + "  /  " + String(FW_INTERNAL);
   int btw = gfx_textWidth(buildTag);
   gfx_setCursor((gW - btw) / 2, gH - 54);
   gfx_print(buildTag);
 
-  // Bottom buttons: BACK + THEME + ADF/DSK — 3 buttons evenly spaced
-  int btnW = (gW - 20 - 2 * 8) / 3;  // 3 buttons, 2 gaps, 10px margin each side
-  int btnH = 36, btnY = gH - 42, gap = 8, marginX = 10;
+  // ── Bottom buttons: BACK + THEME + ADF/DSK ──
+  int btnW = (gW - 20 - 2 * 8) / 3;
+  int btnH = 36, btnY = gH - 42, btnGap = 8, marginX = 10;
   drawThemedButton(marginX,                        btnY, btnW, btnH, "BTN_BACK",    "BACK",    TFT_CYAN);
-  drawThemedButton(marginX + (btnW + gap),         btnY, btnW, btnH, "BTN_THEME",   "THEME",   WB_ORANGE);
-  // ADF/DSK toggle
+  drawThemedButton(marginX + (btnW + btnGap),      btnY, btnW, btnH, "BTN_THEME",   "THEME",   WB_ORANGE);
   if (g_mode == MODE_ADF) {
-    drawThemedButton(marginX + 2 * (btnW + gap),   btnY, btnW, btnH, "BTN_ADF",     "ADF",     TFT_CYAN);
+    drawThemedButton(marginX + 2 * (btnW + btnGap), btnY, btnW, btnH, "BTN_ADF",    "ADF",     TFT_CYAN);
   } else {
-    drawThemedButton(marginX + 2 * (btnW + gap),   btnY, btnW, btnH, "BTN_DSK",     "DSK",     TFT_CYAN);
+    drawThemedButton(marginX + 2 * (btnW + btnGap), btnY, btnW, btnH, "BTN_DSK",    "DSK",     TFT_CYAN);
   }
 
   gfx_flush();
@@ -5180,7 +5215,8 @@ void handleTap(uint16_t px, uint16_t py) {
 
     // WiFi AP toggle tap — decide the new state from what's actually running,
     // not from cfg_wifi_enabled, so a boot-skip override doesn't get out of sync.
-    if (info_toggle_ap_y >= 0 && py >= info_toggle_ap_y && py < info_toggle_ap_y + 20 && px >= gW - 52) {
+    if (info_toggle_ap_y >= 0 && info_toggle_x >= 0 &&
+        py >= info_toggle_ap_y && py < info_toggle_ap_y + 24 && px >= info_toggle_x) {
       bool wantOn = !isWiFiActive();
       cfg_wifi_enabled = wantOn;
       // User explicitly chose — drop the one-boot skip override either way
@@ -5201,7 +5237,8 @@ void handleTap(uint16_t px, uint16_t py) {
     }
 
     // WiFi Client / Remote toggle tap
-    if (info_toggle_net_y >= 0 && py >= info_toggle_net_y && py < info_toggle_net_y + 20 && px >= gW - 52) {
+    if (info_toggle_net_y >= 0 && info_toggle_x >= 0 &&
+        py >= info_toggle_net_y && py < info_toggle_net_y + 24 && px >= info_toggle_x) {
       if (cfg_remote_enabled) {
         // Toggle remote dongle connection
         cfg_remote_enabled = !cfg_remote_enabled;
