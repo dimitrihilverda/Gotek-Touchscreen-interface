@@ -43,6 +43,92 @@ Goal: Lower idle current and reduce average draw once running.
 - Increase DTIM interval (`esp_wifi_set_inactive_time`) so radio sleeps longer.
 - Optional: turn backlight off after N seconds idle, wake on touch.
 
+## Spoor 5 — On-device WiFi setup (plug-and-play network onboarding)
+
+Goal: get the device on the user's LAN without the current phone-juggling flow
+(connect phone to AP → lose internet → navigate to 192.168.4.1 → enter credentials →
+disconnect → hunt for new LAN IP). The device is a touchscreen — let it do the work.
+
+### Why the current flow is bad
+1. Phone has to drop its own internet to talk to the device's AP.
+2. User has to type credentials on a captive-portal-style page that they reached
+   via an IP address they had to remember.
+3. After save, the user has no easy way to find the device's new LAN IP.
+4. WebDAV/FTP usage then requires that LAN IP, manually entered.
+
+### Approach (recommended): A + D
+
+**A. On-device scan + on-screen keyboard** (the headline feature)
+
+- New screen `SCR_WIFI_SETUP`, reached from a `[WIFI]` button on System Info.
+- Layout:
+  - Header: "WiFi Setup" + `[SCAN]` button.
+  - Scrollable list of nearby SSIDs from `WiFi.scanNetworks(false, true)`:
+    - SSID name (truncated if long)
+    - Signal-strength bars (4 levels from RSSI)
+    - Lock icon for WPA/WPA2 networks
+    - Tick mark on the currently configured SSID
+  - Tap an SSID → password modal with on-screen keyboard.
+- Keyboard:
+  - QWERTY layout, 4 rows × ~10 keys (each ~44 px on JC3248).
+  - Shift, backspace, space, symbols (`@`, `_`, `!`, `.`, `-`, digits row at top).
+  - Show entered chars (`*` masked by default, eye toggle for show/hide).
+  - `[CONNECT]` and `[CANCEL]` buttons.
+- On `[CONNECT]`:
+  - `WiFi.begin(ssid, pass)` in `WIFI_AP_STA` mode (keep AP up for fallback).
+  - Status screen with spinner: "Connecting to <SSID>…" + timeout (~15 s).
+  - Success: show assigned IP + `gotek.local` hostname + QR code with `http://gotek.local/`.
+  - Failure: red banner, return to keyboard with password prefilled for retry.
+- On success: persist `WIFI_CLIENT_SSID` / `WIFI_CLIENT_PASS` / `WIFI_CLIENT_ENABLED=1`
+  to CONFIG.TXT so it auto-reconnects on next boot.
+
+**D. mDNS** (do this no matter what)
+
+- `MDNS.begin("gotek")` + `MDNS.addService("http", "tcp", 80)` after STA connect.
+- Apple/Android/Win11 resolve `gotek.local` natively on most LANs.
+- Eliminates "find the new IP" step entirely.
+- ~5 lines of code.
+
+### Optional bonus
+
+**B. WPS push-button** — small icon on the WiFi Setup screen labelled `[WPS]`.
+`WiFi.beginWPSConfig()`. One tap on the router's WPS button + one tap on the
+device. Works on routers that still support WPS; harmless to ship even if
+many users can't use it.
+
+### Skipped
+
+**C. Captive portal smoothing** — Not worth the maintenance. Replaced by A.
+
+### Open design questions
+
+1. Password show/hide toggle, or always masked? (Eye icon recommended.)
+2. Symbols set: alphanumeric only, or full keyboard with `@`, `!`, `.`, `_`, `-`, `+`,
+   `=`, `#`, etc.? Most real-world WPA passwords need at least some.
+3. Length: support 63-char WPA passwords without horizontal scrolling — render
+   in a wrap-aware text field.
+4. After successful connect: show a QR code encoding `http://gotek.local/` so
+   the user can jump straight from their phone to the WebDAV UI on the same
+   LAN without typing.
+5. Should the AP stay up forever after STA connect, or auto-disable after N
+   minutes to save power (Spoor 3 territory)? Probably keep it as a fallback
+   in case STA drops.
+
+### Effort
+
+- A alone: ~1–1.5 days of UI work (keyboard is the bulk).
+- D: 1 hour, drop-in.
+- B: 2 hours.
+- Total: ~2 days well-spent, eliminates the worst part of the current UX.
+
+### Dependencies
+
+- Belongs in the Full build only — Lite ships with no WiFi at all (Spoor 1).
+- Stack with Spoor 1 carefully: WiFi-setup screen and keyboard must live under
+  the same `#ifdef ENABLE_WIFI` guard.
+
+---
+
 ## Spoor 4 — Browser-based flasher
 
 Goal: User plugs in their device, opens `dimitrihilverda.<tld>/gotek-flash`, picks a variant, clicks Flash.
@@ -56,18 +142,20 @@ Goal: User plugs in their device, opens `dimitrihilverda.<tld>/gotek-flash`, pic
 
 ## Order of work
 
-| Spoor | Effort | Brownout impact |
-|-------|--------|-----------------|
-| 2     | ~½ day | High — fastest validation |
-| 1     | ~1 day | Total (Lite has no WiFi at all) |
-| 3     | ~½ day | Low–medium, mostly idle current |
-| 4     | ~1 day | None (UX) |
+| Spoor | Effort  | Brownout impact | Notes |
+|-------|---------|-----------------|-------|
+| 2     | ~½ day  | High            | Fastest validation; done |
+| 1     | ~1 day  | Total           | Lite has no WiFi at all |
+| 3     | ~½ day  | Low–medium      | Idle current, no regression |
+| 5     | ~2 days | None (UX)       | On-device WiFi setup + mDNS |
+| 4     | ~1 day  | None (UX)       | Browser-based flasher |
 
-Spoor 2 first → measure → Spoor 1 → 3 and 4 in parallel.
+Spoor 2 first → measure → Spoor 1 → 3, 4, 5 prioritised by user demand.
 
 ## Verification
 
 - Spoor 2: device boots reliably with WiFi enabled on the Amiga. Confirm with the user (and ideally a USB current meter).
 - Spoor 1: Lite binary contains no WiFi symbols (`nm` / `arduino-cli` size report); device powers up to SD browser without ever radiating.
 - Spoor 3: `esp_pm_dump_locks` or simply observing idle current drop; no functional regression.
+- Spoor 5: scan finds the home network, on-screen keyboard accepts a 63-char WPA password, device reports the new LAN IP and `gotek.local` resolves from a phone on the same LAN.
 - Spoor 4: end-to-end flash of an ESP32-S3 dev board from the page.
