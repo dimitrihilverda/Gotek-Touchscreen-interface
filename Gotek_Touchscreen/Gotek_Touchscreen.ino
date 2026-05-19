@@ -68,7 +68,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.006"
+#define FW_INTERNAL "power-lite.007"
 
 using std::vector;
 using std::sort;
@@ -2199,8 +2199,16 @@ void drawThemedButton(int x, int y, int w, int h,
 
   // Always overlay the label so themes don't have to bake text into the artwork.
   if (label && label[0] != '\0') {
-    gfx_setTextSize(2);
+    // Auto-shrink: try textSize 2 first; if the label is wider than the button
+    // (minus 6 px padding on each side) drop to textSize 1.
+    int tsize = 2;
+    gfx_setTextSize(tsize);
     int tw = gfx_textWidth(String(label));
+    if (tw > w - 12) {
+      tsize = 1;
+      gfx_setTextSize(tsize);
+      tw = gfx_textWidth(String(label));
+    }
     int th = gfx_fontHeight();
     int tx = x + (w - tw) / 2;
     int ty = y + (h - th) / 2;
@@ -5321,7 +5329,23 @@ void handleTap(uint16_t px, uint16_t py) {
         return;
       }
       if (hitBtn(px, py, imx + (ibtnW + igap), ibtnY, ibtnW, 36)) {
+        String prev = cfg_theme;
         cycleTheme();
+        Serial.println("THEME tap: " + prev + " -> " + cfg_theme +
+                       " (theme_list size=" + String(theme_list.size()) + ")");
+        // Visual confirmation: brief banner just above the buttons so the user
+        // can see the tap registered even when only one theme is installed.
+        gfx_setTextSize(2);
+        gfx_setTextColor(WB_ORANGE, TFT_BLACK);
+        String msg = (prev == cfg_theme)
+                       ? "Only theme: " + cfg_theme
+                       : "Theme: " + cfg_theme;
+        int mw = gfx_textWidth(msg);
+        gfx_fillRect(0, gH - 78, gW, 22, TFT_BLACK);
+        gfx_setCursor((gW - mw) / 2, gH - 74);
+        gfx_print(msg);
+        gfx_flush();
+        delay(700);
         drawInfoScreen();
         return;
       }
