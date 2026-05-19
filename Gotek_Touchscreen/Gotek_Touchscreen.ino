@@ -69,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.013"
+#define FW_INTERNAL "power-lite.014"
 
 using std::vector;
 using std::sort;
@@ -3603,6 +3603,12 @@ void drawInfoScreen() {
       drawTileRow(rowX + 24, rowY, "SSID:    ", cfg_wifi_client_ssid, labelCol, valueCol);
       rowY += rowH;
     }
+    // Show the mDNS hostname when connected — saves the user from memorising
+    // a dynamic LAN IP and works without DNS shenanigans on most home networks.
+    if (wifi_sta_connected) {
+      drawTileRow(rowX + 24, rowY, "URL:     ", "gotek.local", labelCol, TFT_CYAN);
+      rowY += rowH;
+    }
   }
 
   // ── Firmware version centered above bottom buttons ──
@@ -4007,16 +4013,27 @@ void drawDetailsFromNFO(const String &filename) {
     drawThemedButton(detBtn2X, btnTop, detBtnW, detBtnH, "BTN_LOAD", "INSERT", TFT_GREEN);
   }
 
-  // Loaded status indicator at top-right
+  // Loaded status indicator at top-right.
+  // - If THIS game is loaded → green [LOADED] tag.
+  // - If ANOTHER game is loaded → show its name in dim grey so the user knows
+  //   what they'd be replacing if they tap INSERT (clearer than the old [OTHER]
+  //   tag which didn't say which one).
   if (loaded_disk_index >= 0) {
     gfx_setTextSize(1);
-    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-    gfx_setCursor(gW - 80, 4);
     if (isCurrentLoaded) {
+      gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+      gfx_setCursor(gW - 80, 4);
       gfx_print("[LOADED]");
-    } else {
-      gfx_setTextColor(TFT_DARKGREY, TFT_BLACK);
-      gfx_print("[OTHER]");
+    } else if (nowPlaying.source != NP_NONE && nowPlaying.name.length() > 0) {
+      gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+      String msg = "Loaded: " + nowPlaying.name;
+      // Truncate to fit (rough 6 px per char at textSize 1, leave 4 px margin)
+      int maxW = gW - 8;
+      while ((int)gfx_textWidth(msg) > maxW && msg.length() > 8) {
+        msg = msg.substring(0, msg.length() - 2) + "~";
+      }
+      gfx_setCursor(gW - gfx_textWidth(msg) - 4, 4);
+      gfx_print(msg);
     }
   }
 
