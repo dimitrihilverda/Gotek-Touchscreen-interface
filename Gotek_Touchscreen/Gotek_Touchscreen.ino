@@ -29,6 +29,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <ESPmDNS.h>
 
 #include "default_theme.h"
 
@@ -65,6 +66,10 @@ extern "C" {
 }
 
 #define FW_VERSION "v0.8.0-WebServer"
+
+// Internal build tag — bumped every time the firmware is changed on the power-lite
+// branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
+#define FW_INTERNAL "power-lite.020"
 
 using std::vector;
 using std::sort;
@@ -399,6 +404,24 @@ bool   cfg_dav_https   = true;
 // Logging config — write step-by-step log to SD card for debugging
 bool   cfg_log_enabled = false;
 
+// Backlight (0..255). Lower default reduces current draw on USB-powered Amiga 5V rail.
+// Can be raised after boot in the settings UI once power has stabilised.
+uint8_t cfg_backlight = 140;
+
+// Hardware panel orientation differs between Gotek board revisions / displays.
+// If the picture is upside-down, set DISPLAY_FLIP=1 in CONFIG.TXT or toggle from
+// the System Info screen. The flip applies to both rendering and touch.
+bool cfg_display_flip = false;
+
+// Forward declarations for symbols defined in headers included near the end of
+// this .ino but called from functions defined earlier (drawList, etc).
+bool drawThumb(int x, int y, const String &sourcePath);
+void clearThumbCache();
+
+// Set to true by a long-press during the splash screen — disables WiFi for this boot
+// without touching CONFIG.TXT. Escape hatch when the device browns out with WiFi on.
+bool boot_skip_wifi = false;
+
 // Remote dongle config — send disk images to a WiFi Dongle instead of local USB
 bool   cfg_remote_enabled  = false;
 String cfg_remote_ssid     = "Gotek-Dongle";   // dongle's WiFi AP name
@@ -531,17 +554,31 @@ static inline uint16_t swap16(uint16_t c) {
   return (c >> 8) | (c << 8);
 }
 
-// Software rotation: virtual landscape (480x320) → physical portrait (320x480)
-// 90° CCW: physical_x = virtual_y, physical_y = (LCD_HEIGHT-1) - virtual_x
+// Software rotation: virtual landscape (480x320) → physical portrait (320x480).
+//   cfg_display_flip = false : 90° CCW  (px = vy,                  py = LCD_HEIGHT-1 - vx)
+//   cfg_display_flip = true  : 90° CW   (px = LCD_WIDTH-1 - vy,    py = vx)
+// Driven by CONFIG.TXT DISPLAY_FLIP and the System Info "Flip display" toggle.
 static inline void fb_setPixel(int vx, int vy, uint16_t color) {
-  int px = vy;
-  int py = (LCD_HEIGHT - 1) - vx;
+  int px, py;
+  if (cfg_display_flip) {
+    px = (LCD_WIDTH - 1) - vy;
+    py = vx;
+  } else {
+    px = vy;
+    py = (LCD_HEIGHT - 1) - vx;
+  }
   framebuffer[py * LCD_WIDTH + px] = swap16(color);
 }
 
 static inline uint16_t fb_getPixel(int vx, int vy) {
-  int px = vy;
-  int py = (LCD_HEIGHT - 1) - vx;
+  int px, py;
+  if (cfg_display_flip) {
+    px = (LCD_WIDTH - 1) - vy;
+    py = vx;
+  } else {
+    px = vy;
+    py = (LCD_HEIGHT - 1) - vx;
+  }
   return swap16(framebuffer[py * LCD_WIDTH + px]);
 }
 
@@ -568,11 +605,23 @@ void gfx_fillRect(int x, int y, int w, int h, uint16_t color) {
   int vy1 = (y + h > gH) ? gH : y + h;
   if (vx0 >= vx1 || vy0 >= vy1) return;
 
-  // Iterate in physical row order for cache efficiency
-  int px0 = vy0;
-  int px1 = vy1 - 1;
-  int py0 = LCD_HEIGHT - vx1;
-  int py1 = LCD_HEIGHT - 1 - vx0;
+  // Iterate in physical row order for cache efficiency. The rotation maps a
+  // virtual rect to a physical rect in both orientations — pick the bounds
+  // for whichever mode is active.
+  int px0, px1, py0, py1;
+  if (cfg_display_flip) {
+    // 90° CW: px = LCD_WIDTH-1 - vy, py = vx
+    px0 = LCD_WIDTH - vy1;
+    px1 = LCD_WIDTH - 1 - vy0;
+    py0 = vx0;
+    py1 = vx1 - 1;
+  } else {
+    // 90° CCW: px = vy, py = LCD_HEIGHT-1 - vx
+    px0 = vy0;
+    px1 = vy1 - 1;
+    py0 = LCD_HEIGHT - vx1;
+    py1 = LCD_HEIGHT - 1 - vx0;
+  }
 
   uint16_t sc = swap16(color);
   for (int py = py0; py <= py1; py++) {
@@ -949,18 +998,36 @@ void displayInit() {
   delay(200);
 
   ledcAttach(LCD_PIN_BL, 5000, 8);
-  ledcWrite(LCD_PIN_BL, 200);
+  ledcWrite(LCD_PIN_BL, 0);   // start dark — rampBacklight() will fade in after first frame
+}
+
+void setBacklight(uint8_t level) {
+  ledcWrite(LCD_PIN_BL, level);
 }
 
 #elif ACTIVE_DISPLAY == DISPLAY_WAVESHARE
 
 void displayInit() {
   lcd.init();
-  lcd.setRotation(1);
-  lcd.setBrightness(200);
+  lcd.setRotation(cfg_display_flip ? 3 : 1);   // 1 = landscape, 3 = landscape flipped
+  lcd.setBrightness(0);       // start dark — rampBacklight() will fade in
+}
+
+void setBacklight(uint8_t level) {
+  lcd.setBrightness(level);
 }
 
 #endif
+
+// Smooth ramp from current level to `target` over ~300 ms. Spreads inrush so that
+// backlight + WiFi TX + USB enumeration don't all spike on the 5V rail simultaneously.
+void rampBacklight(uint8_t target) {
+  const int steps = 30;
+  for (int i = 1; i <= steps; ++i) {
+    setBacklight((uint8_t)((uint32_t)target * i / steps));
+    delay(10);
+  }
+}
 
 // ============================================================================
 // TOUCH INTERFACE (Backend-specific)
@@ -986,9 +1053,15 @@ bool touchRead(uint16_t *x, uint16_t *y) {
   uint16_t raw_y = ((buf[4] & 0x0F) << 8) | buf[5];
   // Validate: physical screen is 320x480, reject garbage data
   if (raw_x >= LCD_WIDTH || raw_y >= LCD_HEIGHT) return false;
-  // Rotate touch: physical portrait → virtual landscape
-  *x = (LCD_HEIGHT - 1) - raw_y;
-  *y = raw_x;
+  // Rotate touch to match the active display orientation.
+  if (cfg_display_flip) {
+    // 90° CW display: virtual_x = raw_y, virtual_y = LCD_WIDTH-1 - raw_x
+    *x = raw_y;
+    *y = (LCD_WIDTH - 1) - raw_x;
+  } else {
+    *x = (LCD_HEIGHT - 1) - raw_y;
+    *y = raw_x;
+  }
   return true;
 }
 
@@ -1101,6 +1174,13 @@ void loadConfig() {
       cfg_dav_https = (val == "1" || val == "true");
     } else if (key == "LOG_ENABLED") {
       cfg_log_enabled = (val == "1" || val == "true");
+    } else if (key == "BACKLIGHT") {
+      int v = val.toInt();
+      if (v < 10) v = 10;       // never fully off — would look like a hang
+      if (v > 255) v = 255;
+      cfg_backlight = (uint8_t)v;
+    } else if (key == "DISPLAY_FLIP") {
+      cfg_display_flip = (val == "1" || val == "true");
     }
   }
   f.close();
@@ -1124,6 +1204,8 @@ void saveConfig() {
     f.println("LASTMODE=" + cfg_lastmode);
   }
   f.println("THEME=" + cfg_theme);
+  f.println("BACKLIGHT=" + String(cfg_backlight));
+  f.println("DISPLAY_FLIP=" + String(cfg_display_flip ? "1" : "0"));
 
   // WiFi settings
   f.println("WIFI_ENABLED=" + String(cfg_wifi_enabled ? "1" : "0"));
@@ -2134,33 +2216,45 @@ bool getPngSize(const char *path, int *w, int *h) {
   return (*w > 0 && *h > 0);
 }
 
-// Draw a themed button: try PNG from /THEME/, fallback to simple rect+text.
+// Draw a themed button: PNG from /THEME/ + label text overlaid, or simple
+// rect+text fallback when the PNG is missing. The label is always rendered on
+// top so themes can ship decoration-only artwork without losing legibility.
 void drawThemedButton(int x, int y, int w, int h,
                       const char *pngName, const char *label,
                       uint16_t borderColor) {
   String path = theme_path + "/" + String(pngName) + ".png";
 
   int imgW = 0, imgH = 0;
-  if (getPngSize(path.c_str(), &imgW, &imgH)) {
-    // Center the PNG within the button area
+  bool hasPng = getPngSize(path.c_str(), &imgW, &imgH);
+
+  if (hasPng) {
+    // Themes ship buttons with the label baked into the artwork, so don't
+    // overlay anything when a PNG is present.
     int bx = x + (w - imgW) / 2;
     int by = y + (h - imgH) / 2;
 #if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
-    // Clip to button bounds so oversized PNGs don't bleed outside (Waveshare only)
     lcd.setClipRect(x, y, w, h);
     drawPngFile(path.c_str(), bx, by);
     lcd.clearClipRect();
 #else
     drawPngFile(path.c_str(), bx, by);
 #endif
-  } else {
-    // Fallback: filled rectangle with border and text
-    gfx_fillRect(x, y, w, h, TFT_BLACK);
-    gfx_drawRect(x, y, w, h, borderColor);
-    gfx_setTextColor(borderColor, TFT_BLACK);
+    return;
+  }
+
+  // Fallback: plain rect + label text. Auto-shrink size 2 -> 1 if the label is
+  // wider than the button (minus 6 px padding each side).
+  gfx_fillRect(x, y, w, h, TFT_BLACK);
+  gfx_drawRect(x, y, w, h, borderColor);
+  if (label && label[0] != '\0') {
     gfx_setTextSize(2);
     int tw = gfx_textWidth(String(label));
+    if (tw > w - 12) {
+      gfx_setTextSize(1);
+      tw = gfx_textWidth(String(label));
+    }
     int th = gfx_fontHeight();
+    gfx_setTextColor(borderColor, TFT_BLACK);
     gfx_setCursor(x + (w - tw) / 2, y + (h - th) / 2);
     gfx_print(String(label));
   }
@@ -2204,7 +2298,7 @@ void drawCracktroSplash() {
     "WEBDAV STREAMING - WIFI WEB INTERFACE - THEME ENGINE - FAT12 RAM DISK  ...  "
     "GREETINGS TO THE GREENFORD COMPUTER CLUB (GCC) AND ALL RETRO COMPUTING ENTHUSIASTS!  ...  "
     "KEEP THE SCENE ALIVE  ...  OMEGAWARE 2026  *  "
-    "TAP SCREEN TO CONTINUE  ...       ";
+    "TAP SCREEN TO CONTINUE  -  HOLD 2 SEC TO BOOT WITHOUT WIFI  ...       ";
   int scrollLen = strlen(scrollText);
   int scrollPos = 0;
   int charW = 12;  // textSize 2 = 12px per char
@@ -2229,9 +2323,52 @@ void drawCracktroSplash() {
   while (true) {
     uint16_t tx, ty;
     if (touchRead(&tx, &ty)) {
-      // Wait for release before continuing
+      // FLIP button (top-right, 76×24) — invert display orientation + persist.
+      // Handled before the continue-tap so users with an upside-down panel can
+      // recover without going through any other screen.
+      int fbtnW = 76, fbtnH = 24;
+      int fbtnX = gW - fbtnW - 6, fbtnY = 6;
+      if (tx >= fbtnX && tx < fbtnX + fbtnW && ty >= fbtnY && ty < fbtnY + fbtnH) {
+        cfg_display_flip = !cfg_display_flip;
+        saveConfig();
+        Serial.println("Display flipped: cfg_display_flip=" + String(cfg_display_flip));
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+        lcd.setRotation(cfg_display_flip ? 3 : 1);
+#endif
+        // Wait for finger release so we don't immediately re-trigger
+        while (touchRead(&tx, &ty)) delay(10);
+        continue;       // back to top of main render loop, now in new orientation
+      }
+
+      // Measure hold duration robustly. Touch controller can briefly drop reads
+      // (jitter) while the user is still pressing — so we don't exit on a single
+      // false reading. Release is debounced: needs 50 ms of consecutive no-touch
+      // before we believe the finger lifted. A hold of >= 2 s sets boot_skip_wifi
+      // and shows visual feedback so the user knows it registered.
       unsigned long tapStart = millis();
-      while (touchRead(&tx, &ty) && millis() - tapStart < 1000) delay(10);
+      int releaseFrames = 0;
+      bool flagged = false;
+      while (millis() - tapStart < 5000) {
+        if (touchRead(&tx, &ty)) {
+          releaseFrames = 0;
+          if (!flagged && millis() - tapStart >= 2000) {
+            boot_skip_wifi = true;
+            flagged = true;
+            // Confirm to the user visually — pre-flush message at the bottom
+            const char *msg = "* WIFI WILL BE SKIPPED *";
+            gfx_setTextSize(2);
+            gfx_fillRect(0, gH - 30, gW, 24, TFT_BLACK);
+            gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+            gfx_setCursor((gW - gfx_textWidth(msg)) / 2, gH - 24);
+            gfx_print(msg);
+            gfx_flush();
+          }
+        } else {
+          releaseFrames++;
+          if (releaseFrames >= 5) break;  // 50 ms of no-touch = real release
+        }
+        delay(10);
+      }
       break;
     }
 
@@ -2392,6 +2529,22 @@ void drawCracktroSplash() {
       gfx_print(String(buf));
     }
 
+    // Small "FLIP" button top-right — for users whose hardware mounts the
+    // panel upside-down. Tapping it inverts the display orientation and
+    // persists the choice to CONFIG.TXT.
+    {
+      int fbtnW = 76, fbtnH = 24;
+      int fbtnX = gW - fbtnW - 6, fbtnY = 6;
+      gfx_fillRect(fbtnX, fbtnY, fbtnW, fbtnH, 0x10A2);
+      gfx_drawRect(fbtnX, fbtnY, fbtnW, fbtnH, TFT_CYAN);
+      gfx_setTextSize(1);
+      gfx_setTextColor(TFT_CYAN, 0x10A2);
+      const char *flipMsg = "FLIP 180";
+      int fmw = gfx_textWidth(flipMsg);
+      gfx_setCursor(fbtnX + (fbtnW - fmw) / 2, fbtnY + (fbtnH - 8) / 2);
+      gfx_print(flipMsg);
+    }
+
     gfx_flush();
 #endif
 
@@ -2456,6 +2609,14 @@ void drawBootScreen() {
   gfx_setCursor((gW - gfx_textWidth(t)) / 2, 120);
   gfx_print(t);
 
+  // Internal build tag, small, bottom-right — quick visual check the flash worked
+  gfx_setTextSize(1);
+  gfx_setTextColor(TFT_DARKGREY, TFT_BLACK);
+  String buildTag = String(FW_VERSION) + " / " + String(FW_INTERNAL);
+  int bw = gfx_textWidth(buildTag);
+  gfx_setCursor(gW - bw - 4, gH - 12);
+  gfx_print(buildTag);
+
   gfx_flush();
 }
 
@@ -2494,9 +2655,18 @@ void hideBusyIndicator() {
 // ============================================================================
 // Info / Status screen
 // ============================================================================
-// Toggle switch Y positions on info screen (for touch detection)
+// Toggle switch hit-zone positions on info screen (set each frame in drawInfoScreen)
 int info_toggle_ap_y = -1;
 int info_toggle_net_y = -1;
+int info_toggle_x    = -1;   // left edge of toggle hit-zone (same for both rows)
+int info_flip_x      = -1;   // FLIP-display button bottom-right of SYSTEM tile
+int info_flip_y      = -1;
+int info_flip_w      = -1;
+int info_flip_h      = -1;
+int info_clear_x     = -1;   // Clear-thumb-cache button bottom-left of SYSTEM tile
+int info_clear_y     = -1;
+int info_clear_w     = -1;
+int info_clear_h     = -1;
 
 // Draw a small toggle switch: [ON] green or [OFF] red
 void drawToggle(int x, int y, bool state) {
@@ -2527,8 +2697,15 @@ void drawToggle(int x, int y, bool state) {
 #define LIST_BOTTOM    (gH - 48)
 #endif
 #ifndef ALPHA_BAR_W
-#define ALPHA_BAR_W  16       // width of the alphabet strip
-#define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
+#define ALPHA_BAR_W      16   // visual width of the alphabet strip
+#define ALPHA_BAR_X      (gW - ALPHA_BAR_W)
+// Touch hit-zone is wider than the visual strip: some touch panels have a
+// dead zone or reduced range near the panel edge, which in flipped display
+// mode maps onto exactly the area where the alphabet bar lives. Widening
+// the hit zone lets the user reach the bar even when raw_y can't quite
+// reach LCD_HEIGHT-1.
+#define ALPHA_HIT_W      40
+#define ALPHA_HIT_X      (gW - ALPHA_HIT_W)
 #endif
 
 // ============================================================================
@@ -3226,172 +3403,264 @@ void drawDAVDetail() {
   gfx_flush();
 }
 
+// Helper: format milliseconds as H:MM:SS (or M:SS if <1h)
+String formatUptime(uint32_t ms) {
+  uint32_t s = ms / 1000;
+  uint32_t h = s / 3600;
+  uint32_t m = (s / 60) % 60;
+  uint32_t sec = s % 60;
+  char buf[16];
+  if (h > 0) snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu", (unsigned long)h, (unsigned long)m, (unsigned long)sec);
+  else       snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)m, (unsigned long)sec);
+  return String(buf);
+}
+
+// Helper: draw a single key/value row inside a tile at textSize 1.
+// Label is rendered in `labelCol`, value in `valueCol`. y is advanced by the caller.
+static void drawTileRow(int x, int y, const String &label, const String &value,
+                        uint16_t labelCol, uint16_t valueCol) {
+  gfx_setTextSize(1);
+  gfx_setTextColor(labelCol, TFT_BLACK);
+  gfx_setCursor(x, y);
+  gfx_print(label);
+  gfx_setTextColor(valueCol, TFT_BLACK);
+  gfx_print(value);
+}
+
+// Helper: draw a titled tile with a thin accent underline.
+static void drawTile(int x, int y, int w, int h, const char *title, uint16_t accent) {
+  gfx_drawRect(x, y, w, h, WB_MED_GREY);
+  gfx_drawRect(x + 1, y + 1, w - 2, h - 2, 0x18C3);  // inner darker line
+  // Title
+  gfx_setTextSize(1);
+  gfx_setTextColor(accent, TFT_BLACK);
+  gfx_setCursor(x + 8, y + 6);
+  gfx_print(title);
+  // Accent underline below title
+  gfx_fillRect(x + 8, y + 17, 40, 2, accent);
+}
+
 void drawInfoScreen() {
   gfx_fillScreen(TFT_BLACK);
 
-  // Title
+  // ── Header ──
   gfx_setTextColor(TFT_CYAN, TFT_BLACK);
   gfx_setTextSize(2);
-  gfx_setCursor(20, 8);
+  gfx_setCursor(10, 6);
   gfx_print("SYSTEM INFO");
+  // Right-aligned theme indicator
+  gfx_setTextSize(1);
+  gfx_setTextColor(WB_ORANGE, TFT_BLACK);
+  String themeLbl = "Theme: " + cfg_theme;
+  int tlw = gfx_textWidth(themeLbl);
+  gfx_setCursor(gW - tlw - 10, 12);
+  gfx_print(themeLbl);
+  // Header underline
+  gfx_fillRect(10, 28, gW - 20, 1, WB_MED_GREY);
 
-  int y = 35;
-  int lineH = 24;
+  // ── Tile geometry ──
+  // Layout: two columns when wide (>= 400 px), stacked when narrow.
+  int btnAreaH = 42 + 10;         // bottom button row + gap
+  int versionLineH = 12;          // firmware version line above buttons
+  int top    = 36;
+  int bottom = gH - btnAreaH - versionLineH;
+  int margin = 10;
+  int gap    = 8;
+  int tilePad = 8;
 
-  gfx_setTextSize(2);
+  bool twoCol = (gW >= 400);
+  int  tileW  = twoCol ? (gW - 2 * margin - gap) / 2 : (gW - 2 * margin);
+  int  tileH  = twoCol ? (bottom - top)              : (bottom - top - gap) / 2;
 
-  // --- Free heap ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Heap: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_print(String(ESP.getFreeHeap() / 1024) + " KB free");
-  y += lineH;
+  int sysX = margin,                       sysY = top;
+  int netX = twoCol ? (margin + tileW + gap) : margin;
+  int netY = twoCol ? top                    : (top + tileH + gap);
 
-  // --- Free PSRAM ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("PSRAM: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_print(String(ESP.getFreePsram() / 1024) + " KB free");
-  y += lineH;
+  // ── SYSTEM tile ──
+  drawTile(sysX, sysY, tileW, tileH, "SYSTEM", TFT_CYAN);
+  int rowX = sysX + tilePad;
+  int rowY = sysY + 26;
+  int rowH = 11;
+  uint16_t labelCol = WB_MED_GREY;
+  uint16_t valueCol = TFT_WHITE;
 
-  // --- SD card info ---
-  uint64_t totalBytes = SD_MMC.totalBytes();
-  uint64_t usedBytes  = SD_MMC.usedBytes();
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("SD: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_print(String((uint32_t)(usedBytes / (1024*1024))) + " / " +
-            String((uint32_t)(totalBytes / (1024*1024))) + " MB");
-  y += lineH;
+  // Bottom-row utility buttons inside the SYSTEM tile:
+  //   • "Clear cache" bottom-left  — wipes the cover-thumbnail cache
+  //   • "Flip 180"   bottom-right  — toggles display orientation
+  info_flip_w  = 60; info_flip_h  = 18;
+  info_flip_x  = sysX + tileW - info_flip_w - 6;
+  info_flip_y  = sysY + tileH - info_flip_h - 6;
+  info_clear_w = 78; info_clear_h = 18;
+  info_clear_x = sysX + 6;
+  info_clear_y = sysY + tileH - info_clear_h - 6;
 
-  // --- File count ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Files: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_print(String(file_list.size()) + " " +
-            String((g_mode == MODE_ADF) ? "ADF" : "DSK"));
-  y += lineH;
+  gfx_fillRect(info_clear_x, info_clear_y, info_clear_w, info_clear_h, 0x10A2);
+  gfx_drawRect(info_clear_x, info_clear_y, info_clear_w, info_clear_h, WB_ORANGE);
+  gfx_setTextSize(1);
+  gfx_setTextColor(WB_ORANGE, 0x10A2);
+  {
+    const char *msg = "Clear cache";
+    int mw = gfx_textWidth(msg);
+    gfx_setCursor(info_clear_x + (info_clear_w - mw) / 2, info_clear_y + (info_clear_h - 8) / 2);
+    gfx_print(msg);
+  }
 
-  // --- Currently loaded file (global nowPlaying) ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Loaded: ");
+  gfx_fillRect(info_flip_x, info_flip_y, info_flip_w, info_flip_h, 0x10A2);
+  gfx_drawRect(info_flip_x, info_flip_y, info_flip_w, info_flip_h, TFT_CYAN);
+  gfx_setTextSize(1);
+  gfx_setTextColor(TFT_CYAN, 0x10A2);
+  {
+    const char *flipMsg = cfg_display_flip ? "Flip: ON" : "Flip 180";
+    int fw = gfx_textWidth(flipMsg);
+    gfx_setCursor(info_flip_x + (info_flip_w - fw) / 2, info_flip_y + (info_flip_h - 8) / 2);
+    gfx_print(flipMsg);
+  }
+
+#if ACTIVE_DISPLAY == DISPLAY_JC3248
+  drawTileRow(rowX, rowY, "Display:  ", "JC3248 480x320", labelCol, valueCol); rowY += rowH;
+#elif ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+  drawTileRow(rowX, rowY, "Display:  ", "Waveshare 320x240", labelCol, valueCol); rowY += rowH;
+#endif
+  drawTileRow(rowX, rowY, "CPU:      ", String(getCpuFrequencyMhz()) + " MHz", labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "Backlight:", String(cfg_backlight) + " (" + String((cfg_backlight * 100) / 255) + "%)", labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "Uptime:   ", formatUptime(millis()), labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "Heap:     ", String(ESP.getFreeHeap() / 1024) + " KB free", labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "PSRAM:    ", String(ESP.getFreePsram() / 1024) + " KB free", labelCol, valueCol); rowY += rowH;
+
+  // SD info
+  uint64_t totalMB = SD_MMC.totalBytes() / (1024 * 1024);
+  uint64_t usedMB  = SD_MMC.usedBytes()  / (1024 * 1024);
+  drawTileRow(rowX, rowY, "SD:       ", String((uint32_t)usedMB) + " / " + String((uint32_t)totalMB) + " MB", labelCol, valueCol); rowY += rowH;
+  drawTileRow(rowX, rowY, "Files:    ", String(file_list.size()) + " " + String(g_mode == MODE_ADF ? "ADF" : "DSK"), labelCol, valueCol); rowY += rowH;
+
+  // Loaded disk (may wrap; truncate to fit remaining tile width)
+  gfx_setTextSize(1);
+  gfx_setTextColor(labelCol, TFT_BLACK);
+  gfx_setCursor(rowX, rowY);
+  const char *loadedLabel = "Loaded:   ";
+  gfx_print(loadedLabel);
   if (nowPlaying.source != NP_NONE) {
+    // Compute remaining width: tile inner width minus label minus suffix " DAV"/" SD".
+    int labelW  = gfx_textWidth(loadedLabel);          // textSize 1 = 6 px/char
+    int suffixW = 6 * 4;                                // " DAV" worst case
+    int avail   = tileW - 2 * tilePad - labelW - suffixW;
+    int maxChars = avail / 6;
+    if (maxChars < 4) maxChars = 4;
+    String n = nowPlaying.name;
+    if ((int)n.length() > maxChars) n = n.substring(0, maxChars - 1) + "~";
     gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-    gfx_print(nowPlaying.name);
-    gfx_setTextColor(0x7BEF, TFT_BLACK);  // dim grey
-    gfx_print(nowPlaying.source == NP_DAV ? " (DAV)" : " (SD)");
+    gfx_print(n);
+    gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+    gfx_print(nowPlaying.source == NP_DAV ? " DAV" : " SD");
   } else {
-    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
     gfx_print("(none)");
   }
-  y += lineH;
+  rowY += rowH;
 
-  // --- Display type ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Display: ");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-#if ACTIVE_DISPLAY == DISPLAY_JC3248
-  gfx_print("JC3248W535C 480x320");
-#elif ACTIVE_DISPLAY == DISPLAY_WAVESHARE
-  gfx_print("Waveshare 320x240");
-#endif
-  y += lineH;
+  // ── NETWORK tile ──
+  uint16_t netAccent = isWiFiActive() ? TFT_GREEN : WB_MED_GREY;
+  drawTile(netX, netY, tileW, tileH, "NETWORK", netAccent);
+  rowX = netX + tilePad;
+  rowY = netY + 26;
+  // All toggles in the NETWORK tile share the same X. Store with slack for fat-finger taps.
+  info_toggle_x = netX + tileW - 50;
 
-  // --- Active theme ---
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("Theme: ");
-  gfx_setTextColor(WB_ORANGE, TFT_BLACK);
-  gfx_print(cfg_theme);
-  y += lineH;
-
-  // --- WiFi AP status + toggle ---
-  info_toggle_ap_y = y;  // store Y for touch detection
-  gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-  gfx_setCursor(20, y);
-  gfx_print("AP: ");
+  // AP row
+  info_toggle_ap_y = rowY - 2;  // store Y for touch detection (give a few px of slack)
+  drawTileRow(rowX, rowY, "AP:  ", "", labelCol, valueCol);
   if (isWiFiActive()) {
     gfx_setTextColor(TFT_CYAN, TFT_BLACK);
     gfx_print(wifi_ap_ip);
-    gfx_setTextColor(0x7BEF, TFT_BLACK);
-    gfx_print(" (" + String(WiFi.softAPgetStationNum()) + ")");
+  } else if (boot_skip_wifi) {
+    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+    gfx_print("Off (skipped)");
   } else {
-    gfx_setTextColor(0x7BEF, TFT_BLACK);
+    gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
     gfx_print("Off");
   }
-  // Toggle button at right edge
-  drawToggle(gW - 52, y, cfg_wifi_enabled);
-  gfx_setTextSize(2);  // restore after drawToggle sets textSize(1)
-  y += lineH;
+  drawToggle(netX + tileW - 44, rowY - 5, isWiFiActive());
+  rowY += rowH + 4;
 
-  // --- Remote dongle / WiFi Client status + toggle ---
-  info_toggle_net_y = y;  // store Y for touch detection
-  if (cfg_remote_enabled) {
-    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-    gfx_setCursor(20, y);
-    gfx_print("Dongle: ");
-    if (remote_connected) {
-      gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-      gfx_print("Connected");
-      gfx_setTextColor(0x7BEF, TFT_BLACK);
-      gfx_print(" (" + cfg_remote_ssid + ")");
-    } else {
-      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-      gfx_print("Connecting...");
-    }
-    drawToggle(gW - 52, y, cfg_remote_enabled);
-    gfx_setTextSize(2);  // restore after drawToggle
-    y += lineH;
-
-    // Show what's loaded on the dongle
-    if (remote_connected && remote_dongle_file.length() > 0) {
-      gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-      gfx_setCursor(20, y);
-      gfx_print("Remote: ");
-      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-      gfx_print(basenameNoExt(remote_dongle_file));
-    }
-  }
-  // --- WiFi Client (internet) status ---
-  else {
-    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-    gfx_setCursor(20, y);
-    gfx_print("Net: ");
-    if (wifi_sta_connected) {
-      gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-      gfx_print(wifi_sta_ip);
-      gfx_setTextColor(0x7BEF, TFT_BLACK);
-      gfx_print(" (" + cfg_wifi_client_ssid + ")");
-    } else if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
-      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-      gfx_print("Connecting...");
-    } else if (cfg_wifi_client_ssid.length() == 0) {
-      gfx_setTextColor(0x7BEF, TFT_BLACK);
-      gfx_print("No SSID (use web UI)");
-    } else {
-      gfx_setTextColor(0x7BEF, TFT_BLACK);
-      gfx_print("Off");
-    }
-    drawToggle(gW - 52, y, cfg_wifi_client_enabled);
-    gfx_setTextSize(2);  // restore after drawToggle
-  }
-
-  // Bottom buttons: BACK + THEME + ADF/DSK — 3 buttons evenly spaced
-  int btnW = (gW - 20 - 2 * 8) / 3;  // 3 buttons, 2 gaps, 10px margin each side
-  int btnH = 36, btnY = gH - 42, gap = 8, marginX = 10;
-  drawThemedButton(marginX,                        btnY, btnW, btnH, "BTN_BACK",    "BACK",    TFT_CYAN);
-  drawThemedButton(marginX + (btnW + gap),         btnY, btnW, btnH, "BTN_THEME",   "THEME",   WB_ORANGE);
-  // ADF/DSK toggle
-  if (g_mode == MODE_ADF) {
-    drawThemedButton(marginX + 2 * (btnW + gap),   btnY, btnW, btnH, "BTN_ADF",     "ADF",     TFT_CYAN);
+  // AP clients sub-line (if active)
+  if (isWiFiActive()) {
+    drawTileRow(rowX + 24, rowY, "Clients: ", String(WiFi.softAPgetStationNum()), labelCol, valueCol);
+    rowY += rowH;
   } else {
-    drawThemedButton(marginX + 2 * (btnW + gap),   btnY, btnW, btnH, "BTN_DSK",     "DSK",     TFT_CYAN);
+    rowY += rowH;
+  }
+  if (isWiFiActive() && cfg_wifi_ssid.length() > 0) {
+    drawTileRow(rowX + 24, rowY, "SSID:    ", cfg_wifi_ssid, labelCol, valueCol);
+    rowY += rowH;
+    if (cfg_wifi_pass.length() > 0) {
+      drawTileRow(rowX + 24, rowY, "Pass:    ", cfg_wifi_pass, labelCol, valueCol);
+      rowY += rowH;
+    }
+  }
+  rowY += 4;
+
+  // Net / Dongle row
+  info_toggle_net_y = rowY - 2;
+  if (cfg_remote_enabled) {
+    drawTileRow(rowX, rowY, "Dongle: ", "", labelCol, valueCol);
+    if (remote_connected) {
+      gfx_setTextColor(TFT_CYAN, TFT_BLACK); gfx_print("Connected");
+    } else {
+      gfx_setTextColor(TFT_YELLOW, TFT_BLACK); gfx_print("Connecting...");
+    }
+    drawToggle(netX + tileW - 44, rowY - 5, cfg_remote_enabled);
+    rowY += rowH + 4;
+    if (cfg_remote_ssid.length() > 0) {
+      drawTileRow(rowX + 24, rowY, "SSID:    ", cfg_remote_ssid, labelCol, valueCol);
+      rowY += rowH;
+    }
+    if (remote_connected && remote_dongle_file.length() > 0) {
+      drawTileRow(rowX + 24, rowY, "On disk: ", basenameNoExt(remote_dongle_file), labelCol, valueCol);
+      rowY += rowH;
+    }
+  } else {
+    drawTileRow(rowX, rowY, "Net: ", "", labelCol, valueCol);
+    if (wifi_sta_connected) {
+      gfx_setTextColor(TFT_CYAN, TFT_BLACK); gfx_print(wifi_sta_ip);
+    } else if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) {
+      gfx_setTextColor(TFT_YELLOW, TFT_BLACK); gfx_print("Connecting...");
+    } else if (cfg_wifi_client_ssid.length() == 0) {
+      gfx_setTextColor(WB_MED_GREY, TFT_BLACK); gfx_print("No SSID");
+    } else {
+      gfx_setTextColor(WB_MED_GREY, TFT_BLACK); gfx_print("Off");
+    }
+    drawToggle(netX + tileW - 44, rowY - 5, cfg_wifi_client_enabled);
+    rowY += rowH + 4;
+    if (cfg_wifi_client_ssid.length() > 0) {
+      drawTileRow(rowX + 24, rowY, "SSID:    ", cfg_wifi_client_ssid, labelCol, valueCol);
+      rowY += rowH;
+    }
+    // Show the mDNS hostname when connected — saves the user from memorising
+    // a dynamic LAN IP and works without DNS shenanigans on most home networks.
+    if (wifi_sta_connected) {
+      drawTileRow(rowX + 24, rowY, "URL:     ", "gotek.local", labelCol, TFT_CYAN);
+      rowY += rowH;
+    }
+  }
+
+  // ── Firmware version centered above bottom buttons ──
+  gfx_setTextSize(1);
+  gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+  String buildTag = String(FW_VERSION) + "  /  " + String(FW_INTERNAL);
+  int btw = gfx_textWidth(buildTag);
+  gfx_setCursor((gW - btw) / 2, gH - 54);
+  gfx_print(buildTag);
+
+  // ── Bottom buttons: BACK + THEME + WIFI + ADF/DSK ──
+  int btnW = (gW - 20 - 3 * 8) / 4;
+  int btnH = 36, btnY = gH - 42, btnGap = 8, marginX = 10;
+  drawThemedButton(marginX,                            btnY, btnW, btnH, "BTN_BACK",  "BACK",  TFT_CYAN);
+  drawThemedButton(marginX + 1 * (btnW + btnGap),      btnY, btnW, btnH, "BTN_THEME", "THEME", WB_ORANGE);
+  drawThemedButton(marginX + 2 * (btnW + btnGap),      btnY, btnW, btnH, "BTN_WIFI",  "WIFI",  TFT_GREEN);
+  if (g_mode == MODE_ADF) {
+    drawThemedButton(marginX + 3 * (btnW + btnGap),    btnY, btnW, btnH, "BTN_ADF",   "ADF",   TFT_CYAN);
+  } else {
+    drawThemedButton(marginX + 3 * (btnW + btnGap),    btnY, btnW, btnH, "BTN_DSK",   "DSK",   TFT_CYAN);
   }
 
   gfx_flush();
@@ -3511,7 +3780,7 @@ void drawAlphabetBar(int scrollOff, int totalItems) {
 // Handle touch on the alphabet bar — works for both SD and DAV lists
 // Returns true if handled. Updates the appropriate scroll offset and redraws.
 bool handleAlphabetTouch(uint16_t px, uint16_t py) {
-  if (px < ALPHA_BAR_X || py < LIST_START_Y || py >= LIST_BOTTOM) return false;
+  if (px < ALPHA_HIT_X || py < LIST_START_Y || py >= LIST_BOTTOM) return false;
   if (active_letter_count == 0) return false;
 
   int barH = LIST_BOTTOM - LIST_START_Y;
@@ -3564,20 +3833,15 @@ void drawList() {
       gfx_fillRect(0, y, gW, LIST_ITEM_H, 0x1082);  // dark highlight
     }
 
-    // Thumbnail (cover art)
+    // Thumbnail (cover art) — uses two-layer cache:
+    //   1) PSRAM LRU of decoded 46×46 RGB565   → instant during scroll
+    //   2) /THUMB_CACHE/<hash>.bin on SD       → fast, no JPEG decode
+    //   3) Fallback decode + capture for next time
     int thumbX = 6;
     int thumbY = y + (LIST_ITEM_H - LIST_THUMB_H) / 2;
     bool thumbDrawn = false;
     if (g.jpg_path.length() > 0) {
-      String lp = g.jpg_path;
-      lp.toLowerCase();
-      if (lp.endsWith(".jpg") || lp.endsWith(".jpeg")) {
-        gfx_drawJpgFile(SD_MMC, g.jpg_path.c_str(), thumbX, thumbY, LIST_THUMB_W, LIST_THUMB_H);
-        thumbDrawn = true;
-      } else if (lp.endsWith(".png")) {
-        // PNG — draw scaled via drawPngFile (no scaling, draw at offset)
-        thumbDrawn = drawPngFile(g.jpg_path.c_str(), thumbX, thumbY);
-      }
+      thumbDrawn = drawThumb(thumbX, thumbY, g.jpg_path);
     }
     if (!thumbDrawn) {
       // No cover art — draw a placeholder
@@ -3776,16 +4040,27 @@ void drawDetailsFromNFO(const String &filename) {
     drawThemedButton(detBtn2X, btnTop, detBtnW, detBtnH, "BTN_LOAD", "INSERT", TFT_GREEN);
   }
 
-  // Loaded status indicator at top-right
+  // Loaded status indicator at top-right.
+  // - If THIS game is loaded → green [LOADED] tag.
+  // - If ANOTHER game is loaded → show its name in dim grey so the user knows
+  //   what they'd be replacing if they tap INSERT (clearer than the old [OTHER]
+  //   tag which didn't say which one).
   if (loaded_disk_index >= 0) {
     gfx_setTextSize(1);
-    gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-    gfx_setCursor(gW - 80, 4);
     if (isCurrentLoaded) {
+      gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+      gfx_setCursor(gW - 80, 4);
       gfx_print("[LOADED]");
-    } else {
-      gfx_setTextColor(TFT_DARKGREY, TFT_BLACK);
-      gfx_print("[OTHER]");
+    } else if (nowPlaying.source != NP_NONE && nowPlaying.name.length() > 0) {
+      gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+      String msg = "Loaded: " + nowPlaying.name;
+      // Truncate to fit (rough 6 px per char at textSize 1, leave 4 px margin)
+      int maxW = gW - 8;
+      while ((int)gfx_textWidth(msg) > maxW && msg.length() > 8) {
+        msg = msg.substring(0, msg.length() - 2) + "~";
+      }
+      gfx_setCursor(gW - gfx_textWidth(msg) - 4, 4);
+      gfx_print(msg);
     }
   }
 
@@ -4359,12 +4634,26 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   return totalRead;
 }
 
+#include "ui_common.h"
+#include "ui_keyboard.h"
+#include "thumb_cache.h"
+#include "wifi_setup.h"
 #include "webserver.h"
 
 void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("Gotek Touchscreen Interface starting...");
+  Serial.println("Firmware: " FW_VERSION " / Internal: " FW_INTERNAL);
+
+  // Bring SD up + load CONFIG.TXT BEFORE the display so we know the correct
+  // orientation, backlight and theme from the very first frame. Without this,
+  // a flipped display would render the splash upside-down.
+  init_sd_card();
+  Serial.println("SD card initialized");
+  firstBootScaffold();
+  loadConfig();
+  Serial.println("Config loaded");
 
   uiInit();
   gfx_fillScreen(TFT_BLACK);
@@ -4374,22 +4663,20 @@ void setup() {
   touchInit();
   Serial.println("Touch initialized");
 
+  // Fade backlight in (display starts dark from displayInit) — spreads current draw
+  // so backlight inrush doesn't overlap with later WiFi/USB power spikes.
+  rampBacklight(cfg_backlight);
+
   // ── Cracktro splash screen ──
   drawCracktroSplash();
 
   // ── Boot loading screen ──
   drawBootScreen();
   drawBootProgress("Initializing SD card...", 5);
-
-  init_sd_card();
-  Serial.println("SD card initialized");
-
-  // First-boot: create folder structure, default config & theme if needed
-  firstBootScaffold();
-
   drawBootProgress("Loading configuration...", 15);
 
-  loadConfig();
+  // Apply configured backlight (in case it was changed during splash via flip toggle)
+  setBacklight(cfg_backlight);
 
   // Initialize log (after loadConfig so we know if LOG_ENABLED is set)
   sdLogClear();
@@ -4445,13 +4732,45 @@ void setup() {
     if (autoloaded) {
       loaded_disk_index = selected_index;
       game_selected = findGameIndex(selected_index);
+      // Populate nowPlaying so "NOW PLAYING" on the list and "Loaded: ..." on
+      // System Info reflect the auto-loaded disk from the very first frame.
+      // Without this, the device shows blank until the user manually inserts
+      // a disk through the UI.
+      nowPlaying.source         = NP_SD;
+      nowPlaying.name           = getGameBaseName(file_list[selected_index]);
+      nowPlaying.path           = file_list[selected_index];
+      nowPlaying.sdIndex        = selected_index;
+      nowPlaying.davFolderIndex = -1;
     }
     sdLog("Auto-loaded: " + file_list[selected_index] + " (" + String(loaded) + " bytes)");
   }
 
+  sdLog("Free heap: " + String(ESP.getFreeHeap()) + " | Free PSRAM: " + String(ESP.getFreePsram()));
+  drawBootProgress("Starting USB...", 85);
+
+  msc.vendorID("Gotek");
+  msc.productID("Disk");
+  msc.productRevision("1.0");
+  msc.onRead(onRead);
+  msc.onWrite(onWrite);
+  msc.mediaPresent(autoloaded);
+  msc.begin(msc_block_count, 512);
+  USB.begin();
+  sdLog("USB MSC initialized, heap: " + String(ESP.getFreeHeap()));
+
+  // Let USB enumeration + backlight stabilise before WiFi TX hits the 5V rail.
+  // Without this delay the three subsystems can spike concurrently and brown out
+  // an Amiga's USB supply.
+  delay(150);
+
   // ── WiFi Access Point + Web Server + Remote Dongle ──
-  if (cfg_wifi_enabled || cfg_remote_enabled) {
-    drawBootProgress(cfg_remote_enabled ? "Connecting to dongle..." : "Starting WiFi AP...", 85);
+  // Started AFTER USB MSC so power spikes are sequential, not stacked.
+  // Skipped entirely if the user long-pressed the splash (boot_skip_wifi).
+  if (boot_skip_wifi) {
+    sdLog("WiFi skipped this boot (user long-pressed splash)");
+    drawBootProgress("WiFi disabled (long-press)", 95);
+  } else if (cfg_wifi_enabled || cfg_remote_enabled) {
+    drawBootProgress(cfg_remote_enabled ? "Connecting to dongle..." : "Starting WiFi AP...", 95);
     sdLog("WiFi init: AP=" + String(cfg_wifi_enabled) + " Remote=" + String(cfg_remote_enabled));
     if (initWiFiAP()) {
       if (cfg_wifi_enabled) {
@@ -4463,19 +4782,6 @@ void setup() {
       }
     }
   }
-
-  sdLog("Free heap: " + String(ESP.getFreeHeap()) + " | Free PSRAM: " + String(ESP.getFreePsram()));
-  drawBootProgress("Starting USB...", 90);
-
-  msc.vendorID("Gotek");
-  msc.productID("Disk");
-  msc.productRevision("1.0");
-  msc.onRead(onRead);
-  msc.onWrite(onWrite);
-  msc.mediaPresent(autoloaded);
-  msc.begin(msc_block_count, 512);
-  USB.begin();
-  sdLog("USB MSC initialized, heap: " + String(ESP.getFreeHeap()));
 
   drawBootProgress("Ready!", 100);
   delay(300);
@@ -4527,7 +4833,7 @@ bool hitBtn(uint16_t px, uint16_t py, int bx, int by, int bw, int bh) {
 // Touch helpers
 // ============================================================================
 
-void waitForRelease(unsigned long timeout_ms = 2000) {
+void waitForRelease(unsigned long timeout_ms) {
   uint16_t dummy_x, dummy_y;
   unsigned long start = millis();
   while (touchRead(&dummy_x, &dummy_y)) {
@@ -4701,9 +5007,9 @@ void loop() {
       if (curDy > touch_max_dy) touch_max_dy = curDy;
       if (curDx > touch_max_dx) touch_max_dx = curDx;
 
-      // Alphabet bar: live drag always handled
-      if (current_screen == SCR_SELECTION && px >= ALPHA_BAR_X &&
-          touch_start_x >= ALPHA_BAR_X &&
+      // Alphabet bar: live drag always handled (uses widened hit zone)
+      if (current_screen == SCR_SELECTION && px >= ALPHA_HIT_X &&
+          touch_start_x >= ALPHA_HIT_X &&
           py >= LIST_START_Y && py < LIST_BOTTOM) {
         static unsigned long lastAlphaDrag = 0;
         if (millis() - lastAlphaDrag > 80) {
@@ -4713,7 +5019,7 @@ void loop() {
       }
       // Game list: live drag-scrolling (finger moves list in real-time)
       else if (touch_start_screen == SCR_SELECTION &&
-               touch_start_x < ALPHA_BAR_X &&
+               touch_start_x < ALPHA_HIT_X &&
                touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM) {
         if (!drag_scrolling && touch_max_dy > DRAG_THRESHOLD) {
           drag_scrolling = true;
@@ -4829,11 +5135,11 @@ void loop() {
 
     // Use the MAXIMUM movement seen during the entire touch
     bool wasInListArea = (touch_start_screen == SCR_SELECTION &&
-                          touch_start_x < ALPHA_BAR_X &&
+                          touch_start_x < ALPHA_HIT_X &&
                           touch_start_y >= LIST_START_Y &&
                           touch_start_y < LIST_BOTTOM);
     bool wasInDAVListArea = (touch_start_screen == SCR_WEBDAV &&
-                             touch_start_x < ALPHA_BAR_X &&
+                             touch_start_x < ALPHA_HIT_X &&
                              touch_start_y >= LIST_START_Y &&
                              touch_start_y < LIST_BOTTOM);
     bool hadAnyMovement = (touch_max_dy > TAP_MAX_MOVE || touch_max_dx > TAP_MAX_MOVE);
@@ -5081,17 +5387,55 @@ void handleTap(uint16_t px, uint16_t py) {
   // ══════════════════════════════════════
   else if (current_screen == SCR_INFO) {
 
-    // WiFi AP toggle tap
-    if (info_toggle_ap_y >= 0 && py >= info_toggle_ap_y && py < info_toggle_ap_y + 20 && px >= gW - 52) {
-      cfg_wifi_enabled = !cfg_wifi_enabled;
+    // Clear thumb cache button (small, bottom-left of SYSTEM tile)
+    if (info_clear_x >= 0 && hitBtn(px, py, info_clear_x, info_clear_y, info_clear_w, info_clear_h)) {
+      showBusyIndicator("CLEARING CACHE...");
+      clearThumbCache();
+      Serial.println("Thumb cache cleared");
+      hideBusyIndicator();
+      // Brief confirmation banner above the bottom buttons
+      gfx_setTextSize(2);
+      gfx_setTextColor(WB_ORANGE, TFT_BLACK);
+      const char *msg = "Thumb cache cleared";
+      int mw = gfx_textWidth(msg);
+      gfx_fillRect(0, gH - 78, gW, 22, TFT_BLACK);
+      gfx_setCursor((gW - mw) / 2, gH - 74);
+      gfx_print(msg);
+      gfx_flush();
+      delay(700);
+      waitForRelease();
+      drawInfoScreen();
+      return;
+    }
+
+    // Flip-display button (small, bottom-right of SYSTEM tile)
+    if (info_flip_x >= 0 && hitBtn(px, py, info_flip_x, info_flip_y, info_flip_w, info_flip_h)) {
+      cfg_display_flip = !cfg_display_flip;
       saveConfig();
-      // Apply WiFi change without full reboot
-      if (!cfg_wifi_enabled && wifi_ap_active) {
+      Serial.println("Display flipped: cfg_display_flip=" + String(cfg_display_flip));
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+      lcd.setRotation(cfg_display_flip ? 3 : 1);
+#endif
+      waitForRelease();
+      drawInfoScreen();
+      return;
+    }
+
+    // WiFi AP toggle tap — decide the new state from what's actually running,
+    // not from cfg_wifi_enabled, so a boot-skip override doesn't get out of sync.
+    if (info_toggle_ap_y >= 0 && info_toggle_x >= 0 &&
+        py >= info_toggle_ap_y && py < info_toggle_ap_y + 24 && px >= info_toggle_x) {
+      bool wantOn = !isWiFiActive();
+      cfg_wifi_enabled = wantOn;
+      // User explicitly chose — drop the one-boot skip override either way
+      boot_skip_wifi = false;
+      saveConfig();
+      if (!wantOn && wifi_ap_active) {
         WiFi.softAPdisconnect(true);
         wifi_ap_active = false;
         wifi_ap_ip = "";
         Serial.println("WiFi AP disabled");
-      } else if (cfg_wifi_enabled && !wifi_ap_active) {
+      } else if (wantOn && !wifi_ap_active) {
         initWiFiAP();
         startWebServer();
         Serial.println("WiFi AP enabled: " + wifi_ap_ip);
@@ -5101,7 +5445,8 @@ void handleTap(uint16_t px, uint16_t py) {
     }
 
     // WiFi Client / Remote toggle tap
-    if (info_toggle_net_y >= 0 && py >= info_toggle_net_y && py < info_toggle_net_y + 20 && px >= gW - 52) {
+    if (info_toggle_net_y >= 0 && info_toggle_x >= 0 &&
+        py >= info_toggle_net_y && py < info_toggle_net_y + 24 && px >= info_toggle_x) {
       if (cfg_remote_enabled) {
         // Toggle remote dongle connection
         cfg_remote_enabled = !cfg_remote_enabled;
@@ -5138,9 +5483,9 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
-    // 3 buttons: BACK, THEME, ADF/DSK — dynamic width
+    // 4 buttons: BACK, THEME, WIFI, ADF/DSK — dynamic width
     {
-      int ibtnW = (gW - 20 - 2 * 8) / 3;
+      int ibtnW = (gW - 20 - 3 * 8) / 4;
       int igap = 8, imx = 10, ibtnY = gH - 42;
 
       if (hitBtn(px, py, imx, ibtnY, ibtnW, 36)) {
@@ -5148,12 +5493,33 @@ void handleTap(uint16_t px, uint16_t py) {
         drawList();
         return;
       }
-      if (hitBtn(px, py, imx + (ibtnW + igap), ibtnY, ibtnW, 36)) {
+      if (hitBtn(px, py, imx + 1 * (ibtnW + igap), ibtnY, ibtnW, 36)) {
+        String prev = cfg_theme;
         cycleTheme();
+        Serial.println("THEME tap: " + prev + " -> " + cfg_theme +
+                       " (theme_list size=" + String(theme_list.size()) + ")");
+        gfx_setTextSize(2);
+        gfx_setTextColor(WB_ORANGE, TFT_BLACK);
+        String msg = (prev == cfg_theme)
+                       ? "Only theme: " + cfg_theme
+                       : "Theme: " + cfg_theme;
+        int mw = gfx_textWidth(msg);
+        gfx_fillRect(0, gH - 78, gW, 22, TFT_BLACK);
+        gfx_setCursor((gW - mw) / 2, gH - 74);
+        gfx_print(msg);
+        gfx_flush();
+        delay(700);
         drawInfoScreen();
         return;
       }
       if (hitBtn(px, py, imx + 2 * (ibtnW + igap), ibtnY, ibtnW, 36)) {
+        // WIFI — open on-device setup (scan + soft keyboard + connect + mDNS)
+        waitForRelease();
+        runWifiSetup();
+        drawInfoScreen();
+        return;
+      }
+      if (hitBtn(px, py, imx + 3 * (ibtnW + igap), ibtnY, ibtnW, 36)) {
         showBusyIndicator("SCANNING...");
         g_mode = (g_mode == MODE_ADF) ? MODE_DSK : MODE_ADF;
         file_list = listImages();

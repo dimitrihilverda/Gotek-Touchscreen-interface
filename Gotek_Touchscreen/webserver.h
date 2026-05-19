@@ -121,7 +121,12 @@ bool initWiFiAP() {
 
 // Call from loop() periodically to track client/remote connection state
 unsigned long _lastWifiCheck = 0;
+extern bool boot_skip_wifi;
 void checkWiFiClient() {
+  // Long-press splash override: skip ALL WiFi activity this boot, including
+  // STA / remote dongle reconnect attempts.
+  if (boot_skip_wifi) return;
+
   bool needCheck = (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() > 0) ||
                    (cfg_remote_enabled && cfg_remote_ssid.length() > 0);
   if (!needCheck) return;
@@ -139,6 +144,12 @@ void checkWiFiClient() {
       wifi_sta_connected = true;
       wifi_sta_ip = WiFi.localIP().toString();
       Serial.println("Connected to " + cfg_wifi_client_ssid + " @ " + wifi_sta_ip);
+      // Start mDNS so the device is reachable as gotek.local on the LAN.
+      MDNS.end();
+      if (MDNS.begin("gotek")) {
+        MDNS.addService("http", "tcp", 80);
+        Serial.println("mDNS: http://gotek.local/");
+      }
     }
   } else {
     if (cfg_remote_enabled && remote_connected) {
@@ -454,21 +465,24 @@ bool handleMultipartUpload(WiFiClient &client, const HttpRequest &req) {
         }
       }
     } else {
-      // Binary file data — read in chunks, watch for boundary
+      // Binary file data — read in chunks, watch for boundary.
+      // yield() each iteration so the WiFi stack + USB MSC + touch loop keep
+      // running and the watchdog stays fed during multi-second uploads.
       uint8_t buf[1024];
-      while (client.connected() && client.available()) {
+      unsigned long lastByteAt = millis();
+      const unsigned long STALL_MS = 8000;       // 8s without progress → abort
+
+      while (client.connected() && !done) {
         // Peek ahead for boundary
         if (client.available() >= (int)delim.length() + 4) {
-          // Read a chunk
           int avail = min((int)sizeof(buf), client.available());
           int n = client.readBytes(buf, avail);
+          if (n > 0) lastByteAt = millis();
 
-          // Check if this chunk contains the boundary
           String chunk((char *)buf, n);
           int bndIdx = chunk.indexOf(delim);
 
           if (bndIdx >= 0) {
-            // Write data before boundary (minus trailing \r\n)
             int writeLen = bndIdx;
             if (writeLen >= 2) writeLen -= 2;  // strip \r\n before boundary
             if (writeLen > 0 && outFile) {
@@ -479,17 +493,13 @@ bool handleMultipartUpload(WiFiClient &client, const HttpRequest &req) {
             inFileData = false;
             Serial.println("Upload done: " + String(totalWritten) + " bytes");
 
-            // Check if this is the final boundary
             if (chunk.indexOf(delimEnd) >= 0) done = true;
             break;
           } else {
-            // Safe to write most of buffer (keep tail for split boundary)
             int safe = n - (int)delim.length() - 4;
             if (safe > 0 && outFile) {
               outFile.write(buf, safe);
               totalWritten += safe;
-              // Push back the rest... unfortunately WiFiClient doesn't support pushback
-              // So we write it all and accept a tiny risk of split boundary
               outFile.write(buf + safe, n - safe);
               totalWritten += (n - safe);
             } else if (outFile) {
@@ -499,16 +509,24 @@ bool handleMultipartUpload(WiFiClient &client, const HttpRequest &req) {
           }
         } else if (client.available() > 0) {
           int n = client.readBytes(buf, client.available());
-          if (outFile) {
-            outFile.write(buf, n);
-            totalWritten += n;
+          if (n > 0) {
+            lastByteAt = millis();
+            if (outFile) {
+              outFile.write(buf, n);
+              totalWritten += n;
+            }
           }
         } else {
-          delay(1);  // wait for more data
+          if (millis() - lastByteAt > STALL_MS) {
+            Serial.println("Upload stalled — aborting");
+            done = true;
+            break;
+          }
+          delay(2);
         }
 
-        // Timeout check
-        if (!client.connected()) break;
+        // Feed the watchdog and let other tasks run between chunks
+        yield();
       }
 
       if (inFileData && outFile) {
