@@ -66,6 +66,10 @@ extern "C" {
 
 #define FW_VERSION "v0.8.0-WebServer"
 
+// Internal build tag — bumped every time the firmware is changed on the power-lite
+// branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
+#define FW_INTERNAL "power-lite.002"
+
 using std::vector;
 using std::sort;
 using std::swap;
@@ -2261,12 +2265,34 @@ void drawCracktroSplash() {
   while (true) {
     uint16_t tx, ty;
     if (touchRead(&tx, &ty)) {
-      // Wait for release. A hold >=2s sets boot_skip_wifi (chicken-and-egg escape if
-      // brownout prevented the device from booting with WiFi enabled).
+      // Measure hold duration robustly. Touch controller can briefly drop reads
+      // (jitter) while the user is still pressing — so we don't exit on a single
+      // false reading. Release is debounced: needs 50 ms of consecutive no-touch
+      // before we believe the finger lifted. A hold of >= 2 s sets boot_skip_wifi
+      // and shows visual feedback so the user knows it registered.
       unsigned long tapStart = millis();
-      while (touchRead(&tx, &ty) && millis() - tapStart < 5000) delay(10);
-      if (millis() - tapStart >= 2000) {
-        boot_skip_wifi = true;
+      int releaseFrames = 0;
+      bool flagged = false;
+      while (millis() - tapStart < 5000) {
+        if (touchRead(&tx, &ty)) {
+          releaseFrames = 0;
+          if (!flagged && millis() - tapStart >= 2000) {
+            boot_skip_wifi = true;
+            flagged = true;
+            // Confirm to the user visually — pre-flush message at the bottom
+            const char *msg = "* WIFI WILL BE SKIPPED *";
+            gfx_setTextSize(2);
+            gfx_fillRect(0, gH - 30, gW, 24, TFT_BLACK);
+            gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+            gfx_setCursor((gW - gfx_textWidth(msg)) / 2, gH - 24);
+            gfx_print(msg);
+            gfx_flush();
+          }
+        } else {
+          releaseFrames++;
+          if (releaseFrames >= 5) break;  // 50 ms of no-touch = real release
+        }
+        delay(10);
       }
       break;
     }
@@ -2491,6 +2517,14 @@ void drawBootScreen() {
   t = "Touchscreen Interface";
   gfx_setCursor((gW - gfx_textWidth(t)) / 2, 120);
   gfx_print(t);
+
+  // Internal build tag, small, bottom-right — quick visual check the flash worked
+  gfx_setTextSize(1);
+  gfx_setTextColor(TFT_DARKGREY, TFT_BLACK);
+  String buildTag = String(FW_VERSION) + " / " + String(FW_INTERNAL);
+  int bw = gfx_textWidth(buildTag);
+  gfx_setCursor(gW - bw - 4, gH - 12);
+  gfx_print(buildTag);
 
   gfx_flush();
 }
@@ -4401,6 +4435,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("Gotek Touchscreen Interface starting...");
+  Serial.println("Firmware: " FW_VERSION " / Internal: " FW_INTERNAL);
 
   uiInit();
   gfx_fillScreen(TFT_BLACK);
