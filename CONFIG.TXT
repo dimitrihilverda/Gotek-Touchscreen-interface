@@ -51,6 +51,12 @@
 #   helps prevent brownout when WiFi is also enabled.
 #   Display fades in smoothly at boot to avoid inrush spikes.
 #
+# DISPLAY_FLIP
+#   Rotate display + touch 180° (1 or 0). Default 0.
+#   Use if your hardware revision mounts the panel upside-down. Can also
+#   be toggled at runtime via the FLIP button on the cracktro splash (top-
+#   right corner) or the System Info screen.
+#
 # WIFI_ENABLED
 #   Enable/disable the WiFi Access Point (1 or 0).
 #   When enabled, a web server runs at http://192.168.4.1

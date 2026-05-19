@@ -69,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.010"
+#define FW_INTERNAL "power-lite.011"
 
 using std::vector;
 using std::sort;
@@ -408,6 +408,11 @@ bool   cfg_log_enabled = false;
 // Can be raised after boot in the settings UI once power has stabilised.
 uint8_t cfg_backlight = 140;
 
+// Hardware panel orientation differs between Gotek board revisions / displays.
+// If the picture is upside-down, set DISPLAY_FLIP=1 in CONFIG.TXT or toggle from
+// the System Info screen. The flip applies to both rendering and touch.
+bool cfg_display_flip = false;
+
 // Set to true by a long-press during the splash screen — disables WiFi for this boot
 // without touching CONFIG.TXT. Escape hatch when the device browns out with WiFi on.
 bool boot_skip_wifi = false;
@@ -544,17 +549,31 @@ static inline uint16_t swap16(uint16_t c) {
   return (c >> 8) | (c << 8);
 }
 
-// Software rotation: virtual landscape (480x320) → physical portrait (320x480)
-// 90° CCW: physical_x = virtual_y, physical_y = (LCD_HEIGHT-1) - virtual_x
+// Software rotation: virtual landscape (480x320) → physical portrait (320x480).
+//   cfg_display_flip = false : 90° CCW  (px = vy,                  py = LCD_HEIGHT-1 - vx)
+//   cfg_display_flip = true  : 90° CW   (px = LCD_WIDTH-1 - vy,    py = vx)
+// Driven by CONFIG.TXT DISPLAY_FLIP and the System Info "Flip display" toggle.
 static inline void fb_setPixel(int vx, int vy, uint16_t color) {
-  int px = vy;
-  int py = (LCD_HEIGHT - 1) - vx;
+  int px, py;
+  if (cfg_display_flip) {
+    px = (LCD_WIDTH - 1) - vy;
+    py = vx;
+  } else {
+    px = vy;
+    py = (LCD_HEIGHT - 1) - vx;
+  }
   framebuffer[py * LCD_WIDTH + px] = swap16(color);
 }
 
 static inline uint16_t fb_getPixel(int vx, int vy) {
-  int px = vy;
-  int py = (LCD_HEIGHT - 1) - vx;
+  int px, py;
+  if (cfg_display_flip) {
+    px = (LCD_WIDTH - 1) - vy;
+    py = vx;
+  } else {
+    px = vy;
+    py = (LCD_HEIGHT - 1) - vx;
+  }
   return swap16(framebuffer[py * LCD_WIDTH + px]);
 }
 
@@ -581,11 +600,23 @@ void gfx_fillRect(int x, int y, int w, int h, uint16_t color) {
   int vy1 = (y + h > gH) ? gH : y + h;
   if (vx0 >= vx1 || vy0 >= vy1) return;
 
-  // Iterate in physical row order for cache efficiency
-  int px0 = vy0;
-  int px1 = vy1 - 1;
-  int py0 = LCD_HEIGHT - vx1;
-  int py1 = LCD_HEIGHT - 1 - vx0;
+  // Iterate in physical row order for cache efficiency. The rotation maps a
+  // virtual rect to a physical rect in both orientations — pick the bounds
+  // for whichever mode is active.
+  int px0, px1, py0, py1;
+  if (cfg_display_flip) {
+    // 90° CW: px = LCD_WIDTH-1 - vy, py = vx
+    px0 = LCD_WIDTH - vy1;
+    px1 = LCD_WIDTH - 1 - vy0;
+    py0 = vx0;
+    py1 = vx1 - 1;
+  } else {
+    // 90° CCW: px = vy, py = LCD_HEIGHT-1 - vx
+    px0 = vy0;
+    px1 = vy1 - 1;
+    py0 = LCD_HEIGHT - vx1;
+    py1 = LCD_HEIGHT - 1 - vx0;
+  }
 
   uint16_t sc = swap16(color);
   for (int py = py0; py <= py1; py++) {
@@ -973,7 +1004,7 @@ void setBacklight(uint8_t level) {
 
 void displayInit() {
   lcd.init();
-  lcd.setRotation(1);
+  lcd.setRotation(cfg_display_flip ? 3 : 1);   // 1 = landscape, 3 = landscape flipped
   lcd.setBrightness(0);       // start dark — rampBacklight() will fade in
 }
 
@@ -1017,9 +1048,15 @@ bool touchRead(uint16_t *x, uint16_t *y) {
   uint16_t raw_y = ((buf[4] & 0x0F) << 8) | buf[5];
   // Validate: physical screen is 320x480, reject garbage data
   if (raw_x >= LCD_WIDTH || raw_y >= LCD_HEIGHT) return false;
-  // Rotate touch: physical portrait → virtual landscape
-  *x = (LCD_HEIGHT - 1) - raw_y;
-  *y = raw_x;
+  // Rotate touch to match the active display orientation.
+  if (cfg_display_flip) {
+    // 90° CW display: virtual_x = raw_y, virtual_y = LCD_WIDTH-1 - raw_x
+    *x = raw_y;
+    *y = (LCD_WIDTH - 1) - raw_x;
+  } else {
+    *x = (LCD_HEIGHT - 1) - raw_y;
+    *y = raw_x;
+  }
   return true;
 }
 
@@ -1137,6 +1174,8 @@ void loadConfig() {
       if (v < 10) v = 10;       // never fully off — would look like a hang
       if (v > 255) v = 255;
       cfg_backlight = (uint8_t)v;
+    } else if (key == "DISPLAY_FLIP") {
+      cfg_display_flip = (val == "1" || val == "true");
     }
   }
   f.close();
@@ -1161,6 +1200,7 @@ void saveConfig() {
   }
   f.println("THEME=" + cfg_theme);
   f.println("BACKLIGHT=" + String(cfg_backlight));
+  f.println("DISPLAY_FLIP=" + String(cfg_display_flip ? "1" : "0"));
 
   // WiFi settings
   f.println("WIFI_ENABLED=" + String(cfg_wifi_enabled ? "1" : "0"));
@@ -2278,6 +2318,23 @@ void drawCracktroSplash() {
   while (true) {
     uint16_t tx, ty;
     if (touchRead(&tx, &ty)) {
+      // FLIP button (top-right, 76×24) — invert display orientation + persist.
+      // Handled before the continue-tap so users with an upside-down panel can
+      // recover without going through any other screen.
+      int fbtnW = 76, fbtnH = 24;
+      int fbtnX = gW - fbtnW - 6, fbtnY = 6;
+      if (tx >= fbtnX && tx < fbtnX + fbtnW && ty >= fbtnY && ty < fbtnY + fbtnH) {
+        cfg_display_flip = !cfg_display_flip;
+        saveConfig();
+        Serial.println("Display flipped: cfg_display_flip=" + String(cfg_display_flip));
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+        lcd.setRotation(cfg_display_flip ? 3 : 1);
+#endif
+        // Wait for finger release so we don't immediately re-trigger
+        while (touchRead(&tx, &ty)) delay(10);
+        continue;       // back to top of main render loop, now in new orientation
+      }
+
       // Measure hold duration robustly. Touch controller can briefly drop reads
       // (jitter) while the user is still pressing — so we don't exit on a single
       // false reading. Release is debounced: needs 50 ms of consecutive no-touch
@@ -2467,6 +2524,22 @@ void drawCracktroSplash() {
       gfx_print(String(buf));
     }
 
+    // Small "FLIP" button top-right — for users whose hardware mounts the
+    // panel upside-down. Tapping it inverts the display orientation and
+    // persists the choice to CONFIG.TXT.
+    {
+      int fbtnW = 76, fbtnH = 24;
+      int fbtnX = gW - fbtnW - 6, fbtnY = 6;
+      gfx_fillRect(fbtnX, fbtnY, fbtnW, fbtnH, 0x10A2);
+      gfx_drawRect(fbtnX, fbtnY, fbtnW, fbtnH, TFT_CYAN);
+      gfx_setTextSize(1);
+      gfx_setTextColor(TFT_CYAN, 0x10A2);
+      const char *flipMsg = "FLIP 180";
+      int fmw = gfx_textWidth(flipMsg);
+      gfx_setCursor(fbtnX + (fbtnW - fmw) / 2, fbtnY + (fbtnH - 8) / 2);
+      gfx_print(flipMsg);
+    }
+
     gfx_flush();
 #endif
 
@@ -2581,6 +2654,10 @@ void hideBusyIndicator() {
 int info_toggle_ap_y = -1;
 int info_toggle_net_y = -1;
 int info_toggle_x    = -1;   // left edge of toggle hit-zone (same for both rows)
+int info_flip_x      = -1;   // FLIP-display button bottom-right of SYSTEM tile
+int info_flip_y      = -1;
+int info_flip_w      = -1;
+int info_flip_h      = -1;
 
 // Draw a small toggle switch: [ON] green or [OFF] red
 void drawToggle(int x, int y, bool state) {
@@ -3390,6 +3467,22 @@ void drawInfoScreen() {
   int rowH = 11;
   uint16_t labelCol = WB_MED_GREY;
   uint16_t valueCol = TFT_WHITE;
+
+  // Tiny "Flip" button bottom-right of the SYSTEM tile — same effect as the
+  // FLIP button on the splash. Useful if the user wants to undo a flip later.
+  info_flip_w = 60; info_flip_h = 18;
+  info_flip_x = sysX + tileW - info_flip_w - 6;
+  info_flip_y = sysY + tileH - info_flip_h - 6;
+  gfx_fillRect(info_flip_x, info_flip_y, info_flip_w, info_flip_h, 0x10A2);
+  gfx_drawRect(info_flip_x, info_flip_y, info_flip_w, info_flip_h, TFT_CYAN);
+  gfx_setTextSize(1);
+  gfx_setTextColor(TFT_CYAN, 0x10A2);
+  {
+    const char *flipMsg = cfg_display_flip ? "Flip: ON" : "Flip 180";
+    int fw = gfx_textWidth(flipMsg);
+    gfx_setCursor(info_flip_x + (info_flip_w - fw) / 2, info_flip_y + (info_flip_h - 8) / 2);
+    gfx_print(flipMsg);
+  }
 
 #if ACTIVE_DISPLAY == DISPLAY_JC3248
   drawTileRow(rowX, rowY, "Display:  ", "JC3248 480x320", labelCol, valueCol); rowY += rowH;
@@ -4508,6 +4601,15 @@ void setup() {
   Serial.println("Gotek Touchscreen Interface starting...");
   Serial.println("Firmware: " FW_VERSION " / Internal: " FW_INTERNAL);
 
+  // Bring SD up + load CONFIG.TXT BEFORE the display so we know the correct
+  // orientation, backlight and theme from the very first frame. Without this,
+  // a flipped display would render the splash upside-down.
+  init_sd_card();
+  Serial.println("SD card initialized");
+  firstBootScaffold();
+  loadConfig();
+  Serial.println("Config loaded");
+
   uiInit();
   gfx_fillScreen(TFT_BLACK);
   gfx_flush();
@@ -4526,18 +4628,9 @@ void setup() {
   // ── Boot loading screen ──
   drawBootScreen();
   drawBootProgress("Initializing SD card...", 5);
-
-  init_sd_card();
-  Serial.println("SD card initialized");
-
-  // First-boot: create folder structure, default config & theme if needed
-  firstBootScaffold();
-
   drawBootProgress("Loading configuration...", 15);
 
-  loadConfig();
-
-  // Apply configured backlight (config may override the boot default)
+  // Apply configured backlight (in case it was changed during splash via flip toggle)
   setBacklight(cfg_backlight);
 
   // Initialize log (after loadConfig so we know if LOG_ENABLED is set)
@@ -5239,6 +5332,19 @@ void handleTap(uint16_t px, uint16_t py) {
   // INFO SCREEN
   // ══════════════════════════════════════
   else if (current_screen == SCR_INFO) {
+
+    // Flip-display button (small, bottom-right of SYSTEM tile)
+    if (info_flip_x >= 0 && hitBtn(px, py, info_flip_x, info_flip_y, info_flip_w, info_flip_h)) {
+      cfg_display_flip = !cfg_display_flip;
+      saveConfig();
+      Serial.println("Display flipped: cfg_display_flip=" + String(cfg_display_flip));
+#if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
+      lcd.setRotation(cfg_display_flip ? 3 : 1);
+#endif
+      waitForRelease();
+      drawInfoScreen();
+      return;
+    }
 
     // WiFi AP toggle tap — decide the new state from what's actually running,
     // not from cfg_wifi_enabled, so a boot-skip override doesn't get out of sync.
