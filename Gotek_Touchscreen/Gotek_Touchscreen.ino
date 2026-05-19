@@ -69,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.016"
+#define FW_INTERNAL "power-lite.017"
 
 using std::vector;
 using std::sort;
@@ -412,6 +412,11 @@ uint8_t cfg_backlight = 140;
 // If the picture is upside-down, set DISPLAY_FLIP=1 in CONFIG.TXT or toggle from
 // the System Info screen. The flip applies to both rendering and touch.
 bool cfg_display_flip = false;
+
+// Forward declarations for symbols defined in headers included near the end of
+// this .ino but called from functions defined earlier (drawList, etc).
+bool drawThumb(int x, int y, const String &sourcePath);
+void clearThumbCache();
 
 // Set to true by a long-press during the splash screen — disables WiFi for this boot
 // without touching CONFIG.TXT. Escape hatch when the device browns out with WiFi on.
