@@ -129,6 +129,26 @@ many users can't use it.
 
 ---
 
+## Open issue — Waveshare CI dependency
+
+The Waveshare matrix job in `build-release.yml` is currently
+`allow_failure: true` because the source at
+`Gotek_Touchscreen/Gotek_Touchscreen.ino:298` references
+`lgfx::Touch_CST328`, which is absent from LovyanGFX 1.2.21 in the
+Arduino registry. The comment two lines down says "CST816S" — likely
+one of:
+
+- the original developer used a fork / dev version of LovyanGFX that
+  has `Touch_CST328`,
+- or the class name in source is wrong and should be
+  `Touch_CST816S` / `Touch_CST3xx`.
+
+Fix path: confirm which touch IC the Waveshare 2.8" board actually
+exposes, change source to a class that exists in 1.2.21 (or pin
+LovyanGFX to a specific git-url that has CST328), then drop
+`allow_failure` from the matrix and re-enable the Waveshare option in
+`web-flasher/index.html`.
+
 ## Spoor 4 — Browser-based flasher  ✅ done (v0.9.0)
 
 Goal: User plugs in their device, opens a static page, clicks Install.
