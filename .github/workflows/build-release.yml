@@ -1,0 +1,105 @@
+name: Build firmware & publish release
+
+# Builds the Gotek_Touchscreen sketch with arduino-cli on every pushed
+# version tag (v*.*.*). The compiled .bin files are renamed to predictable
+# names and attached to a GitHub Release for the same tag (created if
+# missing). Also supports manual re-runs on an existing tag via
+# workflow_dispatch — useful after the workflow itself changes.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.9.0). Must already exist on the repo.'
+        required: true
+        default: 'v0.9.0'
+
+permissions:
+  contents: write   # needed to create / update the Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      # JC3248W535C: ESP32-S3-WROOM-1 with 8 MB flash + 8 MB OPI PSRAM.
+      # Override here if a different revision needs a different FQBN.
+      FQBN: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
+      SKETCH: "Gotek_Touchscreen"
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Install arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 board core
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls \
+            https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Install Arduino libraries
+        run: |
+          arduino-cli lib install "JPEGDEC" "PNGdec"
+
+      - name: Compile firmware
+        run: |
+          mkdir -p build
+          arduino-cli compile \
+            --fqbn "${FQBN}" \
+            --output-dir build \
+            --warnings none \
+            "${SKETCH}"
+          ls -lah build
+
+      - name: Locate boot_app0.bin
+        id: bootapp0
+        run: |
+          # boot_app0.bin ships with the ESP32 Arduino core; find it once for the manifest.
+          BOOT_APP0=$(find "$HOME/.arduino15/packages/esp32" -name 'boot_app0.bin' -print -quit)
+          if [ -z "${BOOT_APP0}" ]; then
+            echo "::error::boot_app0.bin not found in installed ESP32 core"
+            exit 1
+          fi
+          echo "path=${BOOT_APP0}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage release artifacts
+        run: |
+          mkdir -p release
+          cp "build/${SKETCH}.ino.bootloader.bin" "release/gotek-touchscreen-bootloader.bin"
+          cp "build/${SKETCH}.ino.partitions.bin" "release/gotek-touchscreen-partitions.bin"
+          cp "build/${SKETCH}.ino.bin"            "release/gotek-touchscreen.bin"
+          cp "${{ steps.bootapp0.outputs.path }}" "release/boot_app0.bin"
+          ls -lah release
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.ref }}
+          name: ${{ steps.tag.outputs.ref }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release/gotek-touchscreen-bootloader.bin
+            release/gotek-touchscreen-partitions.bin
+            release/gotek-touchscreen.bin
+            release/boot_app0.bin

@@ -1,0 +1,30 @@
+{
+  "name": "Gotek Touchscreen Interface",
+  "version": "latest",
+  "home_assistant_domain": null,
+  "funding_url": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest/download/gotek-touchscreen-bootloader.bin",
+          "offset": 0
+        },
+        {
+          "path": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest/download/gotek-touchscreen-partitions.bin",
+          "offset": 32768
+        },
+        {
+          "path": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest/download/boot_app0.bin",
+          "offset": 57344
+        },
+        {
+          "path": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest/download/gotek-touchscreen.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ]
+}
