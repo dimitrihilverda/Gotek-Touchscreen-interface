@@ -68,7 +68,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.002"
+#define FW_INTERNAL "power-lite.003"
 
 using std::vector;
 using std::sort;
@@ -3395,8 +3395,9 @@ void drawInfoScreen() {
     gfx_setTextColor(0x7BEF, TFT_BLACK);
     gfx_print("Off");
   }
-  // Toggle button at right edge
-  drawToggle(gW - 52, y, cfg_wifi_enabled);
+  // Toggle reflects actual runtime state, not config — otherwise after a long-press
+  // splash skip the toggle would still read ON even though the AP is down.
+  drawToggle(gW - 52, y, isWiFiActive());
   gfx_setTextSize(2);  // restore after drawToggle sets textSize(1)
   y += lineH;
 
@@ -3451,6 +3452,14 @@ void drawInfoScreen() {
     drawToggle(gW - 52, y, cfg_wifi_client_enabled);
     gfx_setTextSize(2);  // restore after drawToggle
   }
+
+  // Firmware version line above the bottom buttons
+  gfx_setTextSize(1);
+  gfx_setTextColor(TFT_DARKGREY, TFT_BLACK);
+  String buildTag = String(FW_VERSION) + "  /  " + String(FW_INTERNAL);
+  int btw = gfx_textWidth(buildTag);
+  gfx_setCursor((gW - btw) / 2, gH - 54);
+  gfx_print(buildTag);
 
   // Bottom buttons: BACK + THEME + ADF/DSK — 3 buttons evenly spaced
   int btnW = (gW - 20 - 2 * 8) / 3;  // 3 buttons, 2 gaps, 10px margin each side
@@ -5169,17 +5178,20 @@ void handleTap(uint16_t px, uint16_t py) {
   // ══════════════════════════════════════
   else if (current_screen == SCR_INFO) {
 
-    // WiFi AP toggle tap
+    // WiFi AP toggle tap — decide the new state from what's actually running,
+    // not from cfg_wifi_enabled, so a boot-skip override doesn't get out of sync.
     if (info_toggle_ap_y >= 0 && py >= info_toggle_ap_y && py < info_toggle_ap_y + 20 && px >= gW - 52) {
-      cfg_wifi_enabled = !cfg_wifi_enabled;
+      bool wantOn = !isWiFiActive();
+      cfg_wifi_enabled = wantOn;
+      // User explicitly chose — drop the one-boot skip override either way
+      boot_skip_wifi = false;
       saveConfig();
-      // Apply WiFi change without full reboot
-      if (!cfg_wifi_enabled && wifi_ap_active) {
+      if (!wantOn && wifi_ap_active) {
         WiFi.softAPdisconnect(true);
         wifi_ap_active = false;
         wifi_ap_ip = "";
         Serial.println("WiFi AP disabled");
-      } else if (cfg_wifi_enabled && !wifi_ap_active) {
+      } else if (wantOn && !wifi_ap_active) {
         initWiFiAP();
         startWebServer();
         Serial.println("WiFi AP enabled: " + wifi_ap_ip);
