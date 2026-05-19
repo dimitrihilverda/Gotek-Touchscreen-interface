@@ -29,6 +29,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <ESPmDNS.h>
 
 #include "default_theme.h"
 
@@ -68,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.009"
+#define FW_INTERNAL "power-lite.010"
 
 using std::vector;
 using std::sort;
@@ -3519,15 +3520,16 @@ void drawInfoScreen() {
   gfx_setCursor((gW - btw) / 2, gH - 54);
   gfx_print(buildTag);
 
-  // ── Bottom buttons: BACK + THEME + ADF/DSK ──
-  int btnW = (gW - 20 - 2 * 8) / 3;
+  // ── Bottom buttons: BACK + THEME + WIFI + ADF/DSK ──
+  int btnW = (gW - 20 - 3 * 8) / 4;
   int btnH = 36, btnY = gH - 42, btnGap = 8, marginX = 10;
-  drawThemedButton(marginX,                        btnY, btnW, btnH, "BTN_BACK",    "BACK",    TFT_CYAN);
-  drawThemedButton(marginX + (btnW + btnGap),      btnY, btnW, btnH, "BTN_THEME",   "THEME",   WB_ORANGE);
+  drawThemedButton(marginX,                            btnY, btnW, btnH, "BTN_BACK",  "BACK",  TFT_CYAN);
+  drawThemedButton(marginX + 1 * (btnW + btnGap),      btnY, btnW, btnH, "BTN_THEME", "THEME", WB_ORANGE);
+  drawThemedButton(marginX + 2 * (btnW + btnGap),      btnY, btnW, btnH, "BTN_WIFI",  "WIFI",  TFT_GREEN);
   if (g_mode == MODE_ADF) {
-    drawThemedButton(marginX + 2 * (btnW + btnGap), btnY, btnW, btnH, "BTN_ADF",    "ADF",     TFT_CYAN);
+    drawThemedButton(marginX + 3 * (btnW + btnGap),    btnY, btnW, btnH, "BTN_ADF",   "ADF",   TFT_CYAN);
   } else {
-    drawThemedButton(marginX + 2 * (btnW + btnGap), btnY, btnW, btnH, "BTN_DSK",    "DSK",     TFT_CYAN);
+    drawThemedButton(marginX + 3 * (btnW + btnGap),    btnY, btnW, btnH, "BTN_DSK",   "DSK",   TFT_CYAN);
   }
 
   gfx_flush();
@@ -4495,6 +4497,9 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   return totalRead;
 }
 
+#include "ui_common.h"
+#include "ui_keyboard.h"
+#include "wifi_setup.h"
 #include "webserver.h"
 
 void setup() {
@@ -5297,9 +5302,9 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
-    // 3 buttons: BACK, THEME, ADF/DSK — dynamic width
+    // 4 buttons: BACK, THEME, WIFI, ADF/DSK — dynamic width
     {
-      int ibtnW = (gW - 20 - 2 * 8) / 3;
+      int ibtnW = (gW - 20 - 3 * 8) / 4;
       int igap = 8, imx = 10, ibtnY = gH - 42;
 
       if (hitBtn(px, py, imx, ibtnY, ibtnW, 36)) {
@@ -5307,13 +5312,11 @@ void handleTap(uint16_t px, uint16_t py) {
         drawList();
         return;
       }
-      if (hitBtn(px, py, imx + (ibtnW + igap), ibtnY, ibtnW, 36)) {
+      if (hitBtn(px, py, imx + 1 * (ibtnW + igap), ibtnY, ibtnW, 36)) {
         String prev = cfg_theme;
         cycleTheme();
         Serial.println("THEME tap: " + prev + " -> " + cfg_theme +
                        " (theme_list size=" + String(theme_list.size()) + ")");
-        // Visual confirmation: brief banner just above the buttons so the user
-        // can see the tap registered even when only one theme is installed.
         gfx_setTextSize(2);
         gfx_setTextColor(WB_ORANGE, TFT_BLACK);
         String msg = (prev == cfg_theme)
@@ -5329,6 +5332,13 @@ void handleTap(uint16_t px, uint16_t py) {
         return;
       }
       if (hitBtn(px, py, imx + 2 * (ibtnW + igap), ibtnY, ibtnW, 36)) {
+        // WIFI — open on-device setup (scan + soft keyboard + connect + mDNS)
+        waitForRelease();
+        runWifiSetup();
+        drawInfoScreen();
+        return;
+      }
+      if (hitBtn(px, py, imx + 3 * (ibtnW + igap), ibtnY, ibtnW, 36)) {
         showBusyIndicator("SCANNING...");
         g_mode = (g_mode == MODE_ADF) ? MODE_DSK : MODE_ADF;
         file_list = listImages();
