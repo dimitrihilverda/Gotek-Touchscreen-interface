@@ -1542,7 +1542,7 @@ String findFileInDir(const String &dirPath, const String &targetName) {
 // List disk images by scanning /<MODE>/ subfolders.
 // Each subfolder represents one game/program.
 // Falls back to flat root scanning for legacy layout.
-vector<String> listImages() {
+std::vector<String> listImages() {
   vector<String> images;
   String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
   String ext1 = (g_mode == MODE_ADF) ? ".ADF" : ".DSK";
@@ -4123,7 +4123,7 @@ String truncateToWidth(const String &text, int maxWidth) {
   return result;
 }
 
-void buildDisplayNames(const vector<String> &files) {
+void buildDisplayNames(const std::vector<String> &files) {
   display_names.clear();
   for (const auto &f : files) {
     // Show the filename without extension and path
