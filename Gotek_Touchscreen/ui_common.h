@@ -172,7 +172,8 @@ inline void drawListItem(int x, int y, int w, int h,
   }
 }
 
-// ── Tap inside helper ────────────────────────────────────────────────────────
-// Same as hitBtn but accepts uint16_t — exposed so other UI modules don't have
-// to redeclare. (hitBtn lives in the main .ino.)
+// ── Forward decls for helpers defined later in the main .ino ────────────────
+// The UI modules are #included near the top of setup() flow, before the touch
+// helpers' bodies, so we expose just the prototypes here.
 extern bool hitBtn(uint16_t px, uint16_t py, int bx, int by, int bw, int bh);
+extern void waitForRelease(unsigned long timeout_ms = 2000);

@@ -69,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.011"
+#define FW_INTERNAL "power-lite.012"
 
 using std::vector;
 using std::sort;
@@ -4779,7 +4779,7 @@ bool hitBtn(uint16_t px, uint16_t py, int bx, int by, int bw, int bh) {
 // Touch helpers
 // ============================================================================
 
-void waitForRelease(unsigned long timeout_ms = 2000) {
+void waitForRelease(unsigned long timeout_ms) {
   uint16_t dummy_x, dummy_y;
   unsigned long start = millis();
   while (touchRead(&dummy_x, &dummy_y)) {
