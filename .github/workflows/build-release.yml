@@ -33,11 +33,20 @@ jobs:
             display_define: DISPLAY_JC3248
             fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
             extra_libs: ""
+            allow_failure: false
+          # Waveshare path currently references lgfx::Touch_CST328 which is
+          # absent from the LovyanGFX 1.2.21 release in the Arduino registry —
+          # the build fails until the dependency is pinned to a version (or
+          # fork) that has it. `continue-on-error` keeps the JC3248 release
+          # publishable while we figure that out.
           - variant: waveshare
             label: "Waveshare ESP32-S3-Touch-LCD-2.8 (ESP32-S3, 320x240 SPI)"
             display_define: DISPLAY_WAVESHARE
             fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
             extra_libs: "LovyanGFX"
+            allow_failure: true
+
+    continue-on-error: ${{ matrix.allow_failure }}
 
     env:
       SKETCH: "Gotek_Touchscreen"
