@@ -12,17 +12,18 @@ All work lands on `power-lite`. Merge to `main` when each spoor is verified.
 
 Goal: A build that never starts the WiFi stack, ships ~150–200 KB smaller, and is guaranteed not to brown out.
 
+USB MSC is **always on** — it's the whole point of the device (the Amiga reads the
+emulated floppy over USB). Only the network-side features are stripped.
+
 - Add `build_config.h` with:
-  - `ENABLE_WIFI` (default off in Lite, on in Full)
-  - `ENABLE_WEBSERVER`
-  - `ENABLE_WEBDAV_CLIENT`
-  - `ENABLE_FTP_CLIENT`
-  - `ENABLE_USB_MSC`
-- Three variants in one codebase, selected by which flags are on:
-  - `lite-sd` — touch + SD browser only, no USB MSC, no WiFi
-  - `lite-sd-usb` — adds USB MSC (still no WiFi)
-  - `full` — current behaviour with all power fixes applied
-- Wrap `#include <WiFi.h>`, `<WiFiClientSecure.h>`, `<HTTPClient.h>` and their use-sites in `#ifdef ENABLE_WIFI`.
+  - `ENABLE_WIFI` (off in Lite, on in Full) — gates AP + STA + the entire WiFi stack
+  - `ENABLE_WEBSERVER` (off in Lite, on in Full) — gates HTTP server + REST API
+  - `ENABLE_WEBDAV_CLIENT` (off in Lite, on in Full) — gates remote-browse
+  - `ENABLE_FTP_CLIENT` (off in Lite, on in Full) — gates remote-browse
+- Two variants in one codebase:
+  - `lite` — touch UI + SD browser + USB MSC. No radio.
+  - `full` — adds WiFi AP, web server, WebDAV/FTP clients, remote-dongle mode.
+- Wrap `#include <WiFi.h>`, `<WiFiClientSecure.h>`, `<HTTPClient.h>`, the `webserver.h` / `webdav_client.h` / `ftp_client.h` includes, and their use-sites in `#ifdef ENABLE_WIFI` / matching flags. UI settings screens hide the WiFi tile in Lite at compile-time.
 
 ## Spoor 2 — Boot-sequence fix (applies to Full and Lite)
 
@@ -47,7 +48,7 @@ Goal: Lower idle current and reduce average draw once running.
 Goal: User plugs in their device, opens `dimitrihilverda.<tld>/gotek-flash`, picks a variant, clicks Flash.
 
 - Use [esptool-js](https://github.com/espressif/esptool-js) (Web Serial API, Chrome/Edge).
-- Static HTML page with variant dropdown: `lite-sd`, `lite-sd-usb`, `full`.
+- Static HTML page with variant dropdown: `lite`, `full`.
 - Pre-built `.bin` artifacts pushed as GitHub Release assets by a CI workflow on tag.
   - `arduino-cli compile` or PlatformIO matrix build, one job per variant.
 - Page fetches the latest release `.bin` from GitHub and streams it via Web Serial.
