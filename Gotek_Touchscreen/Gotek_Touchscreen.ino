@@ -68,7 +68,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.004"
+#define FW_INTERNAL "power-lite.005"
 
 using std::vector;
 using std::sort;
@@ -2170,19 +2170,21 @@ bool getPngSize(const char *path, int *w, int *h) {
   return (*w > 0 && *h > 0);
 }
 
-// Draw a themed button: try PNG from /THEME/, fallback to simple rect+text.
+// Draw a themed button: PNG from /THEME/ + label text overlaid, or simple
+// rect+text fallback when the PNG is missing. The label is always rendered on
+// top so themes can ship decoration-only artwork without losing legibility.
 void drawThemedButton(int x, int y, int w, int h,
                       const char *pngName, const char *label,
                       uint16_t borderColor) {
   String path = theme_path + "/" + String(pngName) + ".png";
 
   int imgW = 0, imgH = 0;
-  if (getPngSize(path.c_str(), &imgW, &imgH)) {
-    // Center the PNG within the button area
+  bool hasPng = getPngSize(path.c_str(), &imgW, &imgH);
+
+  if (hasPng) {
     int bx = x + (w - imgW) / 2;
     int by = y + (h - imgH) / 2;
 #if ACTIVE_DISPLAY == DISPLAY_WAVESHARE
-    // Clip to button bounds so oversized PNGs don't bleed outside (Waveshare only)
     lcd.setClipRect(x, y, w, h);
     drawPngFile(path.c_str(), bx, by);
     lcd.clearClipRect();
@@ -2190,15 +2192,42 @@ void drawThemedButton(int x, int y, int w, int h,
     drawPngFile(path.c_str(), bx, by);
 #endif
   } else {
-    // Fallback: filled rectangle with border and text
+    // No PNG — plain filled rect background
     gfx_fillRect(x, y, w, h, TFT_BLACK);
     gfx_drawRect(x, y, w, h, borderColor);
-    gfx_setTextColor(borderColor, TFT_BLACK);
+  }
+
+  // Always overlay the label so themes don't have to bake text into the artwork.
+  if (label && label[0] != '\0') {
     gfx_setTextSize(2);
     int tw = gfx_textWidth(String(label));
     int th = gfx_fontHeight();
-    gfx_setCursor(x + (w - tw) / 2, y + (h - th) / 2);
+    int tx = x + (w - tw) / 2;
+    int ty = y + (h - th) / 2;
+
+#if ACTIVE_DISPLAY == DISPLAY_JC3248
+    // Transparent text so PNG shows through the glyph bg pixels; black shadow
+    // offset 1 px down-right gives the label good contrast over any artwork.
+    bool savedTrans = text_transparent;
+    text_transparent = true;
+    gfx_setTextColor(TFT_BLACK, TFT_BLACK);
+    gfx_setCursor(tx + 1, ty + 1);
     gfx_print(String(label));
+    gfx_setTextColor(borderColor, TFT_BLACK);
+    gfx_setCursor(tx, ty);
+    gfx_print(String(label));
+    text_transparent = savedTrans;
+#else
+    // LovyanGFX (Waveshare): setTextColor with one argument is transparent.
+    lcd.setTextColor(TFT_BLACK);
+    lcd.setCursor(tx + 1, ty + 1);
+    lcd.print(label);
+    lcd.setTextColor(borderColor);
+    lcd.setCursor(tx, ty);
+    lcd.print(label);
+    // Restore opaque mode so subsequent gfx_print calls behave as before.
+    lcd.setTextColor(borderColor, TFT_BLACK);
+#endif
   }
 }
 
