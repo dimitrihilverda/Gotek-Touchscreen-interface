@@ -68,7 +68,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.008"
+#define FW_INTERNAL "power-lite.009"
 
 using std::vector;
 using std::sort;
@@ -3466,6 +3466,10 @@ void drawInfoScreen() {
   if (isWiFiActive() && cfg_wifi_ssid.length() > 0) {
     drawTileRow(rowX + 24, rowY, "SSID:    ", cfg_wifi_ssid, labelCol, valueCol);
     rowY += rowH;
+    if (cfg_wifi_pass.length() > 0) {
+      drawTileRow(rowX + 24, rowY, "Pass:    ", cfg_wifi_pass, labelCol, valueCol);
+      rowY += rowH;
+    }
   }
   rowY += 4;
 
