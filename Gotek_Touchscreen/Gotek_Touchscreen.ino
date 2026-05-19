@@ -69,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.014"
+#define FW_INTERNAL "power-lite.015"
 
 using std::vector;
 using std::sort;
@@ -2658,6 +2658,10 @@ int info_flip_x      = -1;   // FLIP-display button bottom-right of SYSTEM tile
 int info_flip_y      = -1;
 int info_flip_w      = -1;
 int info_flip_h      = -1;
+int info_clear_x     = -1;   // Clear-thumb-cache button bottom-left of SYSTEM tile
+int info_clear_y     = -1;
+int info_clear_w     = -1;
+int info_clear_h     = -1;
 
 // Draw a small toggle switch: [ON] green or [OFF] red
 void drawToggle(int x, int y, bool state) {
@@ -3468,11 +3472,27 @@ void drawInfoScreen() {
   uint16_t labelCol = WB_MED_GREY;
   uint16_t valueCol = TFT_WHITE;
 
-  // Tiny "Flip" button bottom-right of the SYSTEM tile — same effect as the
-  // FLIP button on the splash. Useful if the user wants to undo a flip later.
-  info_flip_w = 60; info_flip_h = 18;
-  info_flip_x = sysX + tileW - info_flip_w - 6;
-  info_flip_y = sysY + tileH - info_flip_h - 6;
+  // Bottom-row utility buttons inside the SYSTEM tile:
+  //   • "Clear cache" bottom-left  — wipes the cover-thumbnail cache
+  //   • "Flip 180"   bottom-right  — toggles display orientation
+  info_flip_w  = 60; info_flip_h  = 18;
+  info_flip_x  = sysX + tileW - info_flip_w - 6;
+  info_flip_y  = sysY + tileH - info_flip_h - 6;
+  info_clear_w = 78; info_clear_h = 18;
+  info_clear_x = sysX + 6;
+  info_clear_y = sysY + tileH - info_clear_h - 6;
+
+  gfx_fillRect(info_clear_x, info_clear_y, info_clear_w, info_clear_h, 0x10A2);
+  gfx_drawRect(info_clear_x, info_clear_y, info_clear_w, info_clear_h, WB_ORANGE);
+  gfx_setTextSize(1);
+  gfx_setTextColor(WB_ORANGE, 0x10A2);
+  {
+    const char *msg = "Clear cache";
+    int mw = gfx_textWidth(msg);
+    gfx_setCursor(info_clear_x + (info_clear_w - mw) / 2, info_clear_y + (info_clear_h - 8) / 2);
+    gfx_print(msg);
+  }
+
   gfx_fillRect(info_flip_x, info_flip_y, info_flip_w, info_flip_h, 0x10A2);
   gfx_drawRect(info_flip_x, info_flip_y, info_flip_w, info_flip_h, TFT_CYAN);
   gfx_setTextSize(1);
@@ -3801,20 +3821,15 @@ void drawList() {
       gfx_fillRect(0, y, gW, LIST_ITEM_H, 0x1082);  // dark highlight
     }
 
-    // Thumbnail (cover art)
+    // Thumbnail (cover art) — uses two-layer cache:
+    //   1) PSRAM LRU of decoded 46×46 RGB565   → instant during scroll
+    //   2) /THUMB_CACHE/<hash>.bin on SD       → fast, no JPEG decode
+    //   3) Fallback decode + capture for next time
     int thumbX = 6;
     int thumbY = y + (LIST_ITEM_H - LIST_THUMB_H) / 2;
     bool thumbDrawn = false;
     if (g.jpg_path.length() > 0) {
-      String lp = g.jpg_path;
-      lp.toLowerCase();
-      if (lp.endsWith(".jpg") || lp.endsWith(".jpeg")) {
-        gfx_drawJpgFile(SD_MMC, g.jpg_path.c_str(), thumbX, thumbY, LIST_THUMB_W, LIST_THUMB_H);
-        thumbDrawn = true;
-      } else if (lp.endsWith(".png")) {
-        // PNG — draw scaled via drawPngFile (no scaling, draw at offset)
-        thumbDrawn = drawPngFile(g.jpg_path.c_str(), thumbX, thumbY);
-      }
+      thumbDrawn = drawThumb(thumbX, thumbY, g.jpg_path);
     }
     if (!thumbDrawn) {
       // No cover art — draw a placeholder
@@ -4609,6 +4624,7 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
 
 #include "ui_common.h"
 #include "ui_keyboard.h"
+#include "thumb_cache.h"
 #include "wifi_setup.h"
 #include "webserver.h"
 
@@ -5349,6 +5365,27 @@ void handleTap(uint16_t px, uint16_t py) {
   // INFO SCREEN
   // ══════════════════════════════════════
   else if (current_screen == SCR_INFO) {
+
+    // Clear thumb cache button (small, bottom-left of SYSTEM tile)
+    if (info_clear_x >= 0 && hitBtn(px, py, info_clear_x, info_clear_y, info_clear_w, info_clear_h)) {
+      showBusyIndicator("CLEARING CACHE...");
+      clearThumbCache();
+      Serial.println("Thumb cache cleared");
+      hideBusyIndicator();
+      // Brief confirmation banner above the bottom buttons
+      gfx_setTextSize(2);
+      gfx_setTextColor(WB_ORANGE, TFT_BLACK);
+      const char *msg = "Thumb cache cleared";
+      int mw = gfx_textWidth(msg);
+      gfx_fillRect(0, gH - 78, gW, 22, TFT_BLACK);
+      gfx_setCursor((gW - mw) / 2, gH - 74);
+      gfx_print(msg);
+      gfx_flush();
+      delay(700);
+      waitForRelease();
+      drawInfoScreen();
+      return;
+    }
 
     // Flip-display button (small, bottom-right of SYSTEM tile)
     if (info_flip_x >= 0 && hitBtn(px, py, info_flip_x, info_flip_y, info_flip_w, info_flip_h)) {
