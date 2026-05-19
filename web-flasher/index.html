@@ -205,11 +205,8 @@
       </div>
 
       <p class="muted" style="margin-top: 16px;">
-        The flasher pulls the firmware binaries from the latest
-        <a href="https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest"
-           target="_blank" rel="noopener">GitHub release</a>.
-        First-time installs will erase the flash; existing settings on the SD
-        card are untouched.
+        First-time installs will erase the flash; existing settings on the
+        SD card are untouched.
       </p>
     </section>
 
@@ -238,13 +235,6 @@
   </div>
 
   <footer>
-    <p>
-      Source &middot;
-      <a href="https://github.com/dimitrihilverda/Gotek-Touchscreen-interface"
-         target="_blank" rel="noopener">
-        github.com/dimitrihilverda/Gotek-Touchscreen-interface
-      </a>
-    </p>
     <p>
       Flasher powered by
       <a href="https://esphome.github.io/esp-web-tools/" target="_blank" rel="noopener">
@@ -281,15 +271,10 @@
     localStorage.setItem(STORAGE_KEY, v);
   });
 
-  // If the latest GitHub release tag is fetchable, show it next to the button
-  // so visitors know what they're about to flash. Falls back silently.
-  fetch('https://api.github.com/repos/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest')
-    .then(r => r.ok ? r.json() : null)
-    .then(rel => {
-      if (!rel || !rel.tag_name) return;
-      document.getElementById('version-tag').textContent = rel.tag_name;
-    })
-    .catch(() => {});
+  // Version label next to the install button. Hidden by default; populated
+  // at build time by CI (or left as 'latest' for local copies).
+  // GitHub-API lookup intentionally removed so the page doesn't reveal the
+  // upstream repo URL.
 </script>
 
 </body>

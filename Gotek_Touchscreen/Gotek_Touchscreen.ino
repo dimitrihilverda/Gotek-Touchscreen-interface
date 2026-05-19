@@ -63,6 +63,8 @@
 #include <LovyanGFX.hpp>
 #endif
 
+#include <esp_system.h>     // esp_reset_reason()
+
 extern "C" {
   extern bool tud_mounted(void);
   extern void tud_disconnect(void);
@@ -70,12 +72,37 @@ extern "C" {
   extern void* ps_malloc(size_t size);
 }
 
+// Human-readable reset reason, captured once at boot.
+static const char *resetReasonName(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:  return "POWER-ON";
+    case ESP_RST_EXT:      return "EXT (reset pin)";
+    case ESP_RST_SW:       return "SW (esp_restart)";
+    case ESP_RST_PANIC:    return "PANIC (firmware crash)";
+    case ESP_RST_INT_WDT:  return "INT WATCHDOG";
+    case ESP_RST_TASK_WDT: return "TASK WATCHDOG (loop blocked)";
+    case ESP_RST_WDT:      return "OTHER WATCHDOG";
+    case ESP_RST_DEEPSLEEP:return "DEEP-SLEEP WAKE";
+    case ESP_RST_BROWNOUT: return "BROWNOUT (5V dropped)";
+    case ESP_RST_SDIO:     return "SDIO RESET";
+    default:               return "UNKNOWN";
+  }
+}
+static esp_reset_reason_t g_resetReason = ESP_RST_UNKNOWN;
+static bool resetWasAbnormal(esp_reset_reason_t r) {
+  // Crashes / watchdogs / brownouts are interesting; power-on / external reset
+  // / clean restart are routine.
+  return r == ESP_RST_PANIC || r == ESP_RST_INT_WDT ||
+         r == ESP_RST_TASK_WDT || r == ESP_RST_WDT ||
+         r == ESP_RST_BROWNOUT;
+}
+
 #define FW_VERSION "v0.9.1"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.001"
+#define FW_INTERNAL "release.002"
 
 using std::vector;
 using std::sort;
@@ -4647,10 +4674,17 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
 #include "webserver.h"
 
 void setup() {
+  // Capture the cause of the LAST reboot before anything else runs — useful
+  // for diagnosing random restarts (PANIC vs TASK_WDT vs BROWNOUT). Stored in
+  // a global so the splash can flash a warning when it was abnormal, and the
+  // SD log records it once mounted.
+  g_resetReason = esp_reset_reason();
+
   Serial.begin(115200);
   delay(500);
   Serial.println("Gotek Touchscreen Interface starting...");
   Serial.println("Firmware: " FW_VERSION " / Internal: " FW_INTERNAL);
+  Serial.printf("Last reset reason: %d (%s)\n", (int)g_resetReason, resetReasonName(g_resetReason));
 
   // Bring SD up + load CONFIG.TXT BEFORE the display so we know the correct
   // orientation, backlight and theme from the very first frame. Without this,
@@ -4660,6 +4694,7 @@ void setup() {
   firstBootScaffold();
   loadConfig();
   Serial.println("Config loaded");
+  sdLog(String("Last reset reason: ") + resetReasonName(g_resetReason));
 
   uiInit();
   gfx_fillScreen(TFT_BLACK);
@@ -4675,6 +4710,32 @@ void setup() {
 
   // ── Cracktro splash screen ──
   drawCracktroSplash();
+
+  // If the last reset was a crash / brownout / watchdog, surface that for a
+  // couple of seconds on the boot screen so the user knows the device did NOT
+  // come up cleanly. (The SD log already has it, but most users won't look.)
+  if (resetWasAbnormal(g_resetReason)) {
+    gfx_fillScreen(TFT_BLACK);
+    gfx_setTextSize(2);
+    gfx_setTextColor(TFT_RED, TFT_BLACK);
+    const char *t1 = "Last boot was abnormal:";
+    int tw = gfx_textWidth(t1);
+    gfx_setCursor((gW - tw) / 2, gH / 2 - 30);
+    gfx_print(t1);
+    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+    String t2 = String(resetReasonName(g_resetReason));
+    tw = gfx_textWidth(t2);
+    gfx_setCursor((gW - tw) / 2, gH / 2);
+    gfx_print(t2);
+    gfx_setTextSize(1);
+    gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+    const char *t3 = "Continuing in 3 seconds...";
+    tw = gfx_textWidth(t3);
+    gfx_setCursor((gW - tw) / 2, gH / 2 + 26);
+    gfx_print(t3);
+    gfx_flush();
+    delay(3000);
+  }
 
   // ── Boot loading screen ──
   drawBootScreen();
@@ -4878,6 +4939,28 @@ unsigned long kinetic_last = 0;     // last kinetic tick time
 void loop() {
   // Process incoming HTTP requests (non-blocking)
   handleWebServer();
+
+  // ── Periodic heap / PSRAM trace ──
+  // Random reboots are usually caused by either a watchdog (loop blocked) or
+  // an OOM crash from a slow leak. Logging the free heap + PSRAM once a
+  // minute to Serial AND to the SD log makes the trend visible after the
+  // device restarts — open LOG.TXT and look for a monotonically falling
+  // heap up to the crash timestamp.
+  static unsigned long _lastHeapLog = 0;
+  if (millis() - _lastHeapLog > 60000) {
+    _lastHeapLog = millis();
+    uint32_t up_s = millis() / 1000;
+    uint32_t freeHeap  = ESP.getFreeHeap();
+    uint32_t minHeap   = ESP.getMinFreeHeap();
+    uint32_t freePsram = ESP.getFreePsram();
+    Serial.printf("heap: up=%us free=%uK min=%uK psram=%uK\n",
+                  up_s, freeHeap / 1024, minHeap / 1024, freePsram / 1024);
+    if (cfg_log_enabled) {
+      sdLog("heap: up=" + String(up_s) + "s free=" + String(freeHeap / 1024) +
+            "K min=" + String(minHeap / 1024) +
+            "K psram=" + String(freePsram / 1024) + "K");
+    }
+  }
 
   // ── Deferred web-triggered SD load ──
   // HTTP handler sets the index, main loop does the actual work

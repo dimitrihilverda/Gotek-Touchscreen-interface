@@ -2,7 +2,6 @@
   "name": "Gotek Touchscreen — Waveshare ESP32-S3-Touch-LCD-2.8",
   "version": "latest",
   "new_install_prompt_erase": true,
-  "funding_url": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface",
   "builds": [
     {
       "chipFamily": "ESP32-S3",
