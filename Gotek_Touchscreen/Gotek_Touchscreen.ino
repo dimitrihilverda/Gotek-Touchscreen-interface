@@ -68,7 +68,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.005"
+#define FW_INTERNAL "power-lite.006"
 
 using std::vector;
 using std::sort;
@@ -3424,16 +3424,22 @@ void drawInfoScreen() {
   drawTileRow(rowX, rowY, "SD:       ", String((uint32_t)usedMB) + " / " + String((uint32_t)totalMB) + " MB", labelCol, valueCol); rowY += rowH;
   drawTileRow(rowX, rowY, "Files:    ", String(file_list.size()) + " " + String(g_mode == MODE_ADF ? "ADF" : "DSK"), labelCol, valueCol); rowY += rowH;
 
-  // Loaded disk (may wrap; truncate)
+  // Loaded disk (may wrap; truncate to fit remaining tile width)
   gfx_setTextSize(1);
   gfx_setTextColor(labelCol, TFT_BLACK);
   gfx_setCursor(rowX, rowY);
-  gfx_print("Loaded:   ");
+  const char *loadedLabel = "Loaded:   ";
+  gfx_print(loadedLabel);
   if (nowPlaying.source != NP_NONE) {
-    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
-    int maxChars = (tileW - (gfx_getCursorX() - sysX) - tilePad - 30) / 6;
+    // Compute remaining width: tile inner width minus label minus suffix " DAV"/" SD".
+    int labelW  = gfx_textWidth(loadedLabel);          // textSize 1 = 6 px/char
+    int suffixW = 6 * 4;                                // " DAV" worst case
+    int avail   = tileW - 2 * tilePad - labelW - suffixW;
+    int maxChars = avail / 6;
+    if (maxChars < 4) maxChars = 4;
     String n = nowPlaying.name;
     if ((int)n.length() > maxChars) n = n.substring(0, maxChars - 1) + "~";
+    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
     gfx_print(n);
     gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
     gfx_print(nowPlaying.source == NP_DAV ? " DAV" : " SD");
