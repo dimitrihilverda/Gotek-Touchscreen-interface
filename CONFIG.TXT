@@ -45,10 +45,18 @@
 #   PNG format: 32-bit RGBA (with transparency) or 24-bit RGB.
 #   Missing files fall back to drawn buttons.
 #
+# BACKLIGHT
+#   LCD backlight level (10-255). Default 140 (~55%).
+#   Lower values reduce current draw from the Amiga 5V USB rail —
+#   helps prevent brownout when WiFi is also enabled.
+#   Display fades in smoothly at boot to avoid inrush spikes.
+#
 # WIFI_ENABLED
 #   Enable/disable the WiFi Access Point (1 or 0).
 #   When enabled, a web server runs at http://192.168.4.1
 #   for game management, config editing, and theme switching.
+#   ESCAPE HATCH: hold the screen for 2+ seconds during the splash
+#   to boot without WiFi this once (does not modify CONFIG.TXT).
 #
 # WIFI_SSID
 #   The WiFi network name (default: Gotek-Setup)
@@ -75,6 +83,7 @@
 DISPLAY=JC3248
 LASTMODE=ADF
 THEME=AMIGA_WB2
+BACKLIGHT=140
 
 # WiFi Access Point settings
 # When enabled, creates a WiFi hotspot for browser-based management.

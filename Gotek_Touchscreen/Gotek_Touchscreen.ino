@@ -399,6 +399,14 @@ bool   cfg_dav_https   = true;
 // Logging config — write step-by-step log to SD card for debugging
 bool   cfg_log_enabled = false;
 
+// Backlight (0..255). Lower default reduces current draw on USB-powered Amiga 5V rail.
+// Can be raised after boot in the settings UI once power has stabilised.
+uint8_t cfg_backlight = 140;
+
+// Set to true by a long-press during the splash screen — disables WiFi for this boot
+// without touching CONFIG.TXT. Escape hatch when the device browns out with WiFi on.
+bool boot_skip_wifi = false;
+
 // Remote dongle config — send disk images to a WiFi Dongle instead of local USB
 bool   cfg_remote_enabled  = false;
 String cfg_remote_ssid     = "Gotek-Dongle";   // dongle's WiFi AP name
@@ -949,7 +957,11 @@ void displayInit() {
   delay(200);
 
   ledcAttach(LCD_PIN_BL, 5000, 8);
-  ledcWrite(LCD_PIN_BL, 200);
+  ledcWrite(LCD_PIN_BL, 0);   // start dark — rampBacklight() will fade in after first frame
+}
+
+void setBacklight(uint8_t level) {
+  ledcWrite(LCD_PIN_BL, level);
 }
 
 #elif ACTIVE_DISPLAY == DISPLAY_WAVESHARE
@@ -957,10 +969,24 @@ void displayInit() {
 void displayInit() {
   lcd.init();
   lcd.setRotation(1);
-  lcd.setBrightness(200);
+  lcd.setBrightness(0);       // start dark — rampBacklight() will fade in
+}
+
+void setBacklight(uint8_t level) {
+  lcd.setBrightness(level);
 }
 
 #endif
+
+// Smooth ramp from current level to `target` over ~300 ms. Spreads inrush so that
+// backlight + WiFi TX + USB enumeration don't all spike on the 5V rail simultaneously.
+void rampBacklight(uint8_t target) {
+  const int steps = 30;
+  for (int i = 1; i <= steps; ++i) {
+    setBacklight((uint8_t)((uint32_t)target * i / steps));
+    delay(10);
+  }
+}
 
 // ============================================================================
 // TOUCH INTERFACE (Backend-specific)
@@ -1101,6 +1127,11 @@ void loadConfig() {
       cfg_dav_https = (val == "1" || val == "true");
     } else if (key == "LOG_ENABLED") {
       cfg_log_enabled = (val == "1" || val == "true");
+    } else if (key == "BACKLIGHT") {
+      int v = val.toInt();
+      if (v < 10) v = 10;       // never fully off — would look like a hang
+      if (v > 255) v = 255;
+      cfg_backlight = (uint8_t)v;
     }
   }
   f.close();
@@ -1124,6 +1155,7 @@ void saveConfig() {
     f.println("LASTMODE=" + cfg_lastmode);
   }
   f.println("THEME=" + cfg_theme);
+  f.println("BACKLIGHT=" + String(cfg_backlight));
 
   // WiFi settings
   f.println("WIFI_ENABLED=" + String(cfg_wifi_enabled ? "1" : "0"));
@@ -2204,7 +2236,7 @@ void drawCracktroSplash() {
     "WEBDAV STREAMING - WIFI WEB INTERFACE - THEME ENGINE - FAT12 RAM DISK  ...  "
     "GREETINGS TO THE GREENFORD COMPUTER CLUB (GCC) AND ALL RETRO COMPUTING ENTHUSIASTS!  ...  "
     "KEEP THE SCENE ALIVE  ...  OMEGAWARE 2026  *  "
-    "TAP SCREEN TO CONTINUE  ...       ";
+    "TAP SCREEN TO CONTINUE  -  HOLD 2 SEC TO BOOT WITHOUT WIFI  ...       ";
   int scrollLen = strlen(scrollText);
   int scrollPos = 0;
   int charW = 12;  // textSize 2 = 12px per char
@@ -2229,9 +2261,13 @@ void drawCracktroSplash() {
   while (true) {
     uint16_t tx, ty;
     if (touchRead(&tx, &ty)) {
-      // Wait for release before continuing
+      // Wait for release. A hold >=2s sets boot_skip_wifi (chicken-and-egg escape if
+      // brownout prevented the device from booting with WiFi enabled).
       unsigned long tapStart = millis();
-      while (touchRead(&tx, &ty) && millis() - tapStart < 1000) delay(10);
+      while (touchRead(&tx, &ty) && millis() - tapStart < 5000) delay(10);
+      if (millis() - tapStart >= 2000) {
+        boot_skip_wifi = true;
+      }
       break;
     }
 
@@ -4374,6 +4410,10 @@ void setup() {
   touchInit();
   Serial.println("Touch initialized");
 
+  // Fade backlight in (display starts dark from displayInit) — spreads current draw
+  // so backlight inrush doesn't overlap with later WiFi/USB power spikes.
+  rampBacklight(cfg_backlight);
+
   // ── Cracktro splash screen ──
   drawCracktroSplash();
 
@@ -4390,6 +4430,9 @@ void setup() {
   drawBootProgress("Loading configuration...", 15);
 
   loadConfig();
+
+  // Apply configured backlight (config may override the boot default)
+  setBacklight(cfg_backlight);
 
   // Initialize log (after loadConfig so we know if LOG_ENABLED is set)
   sdLogClear();
@@ -4449,9 +4492,32 @@ void setup() {
     sdLog("Auto-loaded: " + file_list[selected_index] + " (" + String(loaded) + " bytes)");
   }
 
+  sdLog("Free heap: " + String(ESP.getFreeHeap()) + " | Free PSRAM: " + String(ESP.getFreePsram()));
+  drawBootProgress("Starting USB...", 85);
+
+  msc.vendorID("Gotek");
+  msc.productID("Disk");
+  msc.productRevision("1.0");
+  msc.onRead(onRead);
+  msc.onWrite(onWrite);
+  msc.mediaPresent(autoloaded);
+  msc.begin(msc_block_count, 512);
+  USB.begin();
+  sdLog("USB MSC initialized, heap: " + String(ESP.getFreeHeap()));
+
+  // Let USB enumeration + backlight stabilise before WiFi TX hits the 5V rail.
+  // Without this delay the three subsystems can spike concurrently and brown out
+  // an Amiga's USB supply.
+  delay(150);
+
   // ── WiFi Access Point + Web Server + Remote Dongle ──
-  if (cfg_wifi_enabled || cfg_remote_enabled) {
-    drawBootProgress(cfg_remote_enabled ? "Connecting to dongle..." : "Starting WiFi AP...", 85);
+  // Started AFTER USB MSC so power spikes are sequential, not stacked.
+  // Skipped entirely if the user long-pressed the splash (boot_skip_wifi).
+  if (boot_skip_wifi) {
+    sdLog("WiFi skipped this boot (user long-pressed splash)");
+    drawBootProgress("WiFi disabled (long-press)", 95);
+  } else if (cfg_wifi_enabled || cfg_remote_enabled) {
+    drawBootProgress(cfg_remote_enabled ? "Connecting to dongle..." : "Starting WiFi AP...", 95);
     sdLog("WiFi init: AP=" + String(cfg_wifi_enabled) + " Remote=" + String(cfg_remote_enabled));
     if (initWiFiAP()) {
       if (cfg_wifi_enabled) {
@@ -4463,19 +4529,6 @@ void setup() {
       }
     }
   }
-
-  sdLog("Free heap: " + String(ESP.getFreeHeap()) + " | Free PSRAM: " + String(ESP.getFreePsram()));
-  drawBootProgress("Starting USB...", 90);
-
-  msc.vendorID("Gotek");
-  msc.productID("Disk");
-  msc.productRevision("1.0");
-  msc.onRead(onRead);
-  msc.onWrite(onWrite);
-  msc.mediaPresent(autoloaded);
-  msc.begin(msc_block_count, 512);
-  USB.begin();
-  sdLog("USB MSC initialized, heap: " + String(ESP.getFreeHeap()));
 
   drawBootProgress("Ready!", 100);
   delay(300);
