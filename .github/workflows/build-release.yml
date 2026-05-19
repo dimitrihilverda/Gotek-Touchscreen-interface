@@ -1,10 +1,10 @@
 name: Build firmware & publish release
 
-# Builds the Gotek_Touchscreen sketch with arduino-cli on every pushed
-# version tag (v*.*.*). The compiled .bin files are renamed to predictable
-# names and attached to a GitHub Release for the same tag (created if
-# missing). Also supports manual re-runs on an existing tag via
-# workflow_dispatch — useful after the workflow itself changes.
+# Builds the Gotek_Touchscreen sketch with arduino-cli for every supported
+# display variant on every pushed version tag (v*.*.*). The compiled .bin
+# files are renamed with a variant prefix and attached to a single GitHub
+# Release for the same tag (created if missing). Also supports manual
+# re-runs on an existing tag via workflow_dispatch.
 
 on:
   push:
@@ -24,10 +24,22 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: jc3248
+            label: "Guition JC3248W535C (ESP32-S3, 480x320 QSPI)"
+            display_define: DISPLAY_JC3248
+            fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
+            extra_libs: ""
+          - variant: waveshare
+            label: "Waveshare ESP32-S3-Touch-LCD-2.8 (ESP32-S3, 320x240 SPI)"
+            display_define: DISPLAY_WAVESHARE
+            fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
+            extra_libs: "LovyanGFX"
+
     env:
-      # JC3248W535C: ESP32-S3-WROOM-1 with 8 MB flash + 8 MB OPI PSRAM.
-      # Override here if a different revision needs a different FQBN.
-      FQBN: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
       SKETCH: "Gotek_Touchscreen"
 
     steps:
@@ -60,12 +72,16 @@ jobs:
       - name: Install Arduino libraries
         run: |
           arduino-cli lib install "JPEGDEC" "PNGdec"
+          if [ -n "${{ matrix.extra_libs }}" ]; then
+            arduino-cli lib install ${{ matrix.extra_libs }}
+          fi
 
-      - name: Compile firmware
+      - name: Compile firmware (${{ matrix.variant }})
         run: |
           mkdir -p build
           arduino-cli compile \
-            --fqbn "${FQBN}" \
+            --fqbn "${{ matrix.fqbn }}" \
+            --build-property "compiler.cpp.extra_flags=-DACTIVE_DISPLAY=${{ matrix.display_define }}" \
             --output-dir build \
             --warnings none \
             "${SKETCH}"
@@ -74,7 +90,9 @@ jobs:
       - name: Locate boot_app0.bin
         id: bootapp0
         run: |
-          # boot_app0.bin ships with the ESP32 Arduino core; find it once for the manifest.
+          # boot_app0.bin ships with the ESP32 Arduino core; same file across
+          # all variants, but every matrix job needs to upload it once so the
+          # action-gh-release step can attach it (idempotent on the release).
           BOOT_APP0=$(find "$HOME/.arduino15/packages/esp32" -name 'boot_app0.bin' -print -quit)
           if [ -z "${BOOT_APP0}" ]; then
             echo "::error::boot_app0.bin not found in installed ESP32 core"
@@ -82,12 +100,13 @@ jobs:
           fi
           echo "path=${BOOT_APP0}" >> "$GITHUB_OUTPUT"
 
-      - name: Stage release artifacts
+      - name: Stage release artifacts (${{ matrix.variant }})
         run: |
           mkdir -p release
-          cp "build/${SKETCH}.ino.bootloader.bin" "release/gotek-touchscreen-bootloader.bin"
-          cp "build/${SKETCH}.ino.partitions.bin" "release/gotek-touchscreen-partitions.bin"
-          cp "build/${SKETCH}.ino.bin"            "release/gotek-touchscreen.bin"
+          V="${{ matrix.variant }}"
+          cp "build/${SKETCH}.ino.bootloader.bin" "release/gotek-touchscreen-${V}-bootloader.bin"
+          cp "build/${SKETCH}.ino.partitions.bin" "release/gotek-touchscreen-${V}-partitions.bin"
+          cp "build/${SKETCH}.ino.bin"            "release/gotek-touchscreen-${V}.bin"
           cp "${{ steps.bootapp0.outputs.path }}" "release/boot_app0.bin"
           ls -lah release
 
@@ -99,7 +118,7 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            release/gotek-touchscreen-bootloader.bin
-            release/gotek-touchscreen-partitions.bin
-            release/gotek-touchscreen.bin
+            release/gotek-touchscreen-${{ matrix.variant }}-bootloader.bin
+            release/gotek-touchscreen-${{ matrix.variant }}-partitions.bin
+            release/gotek-touchscreen-${{ matrix.variant }}.bin
             release/boot_app0.bin

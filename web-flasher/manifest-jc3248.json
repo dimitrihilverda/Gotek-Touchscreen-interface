@@ -1,0 +1,29 @@
+{
+  "name": "Gotek Touchscreen — Guition JC3248W535C",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "funding_url": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest/download/gotek-touchscreen-jc3248-bootloader.bin",
+          "offset": 0
+        },
+        {
+          "path": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest/download/gotek-touchscreen-jc3248-partitions.bin",
+          "offset": 32768
+        },
+        {
+          "path": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest/download/boot_app0.bin",
+          "offset": 57344
+        },
+        {
+          "path": "https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest/download/gotek-touchscreen-jc3248.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ]
+}
