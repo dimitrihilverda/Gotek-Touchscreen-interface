@@ -6,8 +6,11 @@ One-click installer for the Gotek Touchscreen Interface firmware, powered by
 ## Files
 
 - `index.html` — standalone page. Drop on any static host.
-- `manifest.json` — ESP Web Tools manifest pointing at the latest GitHub
-  release binaries.
+- `manifest-jc3248.json` — ESP Web Tools manifest for the Guition JC3248W535C.
+- `manifest-waveshare.json` — manifest for the Waveshare ESP32-S3-Touch-LCD-2.8.
+
+The page has a board dropdown that swaps which manifest the install button
+loads. Visitor's last choice is remembered in `localStorage`.
 
 ## How to host
 
@@ -33,19 +36,25 @@ The flasher then lives at `https://dimitrihilverda.github.io/Gotek-Touchscreen-i
 
 ## How releases feed the flasher
 
-The `.github/workflows/build-release.yml` workflow builds the firmware with
-`arduino-cli` on every pushed `v*.*.*` tag (or via manual
-`workflow_dispatch`), then attaches these files to the GitHub release:
+The `.github/workflows/build-release.yml` workflow uses a build matrix to
+produce binaries for each supported display variant on every pushed
+`v*.*.*` tag (or via manual `workflow_dispatch`). The arduino-cli
+`--build-property` flag injects the right `ACTIVE_DISPLAY` define per
+matrix entry. For each variant `V` the workflow attaches these files to
+the GitHub release:
 
-| Filename                              | Offset (hex) | Source                |
-|---------------------------------------|--------------|-----------------------|
-| `gotek-touchscreen-bootloader.bin`    | `0x0000`     | sketch build          |
-| `gotek-touchscreen-partitions.bin`    | `0x8000`     | sketch build          |
-| `boot_app0.bin`                       | `0xE000`     | ESP32 Arduino core    |
-| `gotek-touchscreen.bin`               | `0x10000`    | sketch build (app)    |
+| Filename                                   | Offset (hex) | Source                |
+|--------------------------------------------|--------------|-----------------------|
+| `gotek-touchscreen-{V}-bootloader.bin`     | `0x0000`     | sketch build          |
+| `gotek-touchscreen-{V}-partitions.bin`     | `0x8000`     | sketch build          |
+| `boot_app0.bin`                            | `0xE000`     | ESP32 Arduino core    |
+| `gotek-touchscreen-{V}.bin`                | `0x10000`    | sketch build (app)    |
 
-`manifest.json` uses `releases/latest/download/<filename>` URLs, so the
-flasher always picks up the newest tagged release without any manifest edits.
+The manifests use `releases/latest/download/<filename>` URLs, so the
+flasher always picks up the newest tagged release without any manifest
+edits. Currently `{V}` is `jc3248` or `waveshare`. Adding a new variant is
+just one more matrix entry in the workflow plus a new `manifest-{V}.json`
+and option in the dropdown.
 
 ## Cutting a new release
 

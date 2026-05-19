@@ -88,6 +88,30 @@
     ol, ul { padding-left: 22px; }
     li { margin: 4px 0; }
 
+    .board-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin: 16px 0 20px;
+    }
+    .board-row label {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .board-row select {
+      flex: 1 1 320px;
+      background: #0d1117;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: inherit;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .board-row select:hover { border-color: var(--accent); }
+    .board-row select:focus { outline: none; border-color: var(--accent); }
     .install-row {
       display: flex;
       align-items: center;
@@ -159,12 +183,24 @@
     <section>
       <h2>Install</h2>
       <p>
-        Plug the device into a USB port, then click <em>Install</em> and pick
-        the matching serial port from the list.
+        Pick your board, plug the device into a USB port, then click
+        <em>Install</em> and choose the matching serial port from the list.
       </p>
 
+      <div class="board-row">
+        <label for="board">Board:</label>
+        <select id="board">
+          <option value="manifest-jc3248.json" selected>
+            Guition JC3248W535C (ESP32-S3, 480×320 QSPI)
+          </option>
+          <option value="manifest-waveshare.json">
+            Waveshare ESP32-S3-Touch-LCD-2.8 (320×240 SPI)
+          </option>
+        </select>
+      </div>
+
       <div class="install-row">
-        <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+        <esp-web-install-button id="installer" manifest="manifest-jc3248.json"></esp-web-install-button>
         <span class="muted" id="version-tag">latest</span>
       </div>
 
@@ -224,6 +260,26 @@
   const hasWebSerial = 'serial' in navigator;
   document.getElementById('browser-ok').style.display  = hasWebSerial ? 'block' : 'none';
   document.getElementById('browser-bad').style.display = hasWebSerial ? 'none'  : 'block';
+
+  // Board picker — swap the install button's manifest when the user changes
+  // the dropdown. Remembers the last choice in localStorage so a return visit
+  // pre-selects the same board.
+  const installer = document.getElementById('installer');
+  const boardSelect = document.getElementById('board');
+  const STORAGE_KEY = 'gotek-flasher-board';
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    const opt = [...boardSelect.options].find(o => o.value === saved);
+    if (opt) {
+      boardSelect.value = saved;
+      installer.setAttribute('manifest', saved);
+    }
+  }
+  boardSelect.addEventListener('change', e => {
+    const v = e.target.value;
+    installer.setAttribute('manifest', v);
+    localStorage.setItem(STORAGE_KEY, v);
+  });
 
   // If the latest GitHub release tag is fetchable, show it next to the button
   // so visitors know what they're about to flash. Falls back silently.

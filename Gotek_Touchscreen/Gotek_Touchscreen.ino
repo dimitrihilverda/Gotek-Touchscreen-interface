@@ -40,8 +40,13 @@
 #define DISPLAY_JC3248    1
 #define DISPLAY_WAVESHARE 2
 
-// SELECT YOUR DISPLAY HERE:
+// SELECT YOUR DISPLAY HERE.
+// The CI workflow (.github/workflows/build-release.yml) overrides this via
+// --build-property to produce per-variant release binaries — leave the
+// #ifndef guard in place or those builds will all turn into JC3248.
+#ifndef ACTIVE_DISPLAY
 #define ACTIVE_DISPLAY DISPLAY_JC3248
+#endif
 
 // ============================================================================
 // CONDITIONAL INCLUDES
