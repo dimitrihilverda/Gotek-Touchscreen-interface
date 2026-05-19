@@ -129,16 +129,22 @@ many users can't use it.
 
 ---
 
-## Spoor 4 — Browser-based flasher
+## Spoor 4 — Browser-based flasher  ✅ done (v0.9.0)
 
-Goal: User plugs in their device, opens `dimitrihilverda.<tld>/gotek-flash`, picks a variant, clicks Flash.
+Goal: User plugs in their device, opens a static page, clicks Install.
 
-- Use [esptool-js](https://github.com/espressif/esptool-js) (Web Serial API, Chrome/Edge).
-- Static HTML page with variant dropdown: `lite`, `full`.
-- Pre-built `.bin` artifacts pushed as GitHub Release assets by a CI workflow on tag.
-  - `arduino-cli compile` or PlatformIO matrix build, one job per variant.
-- Page fetches the latest release `.bin` from GitHub and streams it via Web Serial.
-- Detect chip (must be ESP32-S3) before flashing.
+Shipped:
+
+- `.github/workflows/build-release.yml` — compiles the sketch with
+  `arduino-cli` on every pushed `v*.*.*` tag (and via `workflow_dispatch`),
+  then attaches the four required `.bin` files to a GitHub Release.
+- `web-flasher/index.html` — single-file installer powered by
+  [ESP Web Tools](https://esphome.github.io/esp-web-tools/). Hostable on
+  any static site; works from Chrome / Edge / Opera via the Web Serial API.
+- `web-flasher/manifest.json` — points at
+  `releases/latest/download/*.bin`, so the manifest never needs updating
+  between versions.
+- `web-flasher/README.md` — hosting + release process docs.
 
 ## Order of work
 

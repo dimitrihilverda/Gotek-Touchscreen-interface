@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flash Gotek Touchscreen Interface</title>
+  <link rel="icon" href="data:,">
+
+  <!--
+    Single-file installer for the Gotek Touchscreen Interface firmware.
+
+    Drop this file (with manifest.json beside it) on any static host. Visitors
+    plug their ESP32-S3 device into a USB port and click Install — the .bin
+    files are pulled directly from the latest GitHub release via the URLs in
+    manifest.json. Requires Chrome/Edge/Opera (Web Serial API).
+
+    Powered by ESP Web Tools — https://esphome.github.io/esp-web-tools/
+  -->
+
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module">
+  </script>
+
+  <style>
+    :root {
+      --bg: #0a0e14;
+      --panel: #11161e;
+      --border: #1f2937;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #4fc3f7;
+      --warn: #ffb74d;
+      --bad:  #ef5350;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono",
+                   Consolas, monospace;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    body { padding: 32px 16px 64px; display: flex; justify-content: center; }
+    main {
+      width: 100%;
+      max-width: 720px;
+    }
+
+    header h1 {
+      font-size: 24px;
+      margin: 0 0 4px;
+      letter-spacing: 0.02em;
+    }
+    header p.subtitle {
+      color: var(--muted);
+      margin: 0 0 32px;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    h2 {
+      font-size: 16px;
+      margin: 0 0 12px;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    p { margin: 8px 0; }
+    .muted { color: var(--muted); font-size: 14px; }
+    code {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    ol, ul { padding-left: 22px; }
+    li { margin: 4px 0; }
+
+    .install-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    esp-web-install-button { --esp-tools-button-color: var(--accent); }
+    esp-web-install-button::part(button) {
+      background: var(--accent);
+      color: #0a0e14;
+      font-weight: 600;
+      font-family: inherit;
+      padding: 12px 20px;
+      border-radius: 6px;
+      border: 0;
+      cursor: pointer;
+      font-size: 15px;
+    }
+    esp-web-install-button::part(button):hover { filter: brightness(1.1); }
+
+    .warn-banner {
+      background: rgba(255, 183, 77, 0.08);
+      border: 1px solid var(--warn);
+      color: var(--warn);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    .bad-banner {
+      background: rgba(239, 83, 80, 0.08);
+      border: 1px solid var(--bad);
+      color: var(--bad);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    .browser-ok { display: none; }
+    .browser-bad { display: none; }
+    footer {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      margin-top: 48px;
+    }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<main>
+  <header>
+    <h1>Gotek Touchscreen Interface — flasher</h1>
+    <p class="subtitle">
+      Flash the latest firmware to your ESP32-S3 device straight from the
+      browser. No CLI, no Arduino IDE.
+    </p>
+  </header>
+
+  <div id="browser-bad" class="bad-banner browser-bad">
+    Your browser doesn't expose the Web Serial API. Please open this page in
+    <strong>Chrome, Edge, or Opera</strong> on a desktop OS (Firefox and Safari
+    are not supported).
+  </div>
+
+  <div id="browser-ok" class="browser-ok">
+    <section>
+      <h2>Install</h2>
+      <p>
+        Plug the device into a USB port, then click <em>Install</em> and pick
+        the matching serial port from the list.
+      </p>
+
+      <div class="install-row">
+        <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+        <span class="muted" id="version-tag">latest</span>
+      </div>
+
+      <p class="muted" style="margin-top: 16px;">
+        The flasher pulls the firmware binaries from the latest
+        <a href="https://github.com/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest"
+           target="_blank" rel="noopener">GitHub release</a>.
+        First-time installs will erase the flash; existing settings on the SD
+        card are untouched.
+      </p>
+    </section>
+
+    <section>
+      <h2>Before you start</h2>
+      <ul>
+        <li>USB-C / USB-A cable that supports <em>data</em> (not power-only).</li>
+        <li>The device must enumerate as a serial port. If nothing shows up,
+            hold <code>BOOT</code> while plugging in, then release.</li>
+        <li>Close the Arduino IDE / any other serial monitor first.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>After flashing</h2>
+      <ol>
+        <li>Unplug the device, reinsert the SD card with your ADF / DSK
+            collection and a <code>CONFIG.TXT</code>.</li>
+        <li>Power the device through the Amiga (or any 5V USB source).</li>
+        <li>On the splash, tap <code>FLIP 180</code> if the picture is
+            upside-down — the choice is persisted.</li>
+        <li>Open <code>http://gotek.local/</code> on the same LAN after WiFi
+            is configured.</li>
+      </ol>
+    </section>
+  </div>
+
+  <footer>
+    <p>
+      Source &middot;
+      <a href="https://github.com/dimitrihilverda/Gotek-Touchscreen-interface"
+         target="_blank" rel="noopener">
+        github.com/dimitrihilverda/Gotek-Touchscreen-interface
+      </a>
+    </p>
+    <p>
+      Flasher powered by
+      <a href="https://esphome.github.io/esp-web-tools/" target="_blank" rel="noopener">
+        ESP Web Tools
+      </a>
+    </p>
+  </footer>
+</main>
+
+<script>
+  // Feature-detect Web Serial up-front. Without it the install button can't
+  // do anything anyway, so show a clearer message instead of a broken page.
+  const hasWebSerial = 'serial' in navigator;
+  document.getElementById('browser-ok').style.display  = hasWebSerial ? 'block' : 'none';
+  document.getElementById('browser-bad').style.display = hasWebSerial ? 'none'  : 'block';
+
+  // If the latest GitHub release tag is fetchable, show it next to the button
+  // so visitors know what they're about to flash. Falls back silently.
+  fetch('https://api.github.com/repos/dimitrihilverda/Gotek-Touchscreen-interface/releases/latest')
+    .then(r => r.ok ? r.json() : null)
+    .then(rel => {
+      if (!rel || !rel.tag_name) return;
+      document.getElementById('version-tag').textContent = rel.tag_name;
+    })
+    .catch(() => {});
+</script>
+
+</body>
+</html>
