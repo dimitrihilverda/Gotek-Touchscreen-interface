@@ -19,6 +19,13 @@ on:
 
 permissions:
   contents: write   # needed to create / update the Release
+  pages: write      # needed by the Pages deploy job
+  id-token: write   # needed by actions/deploy-pages
+
+concurrency:
+  # One Pages deploy at a time across the repo.
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -131,3 +138,63 @@ jobs:
             release/gotek-touchscreen-${{ matrix.variant }}-partitions.bin
             release/gotek-touchscreen-${{ matrix.variant }}.bin
             release/boot_app0.bin
+
+      - name: Upload firmware as workflow artifact (${{ matrix.variant }})
+        # The follow-up "deploy-pages" job picks this up to assemble the
+        # CORS-safe same-origin flasher site.
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.variant }}
+          path: |
+            release/gotek-touchscreen-${{ matrix.variant }}-bootloader.bin
+            release/gotek-touchscreen-${{ matrix.variant }}-partitions.bin
+            release/gotek-touchscreen-${{ matrix.variant }}.bin
+            release/boot_app0.bin
+          if-no-files-found: error
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Deploy the flasher page to GitHub Pages, bundling the firmware
+  # binaries alongside the HTML so the manifest's relative URLs resolve
+  # same-origin (avoids GitHub Releases' CORS-free download chain).
+  # ──────────────────────────────────────────────────────────────────────
+  deploy-pages:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ always() && needs.build.result != 'cancelled' }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Checkout flasher page sources
+        uses: actions/checkout@v4
+
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: firmware-*
+          merge-multiple: true
+
+      - name: Assemble site
+        run: |
+          mkdir -p site
+          cp -v web-flasher/index.html        site/
+          cp -v web-flasher/manifest-*.json   site/
+          # All matrix variants drop their .bin files into the same folder.
+          # boot_app0.bin is shared and copied by every matrix entry — harmless
+          # to overwrite with the same content.
+          cp -v artifacts/*.bin               site/ || true
+          ls -lah site/
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

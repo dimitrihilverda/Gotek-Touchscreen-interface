@@ -1,0 +1,4 @@
+# Local copies of firmware binaries for offline / local-testing of the flasher.
+# Fetched at runtime from the latest GitHub release via fetch-binaries.sh, or
+# auto-published by CI as part of the GitHub Pages bundle. Never committed.
+*.bin
