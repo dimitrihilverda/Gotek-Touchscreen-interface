@@ -160,37 +160,52 @@ static void wifiDrawConnecting(const String &ssid) {
   gfx_flush();
 }
 
-// Success screen. Shows IP + hostname; one CONTINUE button to dismiss.
+// Success screen. Shows IP + hostname; one Done button to dismiss.
+// Layout: rows have explicit spacing; Done lives in its own row at the bottom
+// so it never overlaps the LAN / mDNS URLs.
 static void wifiDrawSuccess(const String &ssid, const String &ip) {
   wifiDrawHeader("Wi-Fi Setup");
-  int boxW = 320, boxH = 170;
+
+  // Sizing — wider modal on JC3248 leaves room for the full mDNS URL at
+  // textSize 2 without truncation. Increased height adds a dedicated button row.
+  int boxW = (gW >= 400) ? 420 : (gW - 20);
+  int boxH = 218;
   int bx = (gW - boxW) / 2, by = (gH - boxH) / 2;
   drawModalFrame(bx, by, boxW, boxH, "Connected", 0x03E0);
 
-  gfx_setTextSize(1);
-  gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
-  gfx_setCursor(bx + 14, by + 36); gfx_print("Network:");
-  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
-  gfx_setTextSize(2);
-  gfx_setCursor(bx + 14, by + 48); gfx_print(ssid);
+  int contentX = bx + 14;
+  int y = by + 36;
+  const int labelH  = 12;
+  const int valueH  = 20;
+  const int rowGap  = 6;
 
-  gfx_setTextSize(1);
-  gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
-  gfx_setCursor(bx + 14, by + 76); gfx_print("LAN address:");
-  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-  gfx_setTextSize(2);
-  gfx_setCursor(bx + 14, by + 88); gfx_print("http://" + ip + "/");
+  // Row 1 — Network
+  gfx_setTextSize(1); gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+  gfx_setCursor(contentX, y); gfx_print("Network:");
+  y += labelH;
+  gfx_setTextSize(2); gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+  gfx_setCursor(contentX, y); gfx_print(ssid);
+  y += valueH + rowGap;
 
-  gfx_setTextSize(1);
-  gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
-  gfx_setCursor(bx + 14, by + 112); gfx_print("Also reachable as:");
-  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-  gfx_setTextSize(2);
-  gfx_setCursor(bx + 14, by + 124); gfx_print("http://" + String(MDNS_HOSTNAME) + ".local/");
+  // Row 2 — LAN address
+  gfx_setTextSize(1); gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+  gfx_setCursor(contentX, y); gfx_print("LAN address:");
+  y += labelH;
+  gfx_setTextSize(2); gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+  gfx_setCursor(contentX, y); gfx_print("http://" + ip + "/");
+  y += valueH + rowGap;
 
-  // CONTINUE button
-  int btnW = 140, btnH = 32;
-  int bxn = bx + boxW - btnW - 10, byn = by + boxH - btnH - 10;
+  // Row 3 — mDNS hostname
+  gfx_setTextSize(1); gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+  gfx_setCursor(contentX, y); gfx_print("Also reachable as:");
+  y += labelH;
+  gfx_setTextSize(2); gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+  gfx_setCursor(contentX, y); gfx_print("http://" + String(MDNS_HOSTNAME) + ".local/");
+
+  // Done button — its own row at the bottom-right, well below the URLs.
+  int btnW = 110, btnH = 30;
+  int bxn = bx + boxW - btnW - 12;
+  int byn = by + boxH - btnH - 10;
   gfx_fillRect(bxn, byn, btnW, btnH, 0x03E0);
   gfx_drawRect(bxn, byn, btnW, btnH, TFT_WHITE);
   gfx_setTextSize(2); gfx_setTextColor(TFT_BLACK, 0x03E0);

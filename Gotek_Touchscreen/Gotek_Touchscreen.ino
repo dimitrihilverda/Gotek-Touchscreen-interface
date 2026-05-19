@@ -69,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.012"
+#define FW_INTERNAL "power-lite.013"
 
 using std::vector;
 using std::sort;
