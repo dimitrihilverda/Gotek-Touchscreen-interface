@@ -14,19 +14,40 @@ loads. Visitor's last choice is remembered in `localStorage`.
 
 ## How to host
 
-Two options:
+The manifests use **relative URLs**, so the binaries must live next to
+`index.html`. GitHub Releases by themselves don't expose CORS headers on
+their download redirects, so a `fetch()` from a different origin can't
+reach the .bin files — same-origin hosting is the reliable path.
 
-### 1. Your own site (recommended)
+### 1. GitHub Pages (automatic, recommended)
 
-Copy `index.html` and `manifest.json` to your web root, e.g.
-`https://dimitrihilverda.nl/gotek-flash/`. That's the whole deployment —
-the manifest references absolute URLs on GitHub Releases, so the binaries
-never need to live on your server.
+The `build-release.yml` workflow bundles `index.html`, both
+`manifest-*.json`, and all `.bin` files into a single artifact and pushes
+it to GitHub Pages on every tag. Enable Pages once for the repo:
 
-### 2. GitHub Pages
+  Repo Settings → Pages → Build and deployment → Source: **GitHub Actions**
 
-Enable GitHub Pages for this repository (Settings → Pages → Source: `main` → folder `/web-flasher`).
-The flasher then lives at `https://dimitrihilverda.github.io/Gotek-Touchscreen-interface/`.
+The flasher will then be available at
+`https://dimitrihilverda.github.io/Gotek-Touchscreen-interface/` after the
+next release.
+
+### 2. Your own site
+
+Copy `index.html`, the `manifest-*.json` files, **and the `.bin` files
+from the latest release** into the same directory on your web root, e.g.
+`https://dimitrihilverda.nl/gotek-flash/`. Re-upload the .bin files when
+you cut a new release.
+
+### 3. Local testing
+
+```sh
+cd web-flasher
+./fetch-binaries.sh         # pulls .bin files from the latest release
+python -m http.server 8765  # any static server is fine
+```
+
+Then open <http://localhost:8765/> in Chrome / Edge. The .bin files are
+listed in `.gitignore` so they don't get committed.
 
 ## Requirements
 
