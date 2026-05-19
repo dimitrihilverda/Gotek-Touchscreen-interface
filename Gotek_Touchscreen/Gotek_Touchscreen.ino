@@ -69,7 +69,7 @@ extern "C" {
 
 // Internal build tag — bumped every time the firmware is changed on the power-lite
 // branch so you can confirm you flashed the latest commit. Format: power-lite.NNN
-#define FW_INTERNAL "power-lite.017"
+#define FW_INTERNAL "power-lite.018"
 
 using std::vector;
 using std::sort;
@@ -1061,13 +1061,6 @@ bool touchRead(uint16_t *x, uint16_t *y) {
   } else {
     *x = (LCD_HEIGHT - 1) - raw_y;
     *y = raw_x;
-  }
-  // Periodic debug: throttle so we don't drown the serial output during a drag.
-  static unsigned long lastTouchLog = 0;
-  if (millis() - lastTouchLog > 200) {
-    Serial.printf("touch raw=(%d,%d) flip=%d virt=(%d,%d) gW=%d gH=%d ALPHA=%d\n",
-                  raw_x, raw_y, (int)cfg_display_flip, *x, *y, gW, gH, ALPHA_BAR_X);
-    lastTouchLog = millis();
   }
   return true;
 }
@@ -2704,8 +2697,15 @@ void drawToggle(int x, int y, bool state) {
 #define LIST_BOTTOM    (gH - 48)
 #endif
 #ifndef ALPHA_BAR_W
-#define ALPHA_BAR_W  16       // width of the alphabet strip
-#define ALPHA_BAR_X  (gW - ALPHA_BAR_W)
+#define ALPHA_BAR_W      16   // visual width of the alphabet strip
+#define ALPHA_BAR_X      (gW - ALPHA_BAR_W)
+// Touch hit-zone is wider than the visual strip: some touch panels have a
+// dead zone or reduced range near the panel edge, which in flipped display
+// mode maps onto exactly the area where the alphabet bar lives. Widening
+// the hit zone lets the user reach the bar even when raw_y can't quite
+// reach LCD_HEIGHT-1.
+#define ALPHA_HIT_W      40
+#define ALPHA_HIT_X      (gW - ALPHA_HIT_W)
 #endif
 
 // ============================================================================
@@ -3780,7 +3780,7 @@ void drawAlphabetBar(int scrollOff, int totalItems) {
 // Handle touch on the alphabet bar — works for both SD and DAV lists
 // Returns true if handled. Updates the appropriate scroll offset and redraws.
 bool handleAlphabetTouch(uint16_t px, uint16_t py) {
-  if (px < ALPHA_BAR_X || py < LIST_START_Y || py >= LIST_BOTTOM) return false;
+  if (px < ALPHA_HIT_X || py < LIST_START_Y || py >= LIST_BOTTOM) return false;
   if (active_letter_count == 0) return false;
 
   int barH = LIST_BOTTOM - LIST_START_Y;
@@ -4998,9 +4998,9 @@ void loop() {
       if (curDy > touch_max_dy) touch_max_dy = curDy;
       if (curDx > touch_max_dx) touch_max_dx = curDx;
 
-      // Alphabet bar: live drag always handled
-      if (current_screen == SCR_SELECTION && px >= ALPHA_BAR_X &&
-          touch_start_x >= ALPHA_BAR_X &&
+      // Alphabet bar: live drag always handled (uses widened hit zone)
+      if (current_screen == SCR_SELECTION && px >= ALPHA_HIT_X &&
+          touch_start_x >= ALPHA_HIT_X &&
           py >= LIST_START_Y && py < LIST_BOTTOM) {
         static unsigned long lastAlphaDrag = 0;
         if (millis() - lastAlphaDrag > 80) {
@@ -5010,7 +5010,7 @@ void loop() {
       }
       // Game list: live drag-scrolling (finger moves list in real-time)
       else if (touch_start_screen == SCR_SELECTION &&
-               touch_start_x < ALPHA_BAR_X &&
+               touch_start_x < ALPHA_HIT_X &&
                touch_start_y >= LIST_START_Y && touch_start_y < LIST_BOTTOM) {
         if (!drag_scrolling && touch_max_dy > DRAG_THRESHOLD) {
           drag_scrolling = true;
@@ -5126,11 +5126,11 @@ void loop() {
 
     // Use the MAXIMUM movement seen during the entire touch
     bool wasInListArea = (touch_start_screen == SCR_SELECTION &&
-                          touch_start_x < ALPHA_BAR_X &&
+                          touch_start_x < ALPHA_HIT_X &&
                           touch_start_y >= LIST_START_Y &&
                           touch_start_y < LIST_BOTTOM);
     bool wasInDAVListArea = (touch_start_screen == SCR_WEBDAV &&
-                             touch_start_x < ALPHA_BAR_X &&
+                             touch_start_x < ALPHA_HIT_X &&
                              touch_start_y >= LIST_START_Y &&
                              touch_start_y < LIST_BOTTOM);
     bool hadAnyMovement = (touch_max_dy > TAP_MAX_MOVE || touch_max_dx > TAP_MAX_MOVE);
