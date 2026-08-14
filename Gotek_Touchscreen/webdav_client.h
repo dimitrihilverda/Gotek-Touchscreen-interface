@@ -106,12 +106,16 @@ public:
       secure = new WiFiClientSecure();
       if (!secure) { _lastError = "Out of memory"; return false; }
       secure->setInsecure();  // Skip cert validation (ESP32 has no CA store)
-      secure->setTimeout(15);
+      // Arduino Client::setTimeout takes MILLISECONDS on ESP32-Arduino. The
+      // old value of 15 (= 15 ms) was effectively no timeout and let hung
+      // TLS/PROPFIND requests block the loop task indefinitely. 15 s is
+      // enough for a slow server to answer without freezing the UI forever.
+      secure->setTimeout(15000);
       tcp = secure;
     } else {
       tcp = new WiFiClient();
       if (!tcp) { _lastError = "Out of memory"; return false; }
-      tcp->setTimeout(15);
+      tcp->setTimeout(15000);
     }
 
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
@@ -208,12 +212,14 @@ public:
       secure = new WiFiClientSecure();
       if (!secure) { _lastError = "Out of memory"; return -1; }
       secure->setInsecure();
-      secure->setTimeout(30);
+      // setTimeout is milliseconds; 30 was almost-instant. 30 s here (the
+      // GET/HEAD paths handle whole ADFs/covers and need a fair while).
+      secure->setTimeout(30000);
       tcp = secure;
     } else {
       tcp = new WiFiClient();
       if (!tcp) { _lastError = "Out of memory"; return -1; }
-      tcp->setTimeout(30);
+      tcp->setTimeout(30000);
     }
 
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
@@ -325,12 +331,14 @@ public:
       secure = new WiFiClientSecure();
       if (!secure) { _lastError = "Out of memory"; return -1; }
       secure->setInsecure();
-      secure->setTimeout(30);
+      // setTimeout is milliseconds; 30 was almost-instant. 30 s here (the
+      // GET/HEAD paths handle whole ADFs/covers and need a fair while).
+      secure->setTimeout(30000);
       tcp = secure;
     } else {
       tcp = new WiFiClient();
       if (!tcp) { _lastError = "Out of memory"; return -1; }
-      tcp->setTimeout(30);
+      tcp->setTimeout(30000);
     }
 
     if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
@@ -382,6 +390,13 @@ public:
     long totalBytes = 0;
     timeout = millis();
 
+    // Same freeze story as _readHTTPBody: reads were already buffered but
+    // never yielded when the socket had data flowing steadily. Add a
+    // yield() after each read burst so WiFi bookkeeping, touch polling
+    // and the USB MSC task get scheduling time during multi-second ADF
+    // downloads. Also refuses to spin if the socket is stalled with no
+    // data — the delay(1)/delay(5) branch was the only implicit yield
+    // and only fired on empty reads.
     if (chunked) {
       // Chunked transfer: read each chunk into buffer
       while (tcp->connected() && millis() - timeout < 30000) {
@@ -404,6 +419,7 @@ public:
             totalBytes += got;
             bytesRead += got;
             timeout = millis();
+            yield();
           } else {
             delay(1);
           }
@@ -416,6 +432,7 @@ public:
         if (tcp->available()) tcp->read();  // \r
         if (tcp->available()) tcp->read();  // \n
         timeout = millis();
+        yield();
       }
     } else {
       // Content-Length or read-till-close
@@ -430,6 +447,7 @@ public:
           totalBytes += got;
           timeout = millis();
         }
+        yield();
       }
     }
 
@@ -533,6 +551,17 @@ private:
 
     // Read body
     timeout = millis();
+    // Chunked buffer-based reads. The previous implementation grew `body`
+    // one byte at a time (`body += (char)tcp->read()`) which is O(N²) for
+    // a String (each append checks capacity + realloc on growth) and
+    // never yielded when the socket had steady data available. Large
+    // PROPFIND responses (100+ KB) would freeze the loop task for several
+    // seconds and eventually trip the task watchdog. We now readBytes()
+    // into a stack buffer, append via null-terminated concat, and yield()
+    // every chunk so WiFi / touch / USB MSC all get their turn.
+    static const size_t READ_CHUNK = 256;
+    char cbuf[READ_CHUNK + 1];
+
     if (chunked) {
       // Chunked transfer encoding: each chunk starts with hex size + \r\n,
       // followed by data, followed by \r\n. Final chunk is "0\r\n\r\n".
@@ -547,13 +576,21 @@ private:
         if (chunkSize <= 0) break;  // Final chunk
         chunkCount++;
         _log("DAV: chunk #" + String(chunkCount) + " size=" + String(chunkSize));
-        // Read chunk data
+        // Pre-grow body so the concat below doesn't realloc mid-loop
+        body.reserve(body.length() + chunkSize);
         long bytesRead = 0;
         while (bytesRead < chunkSize && tcp->connected() && millis() - timeout < 15000) {
           if (tcp->available()) {
-            body += (char)tcp->read();
-            bytesRead++;
-            timeout = millis();
+            size_t want = chunkSize - bytesRead;
+            if (want > READ_CHUNK) want = READ_CHUNK;
+            size_t got = tcp->readBytes(cbuf, want);
+            if (got > 0) {
+              cbuf[got] = '\0';
+              body.concat(cbuf);
+              bytesRead += got;
+              timeout = millis();
+            }
+            yield();
           } else {
             delay(1);
           }
@@ -567,8 +604,15 @@ private:
       body.reserve(contentLength);
       while ((int)body.length() < contentLength && millis() - timeout < 15000) {
         if (tcp->available()) {
-          body += (char)tcp->read();
-          timeout = millis();
+          size_t want = contentLength - body.length();
+          if (want > READ_CHUNK) want = READ_CHUNK;
+          size_t got = tcp->readBytes(cbuf, want);
+          if (got > 0) {
+            cbuf[got] = '\0';
+            body.concat(cbuf);
+            timeout = millis();
+          }
+          yield();
         } else {
           delay(1);
         }
@@ -577,8 +621,13 @@ private:
       // Read until connection closes (or timeout)
       while (tcp->connected() && millis() - timeout < 10000) {
         if (tcp->available()) {
-          body += (char)tcp->read();
-          timeout = millis();
+          size_t got = tcp->readBytes(cbuf, READ_CHUNK);
+          if (got > 0) {
+            cbuf[got] = '\0';
+            body.concat(cbuf);
+            timeout = millis();
+          }
+          yield();
         } else {
           delay(1);
         }

@@ -91,18 +91,20 @@ static const char *resetReasonName(esp_reset_reason_t r) {
 static esp_reset_reason_t g_resetReason = ESP_RST_UNKNOWN;
 static bool resetWasAbnormal(esp_reset_reason_t r) {
   // Crashes / watchdogs / brownouts are interesting; power-on / external reset
-  // / clean restart are routine.
+  // / clean restart are routine. Include ESP_RST_SW too — a self-triggered
+  // esp_restart() usually comes from a "we lost WiFi, force reboot" recovery
+  // path and the user probably wants to know.
   return r == ESP_RST_PANIC || r == ESP_RST_INT_WDT ||
          r == ESP_RST_TASK_WDT || r == ESP_RST_WDT ||
-         r == ESP_RST_BROWNOUT;
+         r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.9.3"
+#define FW_VERSION "v0.10.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.002"
+#define FW_INTERNAL "release.003"
 
 using std::vector;
 using std::sort;
@@ -1061,6 +1063,22 @@ void rampBacklight(uint8_t target) {
     delay(10);
   }
 }
+
+// RAII helper — dips the backlight to ~30 % of the configured level for the
+// duration of the enclosing scope, then restores it. Wraps the heavy
+// WiFi + USB + LCD-repaint sequences (DAV load, remote dongle send, etc.)
+// so the 5V rail isn't asked to power the LCD at full brightness while
+// WiFi RX is drawing peak current — the exact stack that browns out an
+// Amiga USB port.
+struct BacklightDip {
+  uint8_t saved;
+  BacklightDip() : saved(cfg_backlight) {
+    uint8_t dipped = cfg_backlight / 3;
+    if (dipped < 30) dipped = 30;
+    setBacklight(dipped);
+  }
+  ~BacklightDip() { setBacklight(saved); }
+};
 
 // ============================================================================
 // TOUCH INTERFACE (Backend-specific)
@@ -2989,7 +3007,12 @@ void davPrecacheOneCover() {
 
   // Check if already cached
   String cachePath = davCoverCachePath(coverPath);
-  if (!SD_MMC.exists(cachePath.c_str())) {
+  // Persistent "no cover found" marker sits at <hash>.miss next to the
+  // cached image. Without it we'd retry the same two TLS handshakes
+  // (JPG then PNG, ~30 s timeout each in the worst case) on every
+  // re-browse of a directory that legitimately has no covers.
+  String missPath = cachePath + ".miss";
+  if (!SD_MMC.exists(cachePath.c_str()) && !SD_MMC.exists(missPath.c_str())) {
     // Also check .png variant
     String pngCoverPath = basePath + folder.name + "/" + folder.name + ".png";
     String pngCachePath = davCoverCachePath(pngCoverPath);
@@ -3006,6 +3029,13 @@ void davPrecacheOneCover() {
           bytes = davClient.streamToBuffer(pngCoverPath, buf, maxCover);
           if (bytes > 0) {
             davSaveCachedCover(pngCoverPath, buf, bytes);
+          } else {
+            // Neither variant exists — write an empty marker so the next
+            // browse doesn't repeat the two-handshake dance. The marker
+            // is trivially cleared by deleting /DAV_COVERS/*.miss if
+            // the user later uploads covers to the server.
+            File m = SD_MMC.open(missPath.c_str(), "w");
+            if (m) m.close();
           }
         }
         free(buf);
@@ -4327,6 +4357,11 @@ bool remoteSendFile(int index) {
     return false;
   }
 
+  // Same rationale as loadFileFromDAV — a full-screen progress paint
+  // running while WiFi is TX'ing a 1.44 MB ADF at 100 % duty is the peak
+  // current sequence. Dip the backlight for the whole send.
+  BacklightDip _dip;
+
   String filepath = file_list[index];
   String filename = filenameOnly(filepath);
 
@@ -4606,6 +4641,12 @@ void doLoadSelected() {
 // ============================================================================
 
 size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
+  // Dip the backlight for the entire duration of the DAV load. The prior
+  // sequence of tud_disconnect + memset(1.44 MB PSRAM) + full LCD paint +
+  // TLS handshake + sustained WiFi RX + tud_connect was the exact stack
+  // most likely to brown out an Amiga's USB 5V rail. Restored on return.
+  BacklightDip _dip;
+
   // Show themed loading UI
   drawThemedLoadingScreen(displayName);
 
@@ -4708,12 +4749,12 @@ void setup() {
   // so backlight inrush doesn't overlap with later WiFi/USB power spikes.
   rampBacklight(cfg_backlight);
 
-  // ── Cracktro splash screen ──
-  drawCracktroSplash();
-
   // If the last reset was a crash / brownout / watchdog, surface that for a
-  // couple of seconds on the boot screen so the user knows the device did NOT
-  // come up cleanly. (The SD log already has it, but most users won't look.)
+  // couple of seconds BEFORE the cracktro. The cracktro blocks on a touch tap
+  // with no timeout — if a crash-looped device reboots overnight while nobody
+  // is watching, the banner would never be reached and the reason would only
+  // live in the SD log (which most users won't read). Show it first so the
+  // information is visible even when nobody is around.
   if (resetWasAbnormal(g_resetReason)) {
     gfx_fillScreen(TFT_BLACK);
     gfx_setTextSize(2);
@@ -4736,6 +4777,9 @@ void setup() {
     gfx_flush();
     delay(3000);
   }
+
+  // ── Cracktro splash screen ──
+  drawCracktroSplash();
 
   // ── Boot loading screen ──
   drawBootScreen();

@@ -95,6 +95,17 @@ bool initWiFiAP() {
   WiFi.setTxPower(WIFI_POWER_8_5dBm);
   Serial.println("WiFi TX power: 8.5 dBm (low power mode)");
 
+  // Modem-sleep: the radio powers down between DTIM beacons instead of
+  // idling at full RX. Typical steady-state current drops from ~120 mA
+  // to ~15-30 mA on an AP+STA build — this is the single biggest lever
+  // against the "Amiga won't hold 5V with WiFi on" complaint. STA path
+  // only; AP-only mode ignores WIFI_PS_* because it must keep the beacon
+  // radio hot to accept clients.
+  if (WiFi.getMode() == WIFI_STA || WiFi.getMode() == WIFI_AP_STA) {
+    WiFi.setSleep(WIFI_PS_MAX_MODEM);
+    Serial.println("WiFi modem-sleep: WIFI_PS_MAX_MODEM");
+  }
+
   // Start Access Point (if enabled)
   if (cfg_wifi_enabled) {
     WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), cfg_wifi_channel);
