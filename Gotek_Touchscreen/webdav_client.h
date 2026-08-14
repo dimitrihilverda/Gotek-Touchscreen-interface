@@ -34,11 +34,20 @@ struct DAVFileEntry {
 
 class GotekDAV {
 public:
-  GotekDAV() : _connected(false), _lastError(""), _debugLog("") {}
+  GotekDAV() : _connected(false), _lastError(""), _debugLog(""),
+               _byteProgressCb(nullptr) {}
 
   String lastError() { return _lastError; }
   String lastDebug() { return _debugLog; }
   bool isConnected() { return _connected; }
+
+  // Progress callback — invoked from within _readHTTPBody / streamToBuffer
+  // as bytes arrive, throttled to ~10 Hz so it can't slow the transfer.
+  // `total` is 0 if Content-Length was not advertised. Passing nullptr
+  // clears any previous callback. Runs on the same task as the DAV call
+  // (loop task); no threading concerns.
+  using ByteProgressCb = void (*)(size_t received, size_t total);
+  void setProgressCallback(ByteProgressCb cb) { _byteProgressCb = cb; }
 
   // Connect to WebDAV server (just validate connectivity)
   bool connect() {
@@ -419,6 +428,7 @@ public:
             totalBytes += got;
             bytesRead += got;
             timeout = millis();
+            _fireProgress((size_t)totalBytes, (size_t)contentLength);
             yield();
           } else {
             delay(1);
@@ -446,6 +456,7 @@ public:
         if (got > 0) {
           totalBytes += got;
           timeout = millis();
+          _fireProgress((size_t)totalBytes, (size_t)contentLength);
         }
         yield();
       }
@@ -468,6 +479,18 @@ private:
   String _lastError;
   String _debugLog;
   int    _httpStatus;
+  ByteProgressCb _byteProgressCb;
+
+  // Fire progress callback (if set) at most once per 100 ms so the UI
+  // gets a live counter without slowing the transfer to render speed.
+  void _fireProgress(size_t received, size_t total) {
+    if (!_byteProgressCb) return;
+    static uint32_t lastFireMs = 0;
+    uint32_t now = millis();
+    if (now - lastFireMs < 100 && received != total) return;
+    lastFireMs = now;
+    _byteProgressCb(received, total);
+  }
 
   void _log(const String &msg) {
     _debugLog += msg + "\n";
@@ -589,6 +612,7 @@ private:
               body.concat(cbuf);
               bytesRead += got;
               timeout = millis();
+              _fireProgress(body.length(), (size_t)contentLength);
             }
             yield();
           } else {
@@ -611,6 +635,7 @@ private:
             cbuf[got] = '\0';
             body.concat(cbuf);
             timeout = millis();
+            _fireProgress(body.length(), (size_t)contentLength);
           }
           yield();
         } else {
@@ -626,6 +651,7 @@ private:
             cbuf[got] = '\0';
             body.concat(cbuf);
             timeout = millis();
+            _fireProgress(body.length(), 0);
           }
           yield();
         } else {

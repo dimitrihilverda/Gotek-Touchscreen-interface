@@ -3148,6 +3148,22 @@ void davPrecacheOneCover() {
   dav_cover_precache_idx++;
 }
 
+// Byte-level progress hook — the DAV client calls this ~10 times / second
+// while a PROPFIND is streaming in, so a big-library user sees "Loading
+// (315 KB)" ticking up instead of a bar stuck at 30 % for 20 seconds.
+// File-scope function so it can be passed as a raw C callback.
+static void _davProgressToLoadingScreen(size_t rec, size_t total) {
+  int pct = 30;
+  String s;
+  if (total > 0) {
+    pct = 30 + (int)((uint32_t)30 * rec / total);
+    s = "Loading game list " + String(rec / 1024) + " / " + String(total / 1024) + " KB";
+  } else {
+    s = "Loading game list " + String(rec / 1024) + " KB";
+  }
+  drawDAVLoadingScreen(s, pct);
+}
+
 // ── davBrowsePath: fetch from network (with progress) or use cache ─────
 
 void davBrowsePath(const String &path) {
@@ -3197,10 +3213,14 @@ void davBrowsePath(const String &path) {
     return;
   }
 
-  // Phase 2: Loading game list
+  // Phase 2: Loading game list — hook live byte-progress so the bar and
+  // status text tick with the XML stream instead of jumping 30 → 60 at
+  // the end. Critical for large libraries (3000+ folders can take 20 s+).
   davAnimateProgress("Loading game list...", 30, 300);
 
+  davClient.setProgressCallback(_davProgressToLoadingScreen);
   davClient.listDir(path, dav_entries);
+  davClient.setProgressCallback(nullptr);
 
   davAnimateProgress("Loading game list...", 60, 400);
 
