@@ -99,12 +99,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.10.1"
+#define FW_VERSION "v0.10.2"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.004"
+#define FW_INTERNAL "release.005"
 
 using std::vector;
 using std::sort;
@@ -528,6 +528,14 @@ void sdLog(const String &msg);
 // FTP and WebDAV clients (included here so types are available for state vars below)
 #include "ftp_client.h"
 #include "webdav_client.h"
+
+// Explicit prototypes for functions whose signatures reference DAVFileEntry.
+// Arduino's auto-prototype generator would insert these at the very top of the
+// synthesized .cpp — before webdav_client.h is included — and fail with
+// "'DAVFileEntry' was not declared in this scope". Declaring them here after
+// the include tells the generator not to make its own.
+bool davReadCachedDir(const String &davFolderPath, std::vector<DAVFileEntry> &out);
+void davSaveCachedDir(const String &davFolderPath, const std::vector<DAVFileEntry> &entries);
 
 // WebDAV browsing state
 std::vector<DAVFileEntry> dav_entries;   // current directory listing
