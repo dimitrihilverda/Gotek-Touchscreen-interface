@@ -2916,6 +2916,23 @@ void davClearCache() {
   if (SD_MMC.exists(DAV_CACHE_FILE)) {
     SD_MMC.remove(DAV_CACHE_FILE);
   }
+  // Also drop the NFO + sub-folder listing cache — the user asked for a
+  // fresh view of the server, so stale metadata is not what they want.
+  // Cover images stay (they're expensive to re-download and rarely change).
+  File d = SD_MMC.open("/DAV_META");
+  if (d) {
+    while (true) {
+      File e = d.openNextFile();
+      if (!e) break;
+      String n = e.name();
+      e.close();
+      // openNextFile may return basename or full path depending on core.
+      if (!SD_MMC.remove(n.c_str())) {
+        SD_MMC.remove((String("/DAV_META/") + n).c_str());
+      }
+    }
+    d.close();
+  }
 }
 
 // ── DAV Cover Cache (persistent on SD card) ────────────────────────────
@@ -2962,6 +2979,91 @@ void davSaveCachedCover(const String &davPath, const uint8_t *buf, size_t size) 
   File f = SD_MMC.open(cachePath.c_str(), "w");
   if (!f) return;
   f.write(buf, size);
+  f.close();
+}
+
+// ── DAV metadata cache (NFO text + sub-folder listing) ─────────────────
+// Kept in /DAV_META/ so it's cleanly separable from the cover cache. Reuses
+// the same flat-path filename scheme as davCoverCachePath.
+#define DAV_META_DIR "/DAV_META"
+
+String davMetaCachePath(const String &davPath, const char *ext) {
+  String p = davPath;
+  if (p.startsWith("/")) p = p.substring(1);
+  if (p.endsWith("/"))   p = p.substring(0, p.length() - 1);
+  p.replace("/", "_");
+  if (p.length() > 60)   p = p.substring(p.length() - 60);
+  return String(DAV_META_DIR) + "/" + p + "." + ext;
+}
+
+// NFO — small text (usually <1 KB). Cache prevents a full TLS handshake on
+// every detail-screen tap for a game we've already looked at.
+bool davReadCachedNfo(const String &davPath, String &outText) {
+  String cachePath = davMetaCachePath(davPath, "nfo");
+  if (!SD_MMC.exists(cachePath.c_str())) return false;
+  File f = SD_MMC.open(cachePath.c_str(), "r");
+  if (!f) return false;
+  outText = "";
+  outText.reserve(f.size());
+  while (f.available()) outText += (char)f.read();
+  f.close();
+  return true;
+}
+void davSaveCachedNfo(const String &davPath, const String &text) {
+  if (!SD_MMC.exists(DAV_META_DIR)) SD_MMC.mkdir(DAV_META_DIR);
+  String cachePath = davMetaCachePath(davPath, "nfo");
+  File f = SD_MMC.open(cachePath.c_str(), "w");
+  if (!f) return;
+  f.print(text);
+  f.close();
+}
+
+// Sub-folder listing — line-based, tab-separated:
+//   <name>\t<isDir 0|1>\t<size>\t<coverFile>\t<nfoFile>\n
+// Filenames rarely contain tabs so no escaping needed. Empty coverFile /
+// nfoFile serialise as an empty field. Reads are additive (out is cleared
+// first).
+bool davReadCachedDir(const String &davFolderPath, std::vector<DAVFileEntry> &out) {
+  String cachePath = davMetaCachePath(davFolderPath, "dir");
+  if (!SD_MMC.exists(cachePath.c_str())) return false;
+  File f = SD_MMC.open(cachePath.c_str(), "r");
+  if (!f) return false;
+  out.clear();
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+    int p1 = line.indexOf('\t');
+    int p2 = (p1 >= 0) ? line.indexOf('\t', p1 + 1) : -1;
+    int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
+    int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
+    if (p4 < 0) continue;   // malformed line — skip
+    DAVFileEntry e{};
+    e.name      = line.substring(0, p1);
+    e.isDir     = (line.substring(p1 + 1, p2) == "1");
+    e.size      = (size_t)line.substring(p2 + 1, p3).toInt();
+    e.coverFile = line.substring(p3 + 1, p4);
+    e.nfoFile   = line.substring(p4 + 1);
+    e.hasCover  = e.coverFile.length() > 0;
+    e.hasNfo    = e.nfoFile.length()   > 0;
+    out.push_back(e);
+  }
+  f.close();
+  return out.size() > 0;
+}
+void davSaveCachedDir(const String &davFolderPath, const std::vector<DAVFileEntry> &entries) {
+  if (entries.empty()) return;
+  if (!SD_MMC.exists(DAV_META_DIR)) SD_MMC.mkdir(DAV_META_DIR);
+  String cachePath = davMetaCachePath(davFolderPath, "dir");
+  File f = SD_MMC.open(cachePath.c_str(), "w");
+  if (!f) return;
+  for (const auto &e : entries) {
+    f.print(e.name);      f.print('\t');
+    f.print(e.isDir ? '1' : '0'); f.print('\t');
+    f.print((uint32_t)e.size); f.print('\t');
+    f.print(e.coverFile); f.print('\t');
+    f.print(e.nfoFile);   f.print('\n');
+  }
   f.close();
 }
 
@@ -3253,9 +3355,14 @@ void davOpenFolderDetail(int folderIndex) {
   // Show loading
   showBusyIndicator("Loading...");
 
-  // PROPFIND the folder contents to find ADF files, cover, NFO
+  // Sub-folder listing — try the on-SD cache first, only PROPFIND on miss.
+  // Prevents a full TLS handshake + XML parse every time the user drills
+  // into a folder they've already visited.
   std::vector<DAVFileEntry> folderContents;
-  davClient.listDir(folderPath, folderContents);
+  if (!davReadCachedDir(folderPath, folderContents)) {
+    davClient.listDir(folderPath, folderContents);
+    if (!folderContents.empty()) davSaveCachedDir(folderPath, folderContents);
+  }
 
   dav_detail_disks.clear();
   dav_detail_cover_path = "";
@@ -3277,11 +3384,18 @@ void davOpenFolderDetail(int folderIndex) {
       dav_detail_cover_path = dirPath + f.coverFile;
     }
     if (f.nfoFile.length() > 0 && dav_detail_nfo_text.length() == 0) {
-      uint8_t nfoBuf[1024];
-      long nfoBytes = davClient.streamToBuffer(dirPath + f.nfoFile, nfoBuf, sizeof(nfoBuf) - 1);
-      if (nfoBytes > 0) {
-        nfoBuf[nfoBytes] = 0;
-        dav_detail_nfo_text = String((char *)nfoBuf);
+      String nfoPath = dirPath + f.nfoFile;
+      // Try SD cache first — NFO is small text (~1 KB) and never changes for
+      // an existing game folder, so caching it kills a full TLS handshake
+      // + read every time the user opens this detail screen.
+      if (!davReadCachedNfo(nfoPath, dav_detail_nfo_text)) {
+        uint8_t nfoBuf[1024];
+        long nfoBytes = davClient.streamToBuffer(nfoPath, nfoBuf, sizeof(nfoBuf) - 1);
+        if (nfoBytes > 0) {
+          nfoBuf[nfoBytes] = 0;
+          dav_detail_nfo_text = String((char *)nfoBuf);
+          davSaveCachedNfo(nfoPath, dav_detail_nfo_text);
+        }
       }
     }
   }
