@@ -99,12 +99,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.10.2"
+#define FW_VERSION "v0.10.3"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.005"
+#define FW_INTERNAL "release.006"
 
 using std::vector;
 using std::sort;
@@ -3844,6 +3844,24 @@ void drawInfoScreen() {
     // a dynamic LAN IP and works without DNS shenanigans on most home networks.
     if (wifi_sta_connected) {
       drawTileRow(rowX + 24, rowY, "URL:     ", "gotek.local", labelCol, TFT_CYAN);
+      rowY += rowH;
+    }
+    // WebDAV — visible only when configured. "Connected" means a successful
+    // PROPFIND has happened this boot; "host only" means it's configured but
+    // no listing has run yet (davClient.connect() is lazy).
+    if (cfg_dav_enabled) {
+      rowY += 2;
+      drawTileRow(rowX, rowY, "DAV: ", "", labelCol, valueCol);
+      if (davClient.isConnected()) {
+        gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+        gfx_print(cfg_dav_host.length() > 0 ? cfg_dav_host : String("Connected"));
+      } else if (cfg_dav_host.length() > 0) {
+        gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+        gfx_print(cfg_dav_host);
+      } else {
+        gfx_setTextColor(WB_MED_GREY, TFT_BLACK);
+        gfx_print("No host");
+      }
       rowY += rowH;
     }
   }

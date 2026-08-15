@@ -1528,46 +1528,75 @@ void handleDAVCover(WiFiClient &client, const String &queryPath) {
     return;
   }
 
-  // Allocate buffer in PSRAM for cover image (max 150KB)
+  String lp = queryPath; lp.toLowerCase();
+  String ct = lp.endsWith(".png") ? "image/png" : "image/jpeg";
+
+  // Fast path — cover is on the SD cache. Stream 4 KB chunks straight from
+  // the file to the socket; no ps_malloc, no 150 KB copy, no double buffer.
+  // Also sets ETag + immutable so a warmed browser cache serves subsequent
+  // requests without ever hitting us.
+  String cachePath = davCoverCachePath(queryPath);
+  if (SD_MMC.exists(cachePath.c_str())) {
+    File f = SD_MMC.open(cachePath.c_str(), "r");
+    if (f) {
+      size_t sz = f.size();
+      char etag[24];
+      snprintf(etag, sizeof(etag), "\"%08lx-%lx\"",
+               (unsigned long)sz,
+               (unsigned long)(cachePath.length()));
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-Type: " + ct);
+      client.println("Content-Length: " + String((uint32_t)sz));
+      client.println("Cache-Control: max-age=604800, immutable");
+      client.print("ETag: "); client.println(etag);
+      client.println("Connection: close");
+      client.println();
+      uint8_t chunk[4096];
+      while (f.available()) {
+        int n = f.read(chunk, sizeof(chunk));
+        if (n <= 0) break;
+        client.write(chunk, n);
+        yield();
+      }
+      f.close();
+      return;
+    }
+  }
+
+  // Persisted "known to have no cover" marker from davPrecacheOneCover.
+  // Answer immediately without touching the network — otherwise every web
+  // grid render hits TLS again.
+  if (SD_MMC.exists((cachePath + ".miss").c_str())) {
+    sendJSON(client, 404, "{\"error\":\"Cover not found (cached miss)\"}");
+    return;
+  }
+
+  // Slow path — not yet cached. Download to a PSRAM buffer, save to SD,
+  // then stream. Only happens once per new cover.
   size_t maxCover = 150 * 1024;
   uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
   if (!buf) {
     sendJSON(client, 500, "{\"error\":\"Out of PSRAM\"}");
     return;
   }
-
-  // Try SD cache first (instant), then WebDAV (slow)
-  long bytes = davReadCachedCover(queryPath, buf, maxCover);
+  long bytes = davClient.streamToBuffer(queryPath, buf, maxCover);
   if (bytes <= 0) {
-    // Not cached — download from WebDAV
-    bytes = davClient.streamToBuffer(queryPath, buf, maxCover);
-    if (bytes > 0) {
-      // Save to cache for next time
-      davSaveCachedCover(queryPath, buf, bytes);
-    }
-  }
-
-  if (bytes <= 0) {
+    // Write a miss marker so subsequent web requests short-circuit here too.
+    if (!SD_MMC.exists(DAV_COVER_DIR)) SD_MMC.mkdir(DAV_COVER_DIR);
+    File m = SD_MMC.open((cachePath + ".miss").c_str(), "w");
+    if (m) m.close();
     free(buf);
     sendJSON(client, 404, "{\"error\":\"Cover not found\"}");
     return;
   }
+  davSaveCachedCover(queryPath, buf, bytes);
 
-  // Detect content type
-  String lp = queryPath;
-  lp.toLowerCase();
-  String ct = "image/jpeg";
-  if (lp.endsWith(".png")) ct = "image/png";
-
-  // Send raw image response with long cache header (cover won't change often)
   client.println("HTTP/1.1 200 OK");
   client.println("Content-Type: " + ct);
-  client.println("Content-Length: " + String(bytes));
-  client.println("Cache-Control: max-age=86400");
+  client.println("Content-Length: " + String((uint32_t)bytes));
+  client.println("Cache-Control: max-age=604800, immutable");
   client.println("Connection: close");
   client.println();
-
-  // Send in chunks to avoid watchdog timeout
   size_t sent = 0;
   while (sent < (size_t)bytes) {
     size_t chunk = bytes - sent;
@@ -1576,7 +1605,6 @@ void handleDAVCover(WiFiClient &client, const String &queryPath) {
     sent += chunk;
     yield();
   }
-
   free(buf);
 }
 

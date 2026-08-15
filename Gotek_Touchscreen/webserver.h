@@ -144,7 +144,22 @@ void checkWiFiClient() {
   if (millis() - _lastWifiCheck < 3000) return;  // check every 3s
   _lastWifiCheck = millis();
 
-  if (WiFi.status() == WL_CONNECTED) {
+  // Sticky "am I really disconnected?" logic. With WIFI_PS_MAX_MODEM the
+  // radio powers down between DTIM beacons and WiFi.status() can flap back
+  // to WL_IDLE_STATUS momentarily even while the association is fine.
+  // Trust WiFi.localIP() over WiFi.status(): if we still have a v4 address
+  // the DHCP lease + IP stack think we're up, and only flip the visible
+  // flag off after N consecutive polls without a valid IP.
+  static uint8_t _staMissStreak    = 0;
+  static uint8_t _remoteMissStreak = 0;
+  const uint8_t  MISS_THRESHOLD    = 3;   // ~9 s (poll every 3 s) before clearing
+
+  bool linkOk = (WiFi.status() == WL_CONNECTED) ||
+                ((uint32_t)WiFi.localIP() != 0);
+
+  if (linkOk) {
+    _staMissStreak = 0;
+    _remoteMissStreak = 0;
     if (cfg_remote_enabled) {
       if (!remote_connected) {
         remote_connected = true;
@@ -164,20 +179,28 @@ void checkWiFiClient() {
     }
   } else {
     if (cfg_remote_enabled && remote_connected) {
-      remote_connected = false;
-      wifi_sta_ip = "";
-      Serial.println("Disconnected from dongle: " + cfg_remote_ssid);
+      _remoteMissStreak++;
+      if (_remoteMissStreak >= MISS_THRESHOLD) {
+        remote_connected = false;
+        wifi_sta_ip = "";
+        Serial.println("Disconnected from dongle: " + cfg_remote_ssid);
+      }
     } else if (!cfg_remote_enabled && wifi_sta_connected) {
-      wifi_sta_connected = false;
-      wifi_sta_ip = "";
-      Serial.println("Disconnected from " + cfg_wifi_client_ssid);
+      _staMissStreak++;
+      if (_staMissStreak >= MISS_THRESHOLD) {
+        wifi_sta_connected = false;
+        wifi_sta_ip = "";
+        Serial.println("Disconnected from " + cfg_wifi_client_ssid);
+      }
     }
-    // Auto-reconnect
-    if (WiFi.status() != WL_IDLE_STATUS && WiFi.status() != WL_CONNECTED) {
-      if (cfg_remote_enabled) {
-        WiFi.begin(cfg_remote_ssid.c_str(), cfg_remote_pass.c_str());
-      } else {
-        WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
+    // Auto-reconnect only after we've confirmed the link is really gone.
+    if (_staMissStreak >= MISS_THRESHOLD || _remoteMissStreak >= MISS_THRESHOLD) {
+      if (WiFi.status() != WL_IDLE_STATUS && WiFi.status() != WL_CONNECTED) {
+        if (cfg_remote_enabled) {
+          WiFi.begin(cfg_remote_ssid.c_str(), cfg_remote_pass.c_str());
+        } else {
+          WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
+        }
       }
     }
   }
