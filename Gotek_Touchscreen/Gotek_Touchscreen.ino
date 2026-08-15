@@ -110,12 +110,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.12.3"
+#define FW_VERSION "v0.13.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.018"
+#define FW_INTERNAL "release.019"
 
 using std::vector;
 using std::sort;
@@ -462,6 +462,9 @@ bool cfg_display_flip = false;
 // Forward declarations for symbols defined in headers included near the end of
 // this .ino but called from functions defined earlier (drawList, etc).
 bool drawThumb(int x, int y, const String &sourcePath);
+// Defined in button_cache.h, which is included further down (it needs the
+// gfx_* primitives); cycleTheme() above calls it before that point.
+void clearButtonCache();
 void clearThumbCache();
 
 // Set to true by a long-press during the splash screen — disables WiFi for this boot
@@ -638,11 +641,24 @@ static inline uint16_t fb_getPixel(int vx, int vy) {
 
 void gfx_fillScreen(uint16_t color) {
   if (!framebuffer) return;
-  uint16_t sc = swap16(color);
-  uint16_t *ptr = framebuffer;
-  for (int i = 0; i < LCD_WIDTH * LCD_HEIGHT; i++) {
-    *ptr++ = sc;
+  const uint16_t sc = swap16(color);
+  const size_t px = (size_t)LCD_WIDTH * LCD_HEIGHT;
+
+  // Every screen starts with a full clear, so this runs 153,600 times per
+  // repaint and is worth not doing one 16-bit store at a time.
+  //
+  // When both bytes of the colour match — which covers black, white and every
+  // grey, i.e. nearly every call — memset does it in word-sized chunks.
+  if ((sc & 0xFF) == (sc >> 8)) {
+    memset(framebuffer, sc & 0xFF, px * 2);
+    return;
   }
+  // Otherwise fill 32 bits at a time: half the loop iterations and half the
+  // stores, since the framebuffer is 2-byte aligned and the pixel count is even.
+  const uint32_t pair = ((uint32_t)sc << 16) | sc;
+  uint32_t *p32 = (uint32_t *)framebuffer;
+  for (size_t i = 0; i < px / 2; i++) p32[i] = pair;
+  if (px & 1) framebuffer[px - 1] = sc;
 }
 
 void gfx_drawPixel(int x, int y, uint16_t color) {
@@ -1382,6 +1398,10 @@ void cycleTheme() {
   idx = (idx + 1) % theme_list.size();
   cfg_theme = theme_list[idx];
   theme_path = "/THEMES/" + cfg_theme;
+  // Cached button tiles belong to the old theme — drop them all, including
+  // the negative entries, or a theme that DOES ship BTN_WIFI would keep
+  // rendering the previous theme's fallback.
+  clearButtonCache();
   saveConfig();
 }
 
@@ -2451,16 +2471,40 @@ bool getPngSize(const char *path, int *w, int *h) {
   return (*w > 0 && *h > 0);
 }
 
+// Included here rather than with the other headers at the bottom of the file
+// because drawThemedButton (right below) is its only consumer and it needs
+// the gfx_* primitives declared above.
+#include "button_cache.h"
+
 // Draw a themed button: PNG from /THEME/ + label text overlaid, or simple
 // rect+text fallback when the PNG is missing. The label is always rendered on
 // top so themes can ship decoration-only artwork without losing legibility.
 void drawThemedButton(int x, int y, int w, int h,
                       const char *pngName, const char *label,
                       uint16_t borderColor) {
-  String path = theme_path + "/" + String(pngName) + ".png";
+  // Cache lookup first. A repaint of an already-seen button is a PSRAM blit
+  // instead of two SD opens and a PNG decode — on a scrolling list that was
+  // the single largest per-frame cost in the render path.
+  char key[24];
+  btnCacheMakeKey(key, sizeof(key), pngName, w, h);
+  BtnSlot *slot = btnCacheFind(key, true);
 
+  if (slot && slot->valid) {
+    g_btnHits++;
+    btnCacheBlit(x, y, slot);
+    return;
+  }
+
+  // Negative-cached: this theme has no artwork for the button, so go straight
+  // to the fallback without re-probing the card every frame.
+  bool hasPng = false;
   int imgW = 0, imgH = 0;
-  bool hasPng = getPngSize(path.c_str(), &imgW, &imgH);
+  String path;
+  if (!slot || !slot->missing) {
+    path   = theme_path + "/" + String(pngName) + ".png";
+    hasPng = getPngSize(path.c_str(), &imgW, &imgH);
+    if (!hasPng && slot) slot->missing = true;
+  }
 
   if (hasPng) {
     // Themes ship buttons with the label baked into the artwork, so don't
@@ -2473,6 +2517,10 @@ void drawThemedButton(int x, int y, int w, int h,
     lcd.clearClipRect();
 #else
     drawPngFile(path.c_str(), bx, by);
+    // Capture the composited result for next time. Buttons are always drawn
+    // onto the black background left by gfx_fillScreen, so what lands in the
+    // cache is exactly what a later blit will reproduce.
+    if (slot) btnCacheCapture(x, y, w, h, slot);
 #endif
     return;
   }
@@ -2493,6 +2541,11 @@ void drawThemedButton(int x, int y, int w, int h,
     gfx_setCursor(x + (w - tw) / 2, y + (h - th) / 2);
     gfx_print(String(label));
   }
+#if ACTIVE_DISPLAY == DISPLAY_JC3248
+  // The fallback is cheap to draw but not free — it is several gfx calls plus
+  // text measurement. Cache it too so a themeless build scrolls just as fast.
+  if (slot) btnCacheCapture(x, y, w, h, slot);
+#endif
 }
 
 // ============================================================================
@@ -4619,13 +4672,22 @@ void drawDetailsFromNFO(const String &filename) {
   gfx_flush();
 }
 
+// Trim `text` to fit `maxWidth` pixels at text size 2.
+//
+// The built-in font is fixed width (gfx_textWidth is length * 6 * size), so
+// the fit is arithmetic. It used to be found by chopping one character at a
+// time, allocating a fresh String per iteration — dozens of allocations per
+// row, on every row, on every frame of a scroll, all to compute a number.
+//
+// NOTE: callers rely on the gfx_setTextSize(2) side effect and then print
+// without setting it themselves, so it stays.
 String truncateToWidth(const String &text, int maxWidth) {
-  String result = text;
   gfx_setTextSize(2);
-  while (gfx_textWidth(result) > maxWidth && result.length() > 0) {
-    result = result.substring(0, result.length() - 1);
-  }
-  return result;
+  const int charW = 6 * 2;
+  if (maxWidth < charW) return String();
+  const int maxChars = maxWidth / charW;
+  if ((int)text.length() <= maxChars) return text;   // common case: no copy
+  return text.substring(0, maxChars);
 }
 
 void buildDisplayNames(const std::vector<String> &files) {
