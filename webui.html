@@ -678,7 +678,7 @@ async function loadGames() {
   const data = await api('/api/games/list');
   lastGameData = data;
   document.getElementById('game-search').value = '';
-  activeAlpha = '';
+  activeAlpha = '';  // filterGames auto-picks the first available letter
 
   // Now Playing bar
   const npCard = document.getElementById('now-playing-card');
@@ -695,11 +695,20 @@ async function loadGames() {
     npCard.style.display = 'none';
   }
 
-  // Build A-Z filter buttons (only letters that have games)
-  buildAlphaFilter(data.games);
+  // filterGames handles auto-pick + buildAlphaFilter + renderGameList
+  filterGames();
+}
 
-  // Render full list
-  renderGameList(data.games, data.mode);
+// Auto-selected letter when the SD games list first opens. Same rationale
+// as davFirstAvailableLetter — never render 1000+ <img> tags at once
+// because each row fires a /api/games/*/cover request at the ESP32 and
+// hangs the touchscreen while every request queues.
+function firstAvailableLetter(games) {
+  for (let i = 0; i < 26; i++) {
+    const l = String.fromCharCode(65 + i);
+    if (games.some(g => g.name.charAt(0).toUpperCase() === l)) return l;
+  }
+  return games.length ? '#' : '';
 }
 
 function buildAlphaFilter(games) {
@@ -710,7 +719,7 @@ function buildAlphaFilter(games) {
     else letters.add('#');
   });
   const bar = document.getElementById('alpha-filter');
-  let html = '<span class="alpha-btn' + (activeAlpha === '' ? ' active' : '') + '" onclick="setAlpha(\'\')">All</span>';
+  let html = '';
   for (let i = 0; i < 26; i++) {
     const l = String.fromCharCode(65 + i);
     const has = letters.has(l);
@@ -732,6 +741,10 @@ function filterGames() {
   if (!lastGameData) return;
   const search = document.getElementById('game-search').value.toLowerCase().trim();
   if (search) activeAlpha = '';  // clear letter filter when typing
+  // No search AND no letter → auto-pick first available. Same rationale
+  // as davFilterGames: never render the whole library at once because
+  // each row fires a cover request at the ESP32 and freezes the panel.
+  else if (!activeAlpha) activeAlpha = firstAvailableLetter(lastGameData.games);
 
   let filtered = lastGameData.games;
   if (search) {
