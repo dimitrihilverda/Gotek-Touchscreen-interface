@@ -108,12 +108,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.11.1"
+#define FW_VERSION "v0.11.2"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.008"
+#define FW_INTERNAL "release.009"
 
 using std::vector;
 using std::sort;
@@ -1459,36 +1459,29 @@ void firstBootScaffold() {
   {
     SD_MMC.mkdir("/ADF/AmiCrush");
 
-    // --- ADF unpack ---------------------------------------------------
-    uint8_t *dst = (uint8_t *)ps_malloc(AMICRUSH_ADF_UNCOMPRESSED_LEN);
-    if (dst) {
-      unsigned long out_len = AMICRUSH_ADF_UNCOMPRESSED_LEN;
-      int rc = uncompress((unsigned char *)dst, &out_len,
-                          (const unsigned char *)amicrush_adf_z,
-                          (unsigned long)amicrush_adf_z_len);
-      if (rc == Z_OK && out_len == AMICRUSH_ADF_UNCOMPRESSED_LEN) {
-        File a = SD_MMC.open("/ADF/AmiCrush/AmiCrush.adf", "w");
-        if (a) {
-          // Write in 4 KB chunks so the SD driver + task watchdog stay happy.
-          size_t written = 0;
-          while (written < AMICRUSH_ADF_UNCOMPRESSED_LEN) {
-            size_t chunk = AMICRUSH_ADF_UNCOMPRESSED_LEN - written;
-            if (chunk > 4096) chunk = 4096;
-            a.write(&dst[written], chunk);
-            written += chunk;
-            yield();
-          }
-          a.close();
-          Serial.println("  Wrote /ADF/AmiCrush/AmiCrush.adf (" +
-                         String(AMICRUSH_ADF_UNCOMPRESSED_LEN) + " bytes)");
+    // --- ADF (raw PROGMEM → SD in 4 KB chunks) ------------------------
+    // Direct byte copy — no decompressor needed. arduino-esp32 declares
+    // uncompress() via the ROM headers but doesn't link a miniz impl,
+    // and pulling in our own inflater for a one-shot on fresh SD isn't
+    // worth the code weight. The 880 KB flash cost is comfortable in
+    // the ~3.1 MB APP slot.
+    {
+      File a = SD_MMC.open("/ADF/AmiCrush/AmiCrush.adf", "w");
+      if (a) {
+        uint8_t buf[4096];
+        size_t written = 0;
+        while (written < amicrush_adf_len) {
+          size_t chunk = amicrush_adf_len - written;
+          if (chunk > sizeof(buf)) chunk = sizeof(buf);
+          memcpy_P(buf, amicrush_adf + written, chunk);
+          a.write(buf, chunk);
+          written += chunk;
+          yield();
         }
-      } else {
-        Serial.println("  AmiCrush unpack failed: rc=" + String(rc) +
-                       " out_len=" + String((uint32_t)out_len));
+        a.close();
+        Serial.println("  Wrote /ADF/AmiCrush/AmiCrush.adf (" +
+                       String((uint32_t)amicrush_adf_len) + " bytes)");
       }
-      free(dst);
-    } else {
-      Serial.println("  AmiCrush unpack skipped: no PSRAM available");
     }
 
     // --- Cover JPEG (raw byte-for-byte from PROGMEM) ------------------

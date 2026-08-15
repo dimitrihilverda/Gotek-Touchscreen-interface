@@ -5,7 +5,7 @@ so firstBootScaffold() can drop them onto a fresh SD card.
 
 Regenerates two headers under Gotek_Touchscreen/:
 
-    amicrush_adf.h      zlib-compressed amicrush-fast.adf
+    amicrush_adf.h      raw amicrush-fast.adf as a PROGMEM byte array
     amicrush_cover.h    JPEG-encoded, resized cover art
 
 Run:
@@ -15,16 +15,19 @@ Defaults:
     ADF        C:/Users/dimx/claude-sessions/amicrush-fast.adf
     COVER_PNG  C:/Users/dimx/claude-sessions/assets/title.png
 
-The cover is resized to fit inside 400x400 and re-encoded as JPEG at
-quality 82 — the app already handles JPEG on both the list thumbnail
-and the detail screen, and the smaller size keeps the firmware bin
-below the ~3.1 MB APP slot.
+Why uncompressed for the ADF? arduino-esp32 declares uncompress() via
+the ESP-IDF ROM headers but doesn't link the miniz implementation, so
+a zlib blob would need us to ship an inflate implementation of our
+own. Raw PROGMEM adds ~880 KB to the firmware bin (1.5 -> 2.4 MB),
+still well under the ~3.1 MB APP slot on the default_8MB partition.
+The cover PNG still gets resized + JPEG-encoded because it's an image
+the app already knows how to decode; there's no equivalent trick to
+avoid on that side.
 """
 from __future__ import annotations
 import io
 import os
 import sys
-import zlib
 
 from PIL import Image
 
@@ -66,38 +69,15 @@ def main() -> int:
         print(f"error: cover PNG not found: {art_path}", file=sys.stderr)
         return 2
 
-    # ── ADF: zlib compress + PROGMEM header ──────────────────────────────
+    # ── ADF: raw PROGMEM header ──────────────────────────────────────────
     adf = open(adf_path, "rb").read()
-    adf_z = zlib.compress(adf, 9)
     lines = [
-        f"// Source ADF: {os.path.basename(adf_path)} ({len(adf)} bytes uncompressed).",
-        "// Format: zlib (deflate + zlib header). Unpack with the classic",
-        "// zlib API's uncompress() — arduino-esp32 exposes it via its rom",
-        "// glue (miniz's mz_uncompress is aliased as uncompress).",
+        f"// Source ADF: {os.path.basename(adf_path)} ({len(adf)} bytes).",
+        "// Emitted verbatim as a PROGMEM array — firstBootScaffold copies",
+        "// it byte-for-byte to /ADF/AmiCrush/AmiCrush.adf on a fresh SD.",
     ]
-    # We also need the uncompressed size at compile time to allocate the
-    # PSRAM buffer; emit it as a preprocessor constant.
-    header = [
-        f"#define AMICRUSH_ADF_UNCOMPRESSED_LEN {len(adf)}u",
-        "",
-    ]
-    # write_header writes only the array; we prepend the extra constant
-    # manually so we don't need to complicate the shared helper.
-    with open(HDR_ADF, "w", encoding="utf-8") as fh:
-        pass  # truncate
-    write_header(HDR_ADF, "amicrush_adf_z", adf_z, lines)
-    # Reopen and insert the constant right after the trailing "#include"
-    # block. We keep it simple by rewriting the file.
-    with open(HDR_ADF, "r", encoding="utf-8") as fh:
-        body = fh.read()
-    body = body.replace(
-        "#include <stdint.h>\n\n",
-        "#include <stdint.h>\n\n" + "\n".join(header) + "\n",
-        1,
-    )
-    with open(HDR_ADF, "w", encoding="utf-8") as fh:
-        fh.write(body)
-    print(f"ADF   raw={len(adf):>7}  z={len(adf_z):>7}  ({100 * len(adf_z) / len(adf):.1f}%)")
+    write_header(HDR_ADF, "amicrush_adf", adf, lines)
+    print(f"ADF   raw={len(adf):>7} bytes")
 
     # ── Cover: resize + JPEG-encode + PROGMEM header ─────────────────────
     im = Image.open(art_path).convert("RGB")
