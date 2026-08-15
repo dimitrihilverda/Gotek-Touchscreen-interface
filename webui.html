@@ -357,7 +357,10 @@ textarea{min-height:80px;resize:vertical}
 <!-- WEBDAV GAME DETAIL MODAL -->
 <div class="modal-overlay" id="modal-dav-detail">
   <div class="modal">
-    <h3 id="dav-modal-title">Game Details</h3>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span class="badge" style="background:var(--blue);color:#fff">WebDAV</span>
+      <h3 id="dav-modal-title" style="margin:0">Game Details</h3>
+    </div>
     <div style="text-align:center;margin-bottom:12px">
       <img id="dav-modal-cover" class="game-cover" style="width:200px;height:auto;max-height:250px">
     </div>
@@ -403,7 +406,10 @@ textarea{min-height:80px;resize:vertical}
 <!-- GAME DETAIL MODAL -->
 <div class="modal-overlay" id="modal-game-detail">
   <div class="modal">
-    <h3 id="modal-game-title">Game Details</h3>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span class="badge" style="background:var(--green);color:#fff">SD</span>
+      <h3 id="modal-game-title" style="margin:0">Game Details</h3>
+    </div>
     <div id="modal-game-cover-wrap" style="text-align:center;margin-bottom:12px">
       <img id="modal-game-cover" class="game-cover" style="width:200px;height:auto;max-height:250px">
     </div>
@@ -440,6 +446,18 @@ textarea{min-height:80px;resize:vertical}
       <button class="btn btn-primary" id="modal-save-nfo">Save NFO</button>
       <button class="btn" onclick="closeModal()">Close</button>
     </div>
+  </div>
+</div>
+
+<!-- DAV BUSY OVERLAY — blocks pointer events over the whole page while a
+     dav* API call is in flight. Prevents the user tapping around and
+     queueing more concurrent requests at the device (each one keeps the
+     TLS + SD + WiFi radio active and drains the aged Amiga USB rail). -->
+<div class="modal-overlay" id="dav-busy-overlay">
+  <div class="modal" style="max-width:360px;text-align:center">
+    <div style="font-size:36px;margin-bottom:6px">&#128225;</div>
+    <h3 style="margin:0 0 6px">Loading WebDAV&hellip;</h3>
+    <div id="dav-busy-msg" style="color:#666;font-size:13px;line-height:1.4"></div>
   </div>
 </div>
 
@@ -496,6 +514,24 @@ async function api(path, opts = {}) {
   } catch (e) {
     toast('Error: ' + e.message, 'error');
     throw e;
+  }
+}
+
+// DAV busy overlay — every dav* async that hits the device wraps its await
+// with davShowBusy / davHideBusy so the user can't queue a second heavy
+// request while the first is still fighting for TLS + SD + the Amiga rail.
+// Nesting counter so nested calls don't yank the overlay early.
+let davBusyDepth = 0;
+function davShowBusy(msg) {
+  davBusyDepth++;
+  document.getElementById('dav-busy-msg').textContent =
+    msg || 'Talking to your WebDAV server. The device touchscreen is unresponsive while this runs.';
+  document.getElementById('dav-busy-overlay').classList.add('show');
+}
+function davHideBusy() {
+  if (davBusyDepth > 0) davBusyDepth--;
+  if (davBusyDepth === 0) {
+    document.getElementById('dav-busy-overlay').classList.remove('show');
   }
 }
 
@@ -1314,6 +1350,7 @@ async function davConnect() {
   btn.disabled = true;
   btn.textContent = 'Connecting...';
   document.getElementById('dav-loading').style.display = '';
+  davShowBusy('Handshaking with your WebDAV server…');
 
   try {
     const res = await fetch(API + '/api/dav/connect', { method: 'POST' });
@@ -1334,6 +1371,7 @@ async function davConnect() {
     btn.disabled = false;
     btn.textContent = 'Connect';
     document.getElementById('dav-loading').style.display = 'none';
+    davHideBusy();
   }
 }
 
@@ -1365,6 +1403,9 @@ async function davBrowse(path, forceRefresh) {
   const gameCard = document.getElementById('dav-game-card');
   loading.style.display = '';
   gameCard.style.display = '';
+  davShowBusy(forceRefresh
+    ? 'Refreshing library from server. Large collections (~3000 games) can take up to a minute.'
+    : 'Reading library. First open is slow; follow-up browses use the cached listing.');
 
   try {
     let url = '/api/dav/list?path=' + encodeURIComponent(path);
@@ -1391,18 +1432,29 @@ async function davBrowse(path, forceRefresh) {
       npCard.style.display = 'none';
     }
 
-    // Reset search/filter
+    // Reset search, then let davFilterGames auto-pick the first available
+    // letter. No "All" default — that fires 1000+ concurrent cover requests
+    // at the device and can drop the Amiga's USB 5V rail below brownout.
     document.getElementById('dav-search').value = '';
     davActiveAlpha = '';
-
-    // Build A-Z and render
-    davBuildAlphaFilter(folders);
-    davRenderGameList(folders);
+    davFilterGames();
   } catch (e) {
     list.innerHTML = '<p style="color:var(--red);padding:12px">Error: ' + esc(e.message || 'Failed to list directory') + '</p>';
   } finally {
     loading.style.display = 'none';
+    davHideBusy();
   }
+}
+
+// First letter in the A-Z bar that actually has entries. Used as the auto-
+// selected filter when the DAV tab opens — never render the full library at
+// once (see davFilterGames comment).
+function davFirstAvailableLetter(folders) {
+  for (let i = 0; i < 26; i++) {
+    const l = String.fromCharCode(65 + i);
+    if (folders.some(f => f.name.charAt(0).toUpperCase() === l)) return l;
+  }
+  return folders.length ? '#' : '';
 }
 
 function davBuildAlphaFilter(folders) {
@@ -1413,7 +1465,7 @@ function davBuildAlphaFilter(folders) {
     else letters.add('#');
   });
   const bar = document.getElementById('dav-alpha-filter');
-  let html = '<span class="alpha-btn' + (davActiveAlpha === '' ? ' active' : '') + '" onclick="davSetAlpha(\'\')">All</span>';
+  let html = '';
   for (let i = 0; i < 26; i++) {
     const l = String.fromCharCode(65 + i);
     const has = letters.has(l);
@@ -1434,6 +1486,11 @@ function davSetAlpha(letter) {
 function davFilterGames() {
   const search = document.getElementById('dav-search').value.toLowerCase().trim();
   if (search) davActiveAlpha = '';
+  // No search AND no letter → auto-pick the first available letter. Rendering
+  // the whole library at once fires a cover request per game (1000+ ≈ a
+  // steady 100 mA burst on the ESP32 for many seconds), which the Amiga's
+  // aged USB rail can't always deliver without dipping below brownout.
+  else if (!davActiveAlpha) davActiveAlpha = davFirstAvailableLetter(davAllEntries);
 
   let filtered = davAllEntries;
   if (search) {
@@ -1505,6 +1562,7 @@ async function davOpenFolder(folderPath, folderName) {
   // Show modal immediately with loading state
   const modal = document.getElementById('modal-dav-detail');
   modal.classList.add('show');
+  davShowBusy('Opening &laquo;' + folderName + '&raquo;…');
 
   // Cover
   const coverImg = document.getElementById('dav-modal-cover');
@@ -1611,6 +1669,8 @@ async function davOpenFolder(folderPath, folderName) {
 
   } catch(e) {
     document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--red)">Failed to load folder contents</p>';
+  } finally {
+    davHideBusy();
   }
 }
 

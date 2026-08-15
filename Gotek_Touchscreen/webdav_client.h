@@ -106,7 +106,8 @@ public:
     // URL-encode spaces in path but keep slashes
     String encodedPath = _urlEncodePath(fullPath);
 
-    _log("DAV: PROPFIND " + encodedPath);
+    _log("DAV: listDir enter path='" + encodedPath + "' heap=" +
+         String(ESP.getFreeHeap()) + " psram=" + String(ESP.getFreePsram()));
 
     // Create HTTPS or HTTP client on heap
     WiFiClient *tcp = nullptr;
@@ -133,6 +134,7 @@ public:
       delete tcp;
       return false;
     }
+    _log("DAV: TCP up heap=" + String(ESP.getFreeHeap()));
 
     // Build PROPFIND request
     String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
@@ -152,9 +154,13 @@ public:
     tcp->println("Connection: close");
     tcp->println();
     tcp->print(body);
+    _log("DAV: PROPFIND sent, awaiting body...");
 
     // Read response
     String response = _readHTTPBody(tcp);
+    _log("DAV: body received size=" + String(response.length()) +
+         " heap=" + String(ESP.getFreeHeap()) +
+         " psram=" + String(ESP.getFreePsram()));
     tcp->stop();
     delete tcp;
 
@@ -177,17 +183,14 @@ public:
       return false;
     }
 
-    // Log XML size and first/last part for debugging
-    _log("DAV: body length=" + String(response.length()) + " bytes");
-    _log("DAV: XML[0..400]: " + response.substring(0, 400));
-    if (response.length() > 400) {
-      _log("DAV: XML[last 200]: " + response.substring(response.length() - 200));
-    }
-
-    // Parse the multistatus XML response
+    // XML dump breadcrumbs used to live here (`XML[0..400]`, `XML[last 200]`)
+    // but making 400-char substrings of a 750-KB String triples heap pressure
+    // right before we call the parser — exactly when we can least afford it.
+    // The body-received breadcrumb above already reports final size and heap.
+    _log("DAV: parse start");
     _parsePropfindResponse(response, fullPath, entries);
-
-    _log("DAV: listed " + String(entries.size()) + " entries in " + fullPath);
+    _log("DAV: parse done, " + String(entries.size()) +
+         " entries, heap=" + String(ESP.getFreeHeap()));
     _connected = true;
     return true;
   }
@@ -548,6 +551,9 @@ private:
     String body = "";
     long contentLength = -1;
     bool chunked = false;
+    // v0.11.3: log body progress at every 64-KB boundary. Populated by the
+    // three read paths below so we can watch heap fall as the body grows.
+    size_t lastLoggedKB = 0;
 
     // Read headers
     unsigned long timeout = millis();
@@ -555,9 +561,9 @@ private:
       if (!tcp->available()) { delay(1); continue; }
       String line = tcp->readStringUntil('\n');
       line.trim();
-
-      _log("DAV hdr: " + line);
-
+      // Per-header sdLog removed — used to fire ~10 SD writes per response
+      // and contended with the loop task's other SD work. The batched
+      // "hdrs done" log below has status+length+chunked+heap in one line.
       if (line.startsWith("HTTP/")) {
         int sp = line.indexOf(' ');
         if (sp > 0) _httpStatus = line.substring(sp + 1, sp + 4).toInt();
@@ -569,8 +575,8 @@ private:
       if (line.length() == 0) break;
       timeout = millis();
     }
-    _log("DAV: HTTP " + String(_httpStatus) + " contentLen=" + String(contentLength) +
-         (chunked ? " chunked" : ""));
+    _log("DAV: hdrs done HTTP " + String(_httpStatus) + " len=" + String(contentLength) +
+         (chunked ? " chunked" : "") + " heap=" + String(ESP.getFreeHeap()));
 
     // Read body
     timeout = millis();
@@ -598,7 +604,9 @@ private:
         long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
         if (chunkSize <= 0) break;  // Final chunk
         chunkCount++;
-        _log("DAV: chunk #" + String(chunkCount) + " size=" + String(chunkSize));
+        // Per-chunk sdLog removed — fired ~150 SD writes for a 750-KB
+        // library (mid-transfer + USB-MSC bus contention). 64-KB body
+        // breadcrumbs below are enough to watch heap decay.
         // Pre-grow body so the concat below doesn't realloc mid-loop
         body.reserve(body.length() + chunkSize);
         long bytesRead = 0;
@@ -613,6 +621,12 @@ private:
               bytesRead += got;
               timeout = millis();
               _fireProgress(body.length(), (size_t)contentLength);
+              size_t curKB = body.length() >> 16;  // 64-KB units
+              if (curKB > lastLoggedKB) {
+                lastLoggedKB = curKB;
+                _log("DAV: body @" + String((unsigned)(curKB * 64)) +
+                     "K heap=" + String(ESP.getFreeHeap()));
+              }
             }
             yield();
           } else {
@@ -636,6 +650,12 @@ private:
             body.concat(cbuf);
             timeout = millis();
             _fireProgress(body.length(), (size_t)contentLength);
+            size_t curKB = body.length() >> 16;
+            if (curKB > lastLoggedKB) {
+              lastLoggedKB = curKB;
+              _log("DAV: body @" + String((unsigned)(curKB * 64)) +
+                   "K heap=" + String(ESP.getFreeHeap()));
+            }
           }
           yield();
         } else {
@@ -652,6 +672,12 @@ private:
             body.concat(cbuf);
             timeout = millis();
             _fireProgress(body.length(), 0);
+            size_t curKB = body.length() >> 16;
+            if (curKB > lastLoggedKB) {
+              lastLoggedKB = curKB;
+              _log("DAV: body @" + String((unsigned)(curKB * 64)) +
+                   "K heap=" + String(ESP.getFreeHeap()));
+            }
           }
           yield();
         } else {

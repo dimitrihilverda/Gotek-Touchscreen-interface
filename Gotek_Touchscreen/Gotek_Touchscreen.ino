@@ -108,12 +108,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.11.2"
+#define FW_VERSION "v0.11.3"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.009"
+#define FW_INTERNAL "release.010"
 
 using std::vector;
 using std::sort;
@@ -1083,10 +1083,10 @@ void rampBacklight(uint8_t target) {
 
 // RAII helper — dips the backlight to ~30 % of the configured level for the
 // duration of the enclosing scope, then restores it. Wraps the heavy
-// WiFi + USB + LCD-repaint sequences (DAV load, remote dongle send, etc.)
-// so the 5V rail isn't asked to power the LCD at full brightness while
-// WiFi RX is drawing peak current — the exact stack that browns out an
-// Amiga USB port.
+// WiFi + USB + LCD-repaint sequences (DAV load, DAV listDir, remote dongle
+// send, etc.) so the 5V rail isn't asked to power the LCD at full brightness
+// while WiFi RX is drawing peak current — the exact stack that browns out
+// an Amiga USB port.
 struct BacklightDip {
   uint8_t saved;
   BacklightDip() : saved(cfg_backlight) {
@@ -1096,6 +1096,20 @@ struct BacklightDip {
   }
   ~BacklightDip() { setBacklight(saved); }
 };
+
+// Small colored badge identifying where a game lives (SD / DAV / FTP).
+// Drawn on the detail views so the user sees the source at a glance —
+// SD and DAV details share the exact same layout otherwise.
+static void drawSourceChip(int x, int y, const char *label, uint16_t accent, uint16_t bg) {
+  gfx_setTextSize(1);
+  int w = gfx_textWidth(String(label)) + 10;
+  int h = 14;
+  gfx_fillRect(x, y, w, h, bg);
+  gfx_drawRect(x, y, w, h, accent);
+  gfx_setTextColor(accent, bg);
+  gfx_setCursor(x + 5, y + 4);
+  gfx_print(label);
+}
 
 // ============================================================================
 // TOUCH INTERFACE (Backend-specific)
@@ -3306,7 +3320,13 @@ void davBrowsePath(const String &path) {
   davAnimateProgress("Loading game list...", 30, 300);
 
   davClient.setProgressCallback(_davProgressToLoadingScreen);
-  davClient.listDir(path, dav_entries);
+  // Dip backlight during PROPFIND. On a 3000-entry library this is ~20 s of
+  // sustained WiFi RX and TLS decrypt — the exact stack that browns out
+  // an aged Amiga USB port when the LCD is also drawing at full brightness.
+  {
+    BacklightDip _dip;
+    davClient.listDir(path, dav_entries);
+  }
   davClient.setProgressCallback(nullptr);
 
   davAnimateProgress("Loading game list...", 60, 400);
@@ -3467,6 +3487,7 @@ void davOpenFolderDetail(int folderIndex) {
   // into a folder they've already visited.
   std::vector<DAVFileEntry> folderContents;
   if (!davReadCachedDir(folderPath, folderContents)) {
+    BacklightDip _dip;  // same power-dip rationale as davBrowsePath()
     davClient.listDir(folderPath, folderContents);
     if (!folderContents.empty()) davSaveCachedDir(folderPath, folderContents);
   }
@@ -3587,6 +3608,10 @@ void drawDAVDetail() {
     gfx_setCursor(gW / 2 - 40, imgTop + imgH / 2 - 10);
     gfx_print("No Cover");
   }
+
+  // Source chip — always visible, distinguishes the DAV detail view from
+  // the SD one at a glance (both use identical layouts otherwise).
+  drawSourceChip((gW - imgW) / 2 + 2, imgTop + 2, "DAV", TFT_CYAN, 0x001A);
 
   // Title and blurb below cover (like SD detail)
   int textY = imgTop + imgH + 3;
@@ -4295,6 +4320,10 @@ void drawDetailsFromNFO(const String &filename) {
                      (gW - imgW) / 2, imgTop, imgW, imgH);
     }
   }
+
+  // Source chip — mirrors the "DAV" chip on drawDAVDetail so the two share
+  // a visual language and users always know where a game lives.
+  drawSourceChip((gW - imgW) / 2 + 2, imgTop + 2, "SD", TFT_GREEN, 0x0200);
 
   int textY = imgTop + imgH + 3;
   if (title.length() > 0) {

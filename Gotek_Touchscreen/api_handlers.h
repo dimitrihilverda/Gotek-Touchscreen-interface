@@ -1357,7 +1357,15 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
 
   sdLog("API: DAV PROPFIND for path=" + path);
   std::vector<DAVFileEntry> entries;
-  if (!davClient.listDir(path, entries)) {
+  bool listOk;
+  {
+    // Web-triggered PROPFIND is the exact same power stack as the
+    // device-triggered one — dim the LCD for the WiFi RX burst so the
+    // Amiga 5V rail doesn't dip while we hold TLS + SD state.
+    BacklightDip _dip;
+    listOk = davClient.listDir(path, entries);
+  }
+  if (!listOk) {
     sdLog("API: DAV list FAILED: " + davClient.lastError());
     sendJSON(client, 500, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
     return;
