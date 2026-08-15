@@ -33,6 +33,12 @@
 
 #include "default_theme.h"
 
+// Embedded first-boot sample game (see firstBootScaffold below). Regenerated
+// by tools/pack-amicrush.py; miniz.h ships with arduino-esp32 via the ROM
+// header and gives us mz_uncompress() to unpack the zlib blob to SD.
+#include <miniz.h>
+#include "amicrush_adf.h"
+
 // ============================================================================
 // DISPLAY SELECTOR
 // ============================================================================
@@ -99,12 +105,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.10.3"
+#define FW_VERSION "v0.11.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.006"
+#define FW_INTERNAL "release.007"
 
 using std::vector;
 using std::sort;
@@ -1439,6 +1445,64 @@ void firstBootScaffold() {
       f.println("Use subfolders per game: /DSK/GameName/GameName.dsk");
       f.println("Optional: add GameName.nfo and GameName.jpg for metadata.");
       f.close();
+    }
+  }
+
+  // Ship AmiCrush 1.0 in the /ADF/ folder so a freshly-flashed device with
+  // an empty SD card has one playable game out of the box. Embedded as a
+  // zlib-compressed blob (~130 KB vs 880 KB raw) and unpacked here to
+  // /ADF/AmiCrush/AmiCrush.adf using miniz (ships with arduino-esp32).
+  // Only runs on the fresh-SD path, so a user's own edits or a deleted
+  // AmiCrush folder are never touched again.
+  {
+    SD_MMC.mkdir("/ADF/AmiCrush");
+    uint8_t *dst = (uint8_t *)ps_malloc(AMICRUSH_ADF_UNCOMPRESSED_LEN);
+    if (dst) {
+      mz_ulong out_len = AMICRUSH_ADF_UNCOMPRESSED_LEN;
+      int rc = mz_uncompress(dst, &out_len,
+                             (const unsigned char *)amicrush_adf_z,
+                             (mz_ulong)amicrush_adf_z_len);
+      if (rc == MZ_OK && out_len == AMICRUSH_ADF_UNCOMPRESSED_LEN) {
+        File a = SD_MMC.open("/ADF/AmiCrush/AmiCrush.adf", "w");
+        if (a) {
+          // Write in 4 KB chunks so the SD driver + task watchdog stay happy.
+          size_t written = 0;
+          while (written < AMICRUSH_ADF_UNCOMPRESSED_LEN) {
+            size_t chunk = AMICRUSH_ADF_UNCOMPRESSED_LEN - written;
+            if (chunk > 4096) chunk = 4096;
+            a.write(&dst[written], chunk);
+            written += chunk;
+            yield();
+          }
+          a.close();
+          Serial.println("  Wrote /ADF/AmiCrush/AmiCrush.adf (" +
+                         String(AMICRUSH_ADF_UNCOMPRESSED_LEN) + " bytes)");
+        }
+      } else {
+        Serial.println("  AmiCrush unpack failed: rc=" + String(rc) +
+                       " out_len=" + String((uint32_t)out_len));
+      }
+      free(dst);
+
+      // Ship a matching NFO so the detail screen has a proper title +
+      // developer + blurb straight away — same format the app already
+      // parses for local ADFs.
+      File n = SD_MMC.open("/ADF/AmiCrush/AmiCrush.nfo", "w");
+      if (n) {
+        n.println("Title: AmiCrush");
+        n.println("Developer: OMEGAWARE");
+        n.println("Year: 2026");
+        n.println("");
+        n.println("A Candy Crush-style match-three puzzle for the Amiga 500.");
+        n.println("Four levels, glossy candies, animated swap/pop/gravity,");
+        n.println("SFX + MOD music, arcade leaderboard. Boots on KS 1.3.");
+        n.println("");
+        n.println("Built and shipped by OMEGAWARE. Tap INSERT to load into");
+        n.println("the RAM disk and enjoy from the Amiga side.");
+        n.close();
+      }
+    } else {
+      Serial.println("  AmiCrush unpack skipped: no PSRAM available");
     }
   }
 
