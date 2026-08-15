@@ -431,7 +431,7 @@ public:
             totalBytes += got;
             bytesRead += got;
             timeout = millis();
-            _fireProgress((size_t)totalBytes, (size_t)contentLength);
+            _fireProgress((size_t)totalBytes, contentLength > 0 ? (size_t)contentLength : 0);
             yield();
           } else {
             delay(1);
@@ -459,7 +459,7 @@ public:
         if (got > 0) {
           totalBytes += got;
           timeout = millis();
-          _fireProgress((size_t)totalBytes, (size_t)contentLength);
+          _fireProgress((size_t)totalBytes, contentLength > 0 ? (size_t)contentLength : 0);
         }
         yield();
       }
@@ -620,7 +620,7 @@ private:
               body.concat(cbuf);
               bytesRead += got;
               timeout = millis();
-              _fireProgress(body.length(), (size_t)contentLength);
+              _fireProgress(body.length(), contentLength > 0 ? (size_t)contentLength : 0);
               size_t curKB = body.length() >> 16;  // 64-KB units
               if (curKB > lastLoggedKB) {
                 lastLoggedKB = curKB;
@@ -649,7 +649,7 @@ private:
             cbuf[got] = '\0';
             body.concat(cbuf);
             timeout = millis();
-            _fireProgress(body.length(), (size_t)contentLength);
+            _fireProgress(body.length(), contentLength > 0 ? (size_t)contentLength : 0);
             size_t curKB = body.length() >> 16;
             if (curKB > lastLoggedKB) {
               lastLoggedKB = curKB;
