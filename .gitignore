@@ -25,3 +25,6 @@ theme_preview.html
 # User data (root-level only, not sdcard_example/)
 /adfs/
 /dsks/
+
+# Host-side test binaries (tools/test/run.sh rebuilds them)
+tools/test/*.exe

@@ -10,6 +10,10 @@
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <vector>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
 
 // WebDAV config variables are defined in the main .ino file:
 // cfg_dav_enabled, cfg_dav_host, cfg_dav_port, cfg_dav_user, cfg_dav_pass, cfg_dav_path, cfg_dav_https
@@ -27,6 +31,42 @@ struct DAVFileEntry {
   String coverFile;  // name of cover file (e.g. "cover.jpg")
   String nfoFile;    // name of nfo file
 };
+
+// ---------------------------------------------------------------------------
+// PSRAM-backed vector for entry lists.
+//
+// sizeof(DAVFileEntry) is ~56 bytes. A 3000-folder library therefore needs a
+// ~170 KB contiguous array — and std::vector grows by doubling, so the moment
+// it reallocates from 2048 to 4096 slots it wants old+new = ~340 KB live at
+// once. The ESP32-S3's internal heap is ~300 KB total, so that allocation
+// simply cannot succeed and the failure surfaces as an ESP_RST_PANIC reboot
+// partway through a listing. The 8 MB of OPI PSRAM has room to spare, so the
+// entry array lives there instead. Falls back to internal heap if ps_malloc
+// fails, which keeps small listings working on a board without PSRAM.
+//
+// Arduino String contents still allocate from the internal heap, but for a
+// folder listing only `name` is populated (cover/nfo stay empty and empty
+// Strings never allocate), so that is ~25 bytes per entry rather than 56.
+// ---------------------------------------------------------------------------
+template <class T>
+struct PsramAlloc {
+  using value_type = T;
+  PsramAlloc() noexcept {}
+  template <class U> PsramAlloc(const PsramAlloc<U> &) noexcept {}
+  T *allocate(size_t n) {
+    void *p = ps_malloc(n * sizeof(T));
+    if (!p) p = malloc(n * sizeof(T));   // no PSRAM (or exhausted) — try internal
+    return (T *)p;
+  }
+  void deallocate(T *p, size_t) noexcept { free(p); }
+  template <class U> bool operator==(const PsramAlloc<U> &) const noexcept { return true; }
+  template <class U> bool operator!=(const PsramAlloc<U> &) const noexcept { return false; }
+};
+
+// Entry list type used everywhere a DAV listing is passed around. Declared as
+// a typedef so call sites (`[]`, `.size()`, `.push_back()`, range-for) are
+// unchanged — only the declarations needed touching.
+using DAVEntryList = std::vector<DAVFileEntry, PsramAlloc<DAVFileEntry>>;
 
 // ============================================================================
 // WebDAV Client Class
@@ -74,7 +114,7 @@ public:
          cfg_dav_host + ":" + String(cfg_dav_port));
 
     // Test with a PROPFIND on the base path
-    std::vector<DAVFileEntry> test;
+    DAVEntryList test;
     if (listDir("/", test)) {
       _connected = true;
       _log("DAV: connected OK (" + String(test.size()) + " entries in root)");
@@ -90,7 +130,7 @@ public:
   }
 
   // List directory contents via PROPFIND
-  bool listDir(const String &path, std::vector<DAVFileEntry> &entries) {
+  bool listDir(const String &path, DAVEntryList &entries) {
     entries.clear();
     _lastError = "";
 
@@ -154,43 +194,61 @@ public:
     tcp->println("Connection: close");
     tcp->println();
     tcp->print(body);
-    _log("DAV: PROPFIND sent, awaiting body...");
+    _log("DAV: PROPFIND sent, awaiting headers...");
 
-    // Read response
-    String response = _readHTTPBody(tcp);
-    _log("DAV: body received size=" + String(response.length()) +
-         " heap=" + String(ESP.getFreeHeap()) +
-         " psram=" + String(ESP.getFreePsram()));
+    // Read just the headers — the document itself is consumed by the
+    // streaming parser below, which never materialises it in RAM.
+    long contentLength = -1;
+    bool chunked = false;
+    _readHTTPHeaders(tcp, contentLength, chunked);
+    _log("DAV: hdrs HTTP " + String(_httpStatus) + " len=" + String(contentLength) +
+         (chunked ? " chunked" : "") + " heap=" + String(ESP.getFreeHeap()));
+
+    if (_httpStatus >= 400) {
+      // Read a small excerpt of the error body for the web UI, capped so a
+      // verbose error page can't blow the heap on the way to reporting it.
+      char errBuf[161];
+      size_t n = 0;
+      unsigned long t0 = millis();
+      while (n < sizeof(errBuf) - 1 && millis() - t0 < 2000) {
+        if (tcp->available()) errBuf[n++] = (char)tcp->read();
+        else if (!tcp->connected()) break;
+        else delay(1);
+      }
+      errBuf[n] = 0;
+      for (size_t i = 0; i < n; i++) {
+        if (errBuf[i] == '"')  errBuf[i] = '\'';
+        if (errBuf[i] == '\n' || errBuf[i] == '\r') errBuf[i] = ' ';
+      }
+      tcp->stop();
+      delete tcp;
+      _lastError = "HTTP " + String(_httpStatus) + ": " + String(errBuf);
+      _log("DAV: " + _lastError);
+      return false;
+    }
+
+    // Reserve up front so the vector doesn't spend the listing doubling.
+    // ~230 bytes of XML per <response> is typical for Nextcloud/Stack with
+    // the four properties we request; over-reserving slightly is far cheaper
+    // than a reallocation storm.
+    if (contentLength > 0) {
+      size_t est = (size_t)(contentLength / 230) + 16;
+      if (est > 8192) est = 8192;
+      entries.reserve(est);
+    }
+
+    const bool ok = _streamParsePropfind(tcp, contentLength, chunked, entries);
     tcp->stop();
     delete tcp;
 
-    if (response.length() == 0) {
+    if (!ok) return false;
+    if (entries.empty() && _httpStatus == 0) {
       _lastError = "Empty response from server";
       _log("DAV: " + _lastError);
       return false;
     }
 
-    // Check for HTTP error in stored status
-    if (_httpStatus >= 400) {
-      // Log response body for debugging
-      _log("DAV: error body: " + response.substring(0, 500));
-      // Include short excerpt in error for web UI
-      String excerpt = response.substring(0, 120);
-      excerpt.replace("\"", "'");
-      excerpt.replace("\n", " ");
-      excerpt.replace("\r", "");
-      _lastError = "HTTP " + String(_httpStatus) + ": " + excerpt;
-      return false;
-    }
-
-    // XML dump breadcrumbs used to live here (`XML[0..400]`, `XML[last 200]`)
-    // but making 400-char substrings of a 750-KB String triples heap pressure
-    // right before we call the parser — exactly when we can least afford it.
-    // The body-received breadcrumb above already reports final size and heap.
-    _log("DAV: parse start");
-    _parsePropfindResponse(response, fullPath, entries);
-    _log("DAV: parse done, " + String(entries.size()) +
-         " entries, heap=" + String(ESP.getFreeHeap()));
+    _log("DAV: listed " + String(entries.size()) + " entries in " + fullPath);
     _connected = true;
     return true;
   }
@@ -545,7 +603,34 @@ private:
     return result;
   }
 
-  // Read HTTP response body (skip headers, handle chunked/content-length)
+  // Consume the HTTP status line + headers, leaving the socket positioned at
+  // the first body byte. Sets _httpStatus and reports framing to the caller.
+  // Split out of _readHTTPBody so the streaming parser can take over from
+  // here without the body ever being buffered.
+  void _readHTTPHeaders(WiFiClient *tcp, long &contentLength, bool &chunked) {
+    _httpStatus   = 0;
+    contentLength = -1;
+    chunked       = false;
+    unsigned long timeout = millis();
+    while (tcp->connected() && millis() - timeout < 15000) {
+      if (!tcp->available()) { delay(1); continue; }
+      String line = tcp->readStringUntil('\n');
+      line.trim();
+      if (line.startsWith("HTTP/")) {
+        int sp = line.indexOf(' ');
+        if (sp > 0) _httpStatus = line.substring(sp + 1, sp + 4).toInt();
+      }
+      if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
+        contentLength = line.substring(line.indexOf(':') + 1).toInt();
+      }
+      if (line.indexOf("chunked") >= 0) chunked = true;
+      if (line.length() == 0) break;      // blank line ends the header section
+      timeout = millis();
+    }
+  }
+
+  // Read HTTP response body (skip headers, handle chunked/content-length).
+  // Only the small GET paths use this now — listDir streams instead.
   String _readHTTPBody(WiFiClient *tcp) {
     _httpStatus = 0;
     String body = "";
@@ -688,10 +773,354 @@ private:
     return body;
   }
 
-  // Parse PROPFIND multistatus XML response
-  // Extracts <D:href>, <D:displayname>, <D:getcontentlength>, and <D:collection/>
+  // ==========================================================================
+  // Streaming PROPFIND parser
+  //
+  // The old path read the whole multistatus document into an Arduino String
+  // and then walked it with indexOf/substring. For a 3000-folder library that
+  // document is 600-800 KB, which does not fit in the ESP32-S3's ~300 KB
+  // internal heap — the listing died with an OOM that surfaced as a PANIC
+  // reboot. Nothing about the format requires random access, so we now parse
+  // as the bytes arrive and never hold more than one <response> block.
+  //
+  // Peak memory is the 8 KB sliding window below, regardless of library size.
+  // ==========================================================================
+
+  static const size_t PARSE_WIN = 8192;   // sliding window over the XML stream
+
+  // Case-insensitive scan for an XML tag, tolerating any namespace prefix
+  // (<D:response>, <d:response>, <lp1:response>, <response>). Returns the
+  // index of the opening '<', or -1.
+  //
+  // A tag whose delimiter would fall outside the buffer is reported as
+  // not-found so the caller pulls more bytes and retries — that is what makes
+  // it safe to run over a partial window.
+  static int _scanTag(const char *p, size_t len, const char *tagName, bool closing) {
+    const size_t tlen = strlen(tagName);
+    if (len < tlen + 2) return -1;
+    for (size_t i = 0; i + tlen + 2 <= len; i++) {
+      if (p[i] != '<') continue;
+      size_t j = i + 1;
+      if (closing) {
+        if (p[j] != '/') continue;
+        j++;
+      } else if (p[j] == '/') {
+        continue;
+      }
+      // Optional namespace prefix: [A-Za-z0-9_-]{1,12} ':'
+      size_t nsStart = j;
+      while (j < len && (j - nsStart) < 12 &&
+             (isalnum((unsigned char)p[j]) || p[j] == '-' || p[j] == '_')) j++;
+      if (j < len && p[j] == ':') j++;   // prefix consumed
+      else                        j = nsStart;   // no prefix — rewind
+      if (j + tlen >= len) return -1;    // tag + delimiter not fully buffered
+      if (strncasecmp(p + j, tagName, tlen) != 0) continue;
+      const char d = p[j + tlen];
+      if (d != '>' && d != ' ' && d != '/' && d != '\t' && d != '\r' && d != '\n') continue;
+      return (int)i;
+    }
+    return -1;
+  }
+
+  // Decode the XML entities WebDAV servers actually emit, in place. Without
+  // this a game called "Tom & Jerry" listed as "Tom &amp; Jerry" — a
+  // long-standing display bug in the old parser, which never decoded at all.
+  static void _decodeEntities(char *s) {
+    char *r = s, *w = s;
+    while (*r) {
+      if (*r != '&') { *w++ = *r++; continue; }
+      if      (!strncmp(r, "&amp;",  5)) { *w++ = '&';  r += 5; }
+      else if (!strncmp(r, "&lt;",   4)) { *w++ = '<';  r += 4; }
+      else if (!strncmp(r, "&gt;",   4)) { *w++ = '>';  r += 4; }
+      else if (!strncmp(r, "&quot;", 6)) { *w++ = '"';  r += 6; }
+      else if (!strncmp(r, "&apos;", 6)) { *w++ = '\''; r += 6; }
+      else if (r[1] == '#') {
+        // Numeric entity. Anything above U+00FF can't be shown by the 8-bit
+        // font, so it becomes '?' rather than mangled bytes.
+        int base = (r[2] == 'x' || r[2] == 'X') ? 16 : 10;
+        const char *numStart = r + (base == 16 ? 3 : 2);
+        char *endp = nullptr;
+        long cp = strtol(numStart, &endp, base);
+        if (endp && *endp == ';' && cp > 0) {
+          *w++ = (cp < 256) ? (char)cp : '?';
+          r = endp + 1;
+        } else {
+          *w++ = *r++;
+        }
+      } else {
+        *w++ = *r++;
+      }
+    }
+    *w = 0;
+  }
+
+  // Extract the text content of <ns:tag>...</ns:tag> from a response block
+  // into `out`. Returns true if the tag was present (an empty or self-closing
+  // tag counts as present with an empty value).
+  static bool _extractTagBuf(const char *p, size_t len, const char *tagName,
+                             char *out, size_t outCap) {
+    out[0] = 0;
+    int s = _scanTag(p, len, tagName, false);
+    if (s < 0) return false;
+    // Advance to the end of the opening tag
+    size_t gt = (size_t)s;
+    while (gt < len && p[gt] != '>') gt++;
+    if (gt >= len) return false;
+    if (p[gt - 1] == '/') return true;          // self-closing: present, empty
+    size_t vStart = gt + 1;
+    int e = _scanTag(p + vStart, len - vStart, tagName, true);
+    if (e < 0) return true;                     // unterminated: treat as empty
+    size_t vLen = (size_t)e;
+    if (vLen >= outCap) vLen = outCap - 1;
+    memcpy(out, p + vStart, vLen);
+    out[vLen] = 0;
+    _decodeEntities(out);
+    return true;
+  }
+
+  // Percent-decode a URL path in place (href values arrive encoded).
+  static void _urlDecodeBuf(char *s) {
+    char *r = s, *w = s;
+    while (*r) {
+      if (*r == '%' && isxdigit((unsigned char)r[1]) && isxdigit((unsigned char)r[2])) {
+        char hex[3] = { r[1], r[2], 0 };
+        *w++ = (char)strtol(hex, nullptr, 16);
+        r += 3;
+      } else if (*r == '+') {
+        *w++ = ' '; r++;
+      } else {
+        *w++ = *r++;
+      }
+    }
+    *w = 0;
+  }
+
+  // Turn one <response>...</response> block into an entry and append it.
+  // `skip` is set for the very first block, which is always the collection
+  // being listed rather than one of its children.
+  void _parseResponseBlock(const char *blk, size_t len, bool skip,
+                           DAVEntryList &entries) {
+    if (skip) return;
+
+    char nameBuf[192];
+    // displayname is authoritative when present; otherwise fall back to the
+    // last path segment of href.
+    bool haveName = _extractTagBuf(blk, len, "displayname", nameBuf, sizeof(nameBuf));
+    if (!haveName || nameBuf[0] == 0) {
+      char hrefBuf[320];
+      if (!_extractTagBuf(blk, len, "href", hrefBuf, sizeof(hrefBuf))) return;
+      _urlDecodeBuf(hrefBuf);
+      size_t hl = strlen(hrefBuf);
+      while (hl > 0 && hrefBuf[hl - 1] == '/') hrefBuf[--hl] = 0;
+      const char *slash = strrchr(hrefBuf, '/');
+      const char *base  = slash ? slash + 1 : hrefBuf;
+      strncpy(nameBuf, base, sizeof(nameBuf) - 1);
+      nameBuf[sizeof(nameBuf) - 1] = 0;
+    }
+    if (nameBuf[0] == 0) return;
+    if (!strcmp(nameBuf, ".") || !strcmp(nameBuf, "..")) return;
+
+    const bool isDir = (_scanTag(blk, len, "collection", false) >= 0);
+
+    size_t fileSize = 0;
+    char sizeBuf[24];
+    if (_extractTagBuf(blk, len, "getcontentlength", sizeBuf, sizeof(sizeBuf)) && sizeBuf[0]) {
+      fileSize = (size_t)strtoul(sizeBuf, nullptr, 10);
+    }
+
+    DAVFileEntry entry;
+    entry.isDir    = isDir;
+    entry.size     = fileSize;
+    entry.hasCover = false;
+    entry.hasNfo   = false;
+
+    if (!isDir) {
+      // Classify by extension; anything that isn't a disk image, cover or NFO
+      // is noise as far as the browser is concerned.
+      String lname(nameBuf);
+      lname.toLowerCase();
+      const bool isDisk  = _isDiskImageName(lname);
+      const bool isCover = lname.endsWith(".jpg") || lname.endsWith(".jpeg") ||
+                           lname.endsWith(".png");
+      const bool isNfo   = lname.endsWith(".nfo") || lname.endsWith(".txt");
+      if (!isDisk && !isCover && !isNfo) return;
+      entry.name = nameBuf;
+      if (isCover) entry.coverFile = entry.name;
+      if (isNfo)   entry.nfoFile   = entry.name;
+    } else {
+      entry.name = nameBuf;
+    }
+
+    entries.push_back(entry);
+  }
+
+  // Disk-image extensions we surface. Kept in one place so adding a new
+  // platform's format (Atari .st/.msa, Spectrum +3 .dsk, HxC .hfe, raw .img)
+  // is a one-line change rather than a hunt through the parser.
+  static bool _isDiskImageName(const String &lower) {
+    static const char *kExts[] = {
+      ".adf", ".adz", ".dms",            // Amiga
+      ".dsk", ".cpc", ".edsk",           // Amstrad CPC / Spectrum +3
+      ".st",  ".msa", ".stx",            // Atari ST
+      ".img", ".ima", ".dmf",            // PC / generic raw
+      ".hfe",                            // HxC / FlashFloppy native
+      ".d64", ".d81",                    // Commodore
+      ".mgt", ".sad",                    // SAM Coupe
+      ".fdi", ".scp",                    // generic flux / disk image
+      ".zip",                            // archives (handled downstream)
+    };
+    for (unsigned i = 0; i < sizeof(kExts) / sizeof(kExts[0]); i++) {
+      if (lower.endsWith(kExts[i])) return true;
+    }
+    return false;
+  }
+
+  // Pull the multistatus document off the socket, emitting entries as blocks
+  // complete. Handles both chunked and Content-Length framing.
+  bool _streamParsePropfind(WiFiClient *tcp, long contentLength, bool chunked,
+                            DAVEntryList &entries) {
+    char *win = (char *)malloc(PARSE_WIN + 1);
+    if (!win) { _lastError = "Out of memory (parse window)"; return false; }
+
+    size_t used = 0;             // bytes currently in the window
+    size_t totalBytes = 0;       // bytes pulled off the socket overall
+    size_t lastLogged = 0;
+    bool   firstBlock = true;    // first <response> is the collection itself
+    long   chunkRemaining = chunked ? 0 : -1;   // -1 = not chunked
+    bool   eof = false;
+    unsigned long timeout = millis();
+
+    // Loop until the socket is drained AND the window has been parsed out.
+    // EOF must never short-circuit straight to the exit: the final reads
+    // almost always leave one or more complete <response> blocks sitting in
+    // the window, and breaking early would silently drop the last entries of
+    // every listing.
+    while (millis() - timeout < 30000) {
+      // ---- refill -------------------------------------------------------
+      if (!eof && used < PARSE_WIN) {
+        size_t want = PARSE_WIN - used;
+        bool   canRead = true;
+
+        if (chunked) {
+          if (chunkRemaining == 0) {
+            // Between chunks: read the hex size line.
+            if (tcp->available()) {
+              String sizeLine = tcp->readStringUntil('\n');
+              sizeLine.trim();
+              if (sizeLine.length() > 0) {
+                chunkRemaining = strtol(sizeLine.c_str(), nullptr, 16);
+                if (chunkRemaining <= 0) eof = true;   // terminal chunk
+                timeout = millis();
+              }
+              canRead = false;   // re-evaluate framing on the next pass
+            } else if (!tcp->connected()) {
+              eof = true;
+              canRead = false;
+            } else {
+              delay(1);
+              canRead = false;
+            }
+          }
+          if (canRead && (long)want > chunkRemaining) want = (size_t)chunkRemaining;
+        } else if (contentLength > 0) {
+          size_t remain = (size_t)contentLength - totalBytes;
+          if (remain == 0) { eof = true; canRead = false; }
+          else if (want > remain) want = remain;
+        }
+
+        if (canRead && !eof) {
+          if (tcp->available()) {
+            size_t got = tcp->readBytes(win + used, want);
+            if (got > 0) {
+              used       += got;
+              totalBytes += got;
+              if (chunked) {
+                chunkRemaining -= got;
+                if (chunkRemaining == 0) {
+                  // Consume the CRLF that terminates the chunk body.
+                  if (tcp->available()) tcp->read();
+                  if (tcp->available()) tcp->read();
+                }
+              }
+              timeout = millis();
+              _fireProgress(totalBytes, contentLength > 0 ? (size_t)contentLength : 0);
+              if (totalBytes - lastLogged >= 65536) {
+                lastLogged = totalBytes;
+                _log("DAV: parsed @" + String((unsigned)(totalBytes / 1024)) +
+                     "K entries=" + String(entries.size()) +
+                     " heap=" + String(ESP.getFreeHeap()));
+              }
+            }
+          } else if (!tcp->connected()) {
+            eof = true;
+          } else {
+            delay(1);
+          }
+        }
+      }
+
+      // ---- drain complete <response> blocks -----------------------------
+      size_t consumed = 0;
+      while (true) {
+        int s = _scanTag(win + consumed, used - consumed, "response", false);
+        if (s < 0) break;
+        size_t bs = consumed + (size_t)s;
+        int e = _scanTag(win + bs, used - bs, "response", true);
+        if (e < 0) break;                       // block not complete yet
+        size_t be = bs + (size_t)e;
+        _parseResponseBlock(win + bs, be - bs, firstBlock, entries);
+        firstBlock = false;
+        // Skip past the closing tag so the next scan starts cleanly.
+        size_t after = be;
+        while (after < used && win[after] != '>') after++;
+        consumed = (after < used) ? after + 1 : used;
+        yield();
+      }
+
+      // ---- compact ------------------------------------------------------
+      if (consumed > 0) {
+        memmove(win, win + consumed, used - consumed);
+        used -= consumed;
+      } else if (used >= PARSE_WIN) {
+        // A single response block larger than the window. Real servers never
+        // do this; rather than stall forever, resync on the last opening tag
+        // we can see and drop everything before it.
+        int last = -1, from = 0;
+        while (true) {
+          int s = _scanTag(win + from, used - from, "response", false);
+          if (s < 0) break;
+          last = from + s;
+          from = last + 1;
+        }
+        if (last > 0) {
+          memmove(win, win + last, used - last);
+          used -= last;
+        } else {
+          used = 0;    // nothing recognisable — start over
+        }
+        _log("DAV: parse window overflow, resynced");
+      }
+
+      // ---- termination --------------------------------------------------
+      // Once the socket is drained, keep going only while the drain step is
+      // still making progress. `consumed == 0` at EOF means what's left in
+      // the window is a trailing fragment (</multistatus>, whitespace) with
+      // no further complete block in it.
+      if (eof && consumed == 0) break;
+      yield();
+    }
+
+    free(win);
+    _log("DAV: stream parse done, " + String(entries.size()) + " entries, " +
+         String((unsigned)(totalBytes / 1024)) + " KB, heap=" +
+         String(ESP.getFreeHeap()));
+    return true;
+  }
+
+  // Parse PROPFIND multistatus XML response (legacy whole-document path).
+  // Retained for reference/fallback; the live path is _streamParsePropfind.
   void _parsePropfindResponse(const String &xml, const String &basePath,
-                               std::vector<DAVFileEntry> &entries) {
+                               DAVEntryList &entries) {
     int pos = 0;
     bool firstEntry = true;
 

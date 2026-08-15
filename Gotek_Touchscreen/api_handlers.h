@@ -1356,7 +1356,7 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
   }
 
   sdLog("API: DAV PROPFIND for path=" + path);
-  std::vector<DAVFileEntry> entries;
+  DAVEntryList entries;
   bool listOk;
   {
     // Web-triggered PROPFIND is the exact same power stack as the

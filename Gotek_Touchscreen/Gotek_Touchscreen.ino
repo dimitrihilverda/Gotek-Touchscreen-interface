@@ -110,12 +110,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.11.7"
+#define FW_VERSION "v0.12.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.014"
+#define FW_INTERNAL "release.015"
 
 using std::vector;
 using std::sort;
@@ -545,11 +545,11 @@ void sdLog(const String &msg);
 // synthesized .cpp — before webdav_client.h is included — and fail with
 // "'DAVFileEntry' was not declared in this scope". Declaring them here after
 // the include tells the generator not to make its own.
-bool davReadCachedDir(const String &davFolderPath, std::vector<DAVFileEntry> &out);
-void davSaveCachedDir(const String &davFolderPath, const std::vector<DAVFileEntry> &entries);
+bool davReadCachedDir(const String &davFolderPath, DAVEntryList &out);
+void davSaveCachedDir(const String &davFolderPath, const DAVEntryList &entries);
 
 // WebDAV browsing state
-std::vector<DAVFileEntry> dav_entries;   // current directory listing
+DAVEntryList dav_entries;   // current directory listing
 String dav_current_path = "/";           // current browse path
 int dav_scroll_offset = 0;              // scroll offset for DAV list
 int dav_selected = -1;                  // selected entry index
@@ -3187,7 +3187,7 @@ void davSaveCachedNfo(const String &davPath, const String &text) {
 // Filenames rarely contain tabs so no escaping needed. Empty coverFile /
 // nfoFile serialise as an empty field. Reads are additive (out is cleared
 // first).
-bool davReadCachedDir(const String &davFolderPath, std::vector<DAVFileEntry> &out) {
+bool davReadCachedDir(const String &davFolderPath, DAVEntryList &out) {
   String cachePath = davMetaCachePath(davFolderPath, "dir");
   if (!SD_MMC.exists(cachePath.c_str())) return false;
   File f = SD_MMC.open(cachePath.c_str(), "r");
@@ -3215,7 +3215,7 @@ bool davReadCachedDir(const String &davFolderPath, std::vector<DAVFileEntry> &ou
   f.close();
   return out.size() > 0;
 }
-void davSaveCachedDir(const String &davFolderPath, const std::vector<DAVFileEntry> &entries) {
+void davSaveCachedDir(const String &davFolderPath, const DAVEntryList &entries) {
   if (entries.empty()) return;
   if (!SD_MMC.exists(DAV_META_DIR)) SD_MMC.mkdir(DAV_META_DIR);
   String cachePath = davMetaCachePath(davFolderPath, "dir");
@@ -3569,7 +3569,7 @@ void davOpenFolderDetail(int folderIndex) {
   // Sub-folder listing — try the on-SD cache first, only PROPFIND on miss.
   // Prevents a full TLS handshake + XML parse every time the user drills
   // into a folder they've already visited.
-  std::vector<DAVFileEntry> folderContents;
+  DAVEntryList folderContents;
   if (!davReadCachedDir(folderPath, folderContents)) {
     BacklightDip _dip;  // same power-dip rationale as davBrowsePath()
     davClient.listDir(folderPath, folderContents);
