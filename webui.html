@@ -280,7 +280,7 @@ textarea{min-height:80px;resize:vertical}
   <div class="card">
     <h2>Game Library <span id="game-count" style="font-weight:400;color:#555"></span></h2>
     <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="game-search" placeholder="Search games..." style="flex:1;min-width:150px;max-width:300px" oninput="filterGames()">
+      <input type="text" id="game-search" placeholder="Search games..." style="flex:1;min-width:150px;max-width:300px" oninput="debouncedFilterGames()">
       <button class="btn" onclick="loadGames()">Refresh</button>
       <button class="btn" onclick="rescanGames()">Rescan SD</button>
     </div>
@@ -337,7 +337,7 @@ textarea{min-height:80px;resize:vertical}
   <div class="card" id="dav-game-card" style="display:none">
     <h2>Game Library <span id="dav-game-count" style="font-weight:400;color:#555"></span></h2>
     <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input type="text" id="dav-search" placeholder="Search games..." style="flex:1;min-width:150px;max-width:300px" oninput="davFilterGames()">
+      <input type="text" id="dav-search" placeholder="Search games..." style="flex:1;min-width:150px;max-width:300px" oninput="debouncedDavFilterGames()">
       <button class="btn" onclick="davRefresh()">Refresh</button>
     </div>
     <div id="dav-alpha-filter" style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:2px"></div>
@@ -521,6 +521,18 @@ async function api(path, opts = {}) {
 // with davShowBusy / davHideBusy so the user can't queue a second heavy
 // request while the first is still fighting for TLS + SD + the Amiga rail.
 // Nesting counter so nested calls don't yank the overlay early.
+// Search boxes rebuild their list through innerHTML, so firing on every
+// keystroke discards and recreates every row (and its <img>) as you type.
+// A short debounce means a burst of typing costs one render, not one per
+// character — on a 3000-game library that is the difference between
+// responsive and unusable.
+function debounce(fn, ms) {
+  let t = null;
+  return function () { clearTimeout(t); t = setTimeout(fn, ms); };
+}
+const debouncedFilterGames    = debounce(() => filterGames(), 250);
+const debouncedDavFilterGames = debounce(() => davFilterGames(), 250);
+
 let davBusyDepth = 0;
 function davShowBusy(msg) {
   davBusyDepth++;
@@ -1351,7 +1363,10 @@ async function davLoadStatus() {
       if (status.has_cache && !document.getElementById('dav-list').innerHTML) davBrowse('/');
     }
     // Re-render list if loaded to update playing badges
-    if (davAllEntries.length > 0) davRenderGameList(davAllEntries);
+    // Must go through the filter, not render the raw array: an unfiltered
+    // render puts every folder in the DOM at once and fires one cover
+    // request per row at the device.
+    if (davAllEntries.length > 0) davFilterGames();
   } catch (e) {
     document.getElementById('dav-status-bar').className = 'ftp-status error';
     document.getElementById('dav-status-bar').textContent = 'Failed to get WebDAV status';
@@ -1524,6 +1539,19 @@ function davRenderGameList(folders) {
   document.getElementById('dav-game-count').textContent = '(' + folders.length + ' games)';
   const list = document.getElementById('dav-list');
 
+  // Backstop. Every row emits an <img> pointing at the device, so rendering a
+  // whole library at once is a self-inflicted denial of service on a
+  // single-threaded HTTP server that is also serving the page you are
+  // looking at. Callers are expected to filter first; fail loudly if one
+  // forgets rather than hanging the device.
+  if (folders.length > 200) {
+    console.warn('davRenderGameList called with ' + folders.length +
+                 ' rows — refusing; filter first');
+    list.innerHTML = '<p style="color:var(--orange);padding:20px;text-align:center">' +
+      'Too many games to show at once (' + folders.length + '). Pick a letter or search.</p>';
+    return;
+  }
+
   if (folders.length === 0) {
     list.innerHTML = '<p style="color:#555;padding:20px;text-align:center">No games found.</p>';
     return;
@@ -1632,7 +1660,9 @@ async function davOpenFolder(folderPath, folderName) {
     if (nfoFile) {
       try {
         const nfoData = await api('/api/dav/nfo?path=' + encodeURIComponent(folderPath + '/' + nfoFile.name));
-        nfoEl.innerHTML = '<label>NFO / Description</label><pre style="font-size:12px;background:var(--light);padding:8px;border:1px inset #999;border-radius:2px;max-height:150px;overflow:auto;white-space:pre-wrap">' + esc(nfoData.content || '') + '</pre>';
+        // The endpoint returns {"nfo": "..."}. This read .content, so DAV
+        // notes were silently blank in the web UI no matter what the file said.
+        nfoEl.innerHTML = '<label>NFO / Description</label><pre style="font-size:12px;background:var(--light);padding:8px;border:1px inset #999;border-radius:2px;max-height:150px;overflow:auto;white-space:pre-wrap">' + esc(nfoData.nfo || '') + '</pre>';
       } catch(e) {
         nfoEl.innerHTML = '<label>NFO</label><span class="badge badge-nfo">Available</span>';
       }
@@ -1691,7 +1721,7 @@ function davCloseFolderModal() {
   document.getElementById('modal-dav-detail').classList.remove('show');
   // Refresh list to update playing status
   if (davConnected && davAllEntries.length > 0) {
-    davRenderGameList(davAllEntries);
+    davFilterGames();   // never render the unfiltered array — see davFilterGames
   }
 }
 
