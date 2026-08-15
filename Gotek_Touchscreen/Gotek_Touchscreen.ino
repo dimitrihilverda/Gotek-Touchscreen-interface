@@ -108,12 +108,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.11.3"
+#define FW_VERSION "v0.11.4"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.010"
+#define FW_INTERNAL "release.011"
 
 using std::vector;
 using std::sort;
@@ -3265,6 +3265,19 @@ static void _davProgressToLoadingScreen(size_t rec, size_t total) {
   drawDAVLoadingScreen(s, pct);
 }
 
+// Byte-level progress hook for the DAV *download* path (loadFileFromDAV
+// pulling an ADF into ram_disk). Same 10 Hz callback contract as the
+// listing hook above; retargets the paint at drawThemedProgressBar so
+// the loading screen's bar animates smoothly instead of jumping 0 →
+// 100 at the end of the transfer. Cap at 99 % so the caller's final
+// drawThemedProgressBar(100) after post-processing still lands.
+static void _davDownloadProgressToLoadingScreen(size_t rec, size_t total) {
+  if (total == 0) return;  // no Content-Length — leave bar as-is
+  int pct = (int)((uint64_t)rec * 100 / total);
+  if (pct > 99) pct = 99;
+  drawThemedProgressBar(pct);
+}
+
 // ── davBrowsePath: fetch from network (with progress) or use cache ─────
 
 void davBrowsePath(const String &path) {
@@ -4927,8 +4940,14 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
 
   size_t maxData = RAM_DISK_SIZE - DATA_OFFSET;
 
-  // Stream directly from WebDAV into ram_disk
+  // Live progress bar during the transfer. The DAV client fires the
+  // callback ~10 Hz from inside streamToBuffer so drawThemedProgressBar
+  // paints a smooth ramp instead of leaving the user staring at 0 %
+  // for the whole download. Cleared afterwards so the callback never
+  // runs against a stale caller.
+  davClient.setProgressCallback(_davDownloadProgressToLoadingScreen);
   long totalRead = davClient.streamToBuffer(remotePath, &ram_disk[DATA_OFFSET], maxData);
+  davClient.setProgressCallback(nullptr);
 
   if (totalRead <= 0) {
     gfx_setTextColor(TFT_RED, TFT_BLACK);
