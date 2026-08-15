@@ -1,3 +1,87 @@
+# Release ritual
+
+Before tagging, in this order:
+
+1. `python tools/make_webui_header.py` — **required after any webui.html edit.**
+   webui.h is a generated, committed file. It silently drifted for several
+   releases, so web fixes were tagged and flashed without ever reaching the
+   device. CI now fails on a stale header, but regenerate locally first.
+2. `bash tools/test/run.sh` — host-side unit tests (WebDAV parser + body pump),
+   webui.html JS syntax, webui.h freshness.
+3. `arduino-cli compile` for **both** matrix FQBNs (JC3248 and Waveshare).
+4. Tag `vX.Y.Z` and push with `--follow-tags`. CI builds and attaches the bins.
+5. `cd <retro-shop>/public/tools/gotek-flasher && ./update-firmware.sh vX.Y.Z`,
+   then commit and `git push production main`.
+
+---
+
+# Open questions and deliberately-deferred work
+
+Findings from the August 2026 audit that were **not** acted on, and why. Each
+needs either hardware on a bench or the user's own server to settle.
+
+## Needs a panel in front of you
+
+- **`gfx_flush()` spends 24 ms per frame in `delayMicroseconds(500)`** across 48
+  strips. Removing it is the single largest render win available and the single
+  most dangerous change: `dma_buffer` is one shared buffer with
+  `trans_queue_depth = 1` and no `on_color_trans_done` callback, so the delay is
+  covering a real race where the next memcpy can overwrite the buffer mid-DMA.
+  Fixing it properly means a second bounce buffer or a completion callback, and
+  verifying it means watching the panel for tearing.
+- **Partial / banded flush.** Two independent audits read the driver and reached
+  *opposite* conclusions: one says thumbnails share a physical row band so a
+  row-strip flush works, the other says `RASET` is skipped in QSPI mode so only
+  a column-band flush is possible. Both cannot be right. Everything downstream
+  (single-row scroll repaint, progress bar, keyboard caret) is blocked until
+  this is settled on hardware — a wrong window command garbles the display.
+
+## Needs a USB current meter
+
+- **CPU frequency scaling (80/160/240).** Probably safe, but at 80 MHz the
+  software AES-GCM path may not drain WiFi RX fast enough during a sustained
+  TLS download, which would present as a dropped connection rather than an
+  obvious clock fault.
+- **WiFi AP lifecycle** (stopping the idle AP, `WIFI_PS_MIN_MODEM` in AP mode).
+  The largest remaining steady-state power win — and the AP is the user's
+  recovery path when the touchscreen misbehaves, so a bug here locks them out
+  of the device entirely.
+- **Idle dim / panel `DISPOFF`.** The wake path is unverified; if touch stops
+  being serviced or `DISPON` does not restore, the device looks dead.
+- **Regulator topology is unknown.** Whether the board uses an LDO or a buck
+  converter determines whether any mA figure maps onto the Amiga's 5 V rail at
+  all. Worth measuring before optimising further.
+
+## Known limits
+
+- **RAM disk is 1.44 MB** (`RAM_DISK_SIZE = 2880 * 512`), of which 1,457,664
+  bytes are usable after the FAT12 overhead. That fits Amiga ADF (901,120),
+  Atari ST (720–800 KB), CPC DSK and most HFE images — but **not** a full
+  1,474,560-byte PC 1.44 MB image. Since v0.12.1 an oversized image is refused
+  with a message instead of being silently truncated and mounted. Raising the
+  limit means changing the FAT12 geometry constants together, which wants a
+  bench test.
+- **Waveshare variant still fails CI** (`lgfx::Touch_CST328` absent from
+  LovyanGFX 1.2.21) — see the existing note further down.
+
+## Worth doing, just not unattended
+
+- **WebDAV thumbnails at scale.** v0.13.x draws a thumbnail whenever the cover
+  is already cached and re-targets the pre-cacher at the visible rows, which is
+  the safe 80 %. The rest — JPEGDEC scaled decode, and asking Nextcloud/Stack
+  for a server-side preview instead of the full-size original — needs testing
+  against the user's actual server.
+- **Boot index (`/INDEX.BIN`).** The folder scan re-opens each game directory
+  several times and bubble-sorts the result; on a 3000-title card that is tens
+  of seconds of every boot. Straightforward to fix, but it touches the code path
+  that decides what the Amiga sees, so it wants a careful pass with the card in
+  hand.
+- **On-device search, favourites and recently-played.** The keyboard modal
+  already exists (`ui_keyboard.h`); all three reduce to swapping which index
+  vector the list iterates.
+
+---
+
 # Power & Lite-Build Plan
 
 The full firmware works on a stable 5V supply but the Amiga's internal USB rail (~500 mA nominal) browns out when the WiFi AP comes up at the same time as the backlight. This plan addresses the brownout, introduces a Lite (SD-only) build, and lays groundwork for browser-based flashing from a website.

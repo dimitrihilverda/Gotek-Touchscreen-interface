@@ -110,12 +110,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.13.0"
+#define FW_VERSION "v0.13.1"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.019"
+#define FW_INTERNAL "release.020"
 
 using std::vector;
 using std::sort;
@@ -1744,10 +1744,31 @@ String findFileInDir(const String &dirPath, const String &targetName) {
 // List disk images by scanning /<MODE>/ subfolders.
 // Each subfolder represents one game/program.
 // Falls back to flat root scanning for legacy layout.
+// Disk-image extensions accepted from the SD card, per mode.
+//
+// The device does not interpret disk images — it copies the bytes into a FAT12
+// volume and lets the Gotek's own firmware (FlashFloppy or HxC) do the format
+// work. So the only thing that has to be right here is recognition, which is
+// why supporting other machines costs one table rather than a driver.
+//
+// ADF mode is Amiga-first but also carries the raw/flux containers that show
+// up in mixed collections. DSK mode covers the Amstrad CPC, Spectrum +3, Atari
+// ST and the generic PC images that people put on a Gotek-fitted machine.
+static bool isImageExtForMode(const String &upperName) {
+  static const char *kAdfExts[] = { ".ADF", ".ADZ", ".DMS", ".IMG", ".HFE", ".SCP", ".FDI", nullptr };
+  static const char *kDskExts[] = { ".DSK", ".EDSK", ".CPC", ".ST", ".MSA", ".STX",
+                                    ".IMG", ".IMA", ".DMF", ".HFE", ".D64", ".D81",
+                                    ".MGT", ".SAD", ".SCP", ".FDI", nullptr };
+  const char *const *tbl = (g_mode == MODE_ADF) ? kAdfExts : kDskExts;
+  for (const char *const *e = tbl; *e; ++e) {
+    if (upperName.endsWith(*e)) return true;
+  }
+  return false;
+}
+
 std::vector<String> listImages() {
   vector<String> images;
   String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
-  String ext1 = (g_mode == MODE_ADF) ? ".ADF" : ".DSK";
 
   File root = SD_MMC.open(modeDir.c_str());
   if (root && root.isDirectory()) {
@@ -1767,7 +1788,7 @@ std::vector<String> listImages() {
 
           String upper = fname;
           upper.toUpperCase();
-          if (upper.endsWith(ext1) || upper.endsWith(".IMG")) {
+          if (isImageExtForMode(upper)) {
             String fullPath = entryName + "/" + fname;
             if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
             images.push_back(fullPath);
@@ -1782,7 +1803,7 @@ std::vector<String> listImages() {
 
         String upper = fname;
         upper.toUpperCase();
-        if (upper.endsWith(ext1) || upper.endsWith(".IMG")) {
+        if (isImageExtForMode(upper)) {
           images.push_back(entryName);
         }
       }
@@ -1802,7 +1823,7 @@ std::vector<String> listImages() {
       if (slash >= 0) fname = fname.substring(slash + 1);
       String upper = fname;
       upper.toUpperCase();
-      if (upper.endsWith(ext1) || upper.endsWith(".IMG")) {
+      if (isImageExtForMode(upper)) {
         String fullPath = "/" + fname;
         // Avoid duplicates
         bool dup = false;
