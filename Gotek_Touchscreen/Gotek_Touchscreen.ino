@@ -110,12 +110,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.12.1"
+#define FW_VERSION "v0.12.2"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.016"
+#define FW_INTERNAL "release.017"
 
 using std::vector;
 using std::sort;
@@ -2338,12 +2338,23 @@ static inline uint16_t alphaBlend565(uint16_t bg, uint16_t fg, uint8_t alpha) {
 // Does the current PNG have alpha? (set after png.open)
 static bool png_has_alpha = false;
 
+// Widest PNG scanline the draw callback can hold. Theme buttons and covers
+// are far narrower; the limit exists because the decode buffers below live
+// on the stack.
+#define PNG_MAX_W 512
+
 // PNGdec draw callback — called for each scanline of decoded pixels.
 // Must return 1 to continue decoding, 0 to abort.
 int pngDrawCB(PNGDRAW *pDraw) {
-  uint16_t lineBuffer[500];
+  // getLineAsRGB565 and getAlphaMask write pDraw->iWidth pixels regardless of
+  // what we intend to draw, so the width has to be rejected BEFORE calling
+  // them. Clamping only the draw loop (as this did) still let a PNG wider
+  // than the buffer scribble over the stack — returning 0 aborts the decode
+  // cleanly instead.
+  if (pDraw->iWidth > PNG_MAX_W) return 0;
+
+  uint16_t lineBuffer[PNG_MAX_W];
   int w = pDraw->iWidth;
-  if (w > 500) w = 500;
 
   // Convert to native-endian RGB565 (our gfx functions handle byte-swap)
   png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_LITTLE_ENDIAN, 0x00000000);
@@ -2352,8 +2363,8 @@ int pngDrawCB(PNGDRAW *pDraw) {
   if (drawY < 0 || drawY >= gH) return 1;
 
   if (png_has_alpha) {
-    // Use PNGdec's alpha mask (1-bit per pixel, threshold 128)
-    uint8_t alphaMask[64];  // ceil(500/8) = 63 bytes
+    // 1 bit per pixel, threshold 128 — sized for PNG_MAX_W, guarded above.
+    uint8_t alphaMask[PNG_MAX_W / 8];
     png.getAlphaMask(pDraw, alphaMask, 128);
 
     for (int i = 0; i < w; i++) {
@@ -2404,6 +2415,15 @@ bool drawPngFile(const char *path, int x, int y) {
     Serial.print(path);
     Serial.print(" rc=");
     Serial.println(rc);
+    return false;
+  }
+
+  // Reject an oversized image up front rather than relying on the per-line
+  // guard to abort mid-decode — mirrors the dimension check gfx_drawJpgFile
+  // already does, and keeps the failure reportable.
+  if (png.getWidth() > PNG_MAX_W) {
+    Serial.println("PNG too wide (" + String(png.getWidth()) + "px): " + String(path));
+    png.close();
     return false;
   }
 
@@ -2534,8 +2554,14 @@ void drawCracktroSplash() {
   unsigned long startTime = millis();
   int frame = 0;
 
-  // Run until tap (no time limit — classic cracktro style)
-  while (true) {
+  // The splash used to run until tapped, with no time limit. That made a
+  // human part of the boot sequence: USB.begin() happens further down in
+  // setup(), so an unattended power-on left the Amiga with no DF0: at all
+  // until somebody walked over and touched the screen. It auto-continues
+  // now. The FLIP button stays reachable for the whole window, which is how
+  // a user with an upside-down panel recovers.
+  const unsigned long SPLASH_MS = 4000;
+  while (millis() - startTime < SPLASH_MS) {
     uint16_t tx, ty;
     if (touchRead(&tx, &ty)) {
       // FLIP button (top-right, 76×24) — invert display orientation + persist.
@@ -5244,7 +5270,12 @@ void setup() {
   }
 
   // ── Cracktro splash screen ──
-  drawCracktroSplash();
+  // Skipped after a crash: a unit stuck in a reboot loop should reach the UI
+  // (and its USB volume) as fast as possible rather than replaying the intro
+  // every cycle. The abnormal-reset banner above has already been shown.
+  if (!resetWasAbnormal(g_resetReason)) {
+    drawCracktroSplash();
+  }
 
   // ── Boot loading screen ──
   drawBootScreen();
@@ -5321,7 +5352,17 @@ void setup() {
     sdLog("Auto-loaded: " + file_list[selected_index] + " (" + String(loaded) + " bytes)");
   }
 
-  sdLog("Free heap: " + String(ESP.getFreeHeap()) + " | Free PSRAM: " + String(ESP.getFreePsram()));
+  // PSRAM is not optional on this device: the 1.44 MB RAM disk and every
+  // WebDAV listing live there. Without it the firmware limps in ways that
+  // look like unrelated bugs, so say so plainly rather than letting the user
+  // chase ghosts.
+  if (!psramFound()) {
+    sdLog("WARNING: no PSRAM detected — RAM disk and WebDAV browsing will fail");
+    Serial.println("WARNING: PSRAM not found. This build requires PSRAM.");
+  }
+  sdLog("Heap: " + String(ESP.getFreeHeap()) + " free / " + String(ESP.getHeapSize()) +
+        " total | PSRAM: " + String(ESP.getFreePsram()) + " free / " +
+        String(ESP.getPsramSize()) + " total");
   drawBootProgress("Starting USB...", 85);
 
   msc.vendorID("Gotek");

@@ -74,6 +74,12 @@ jobs:
           ref: ${{ steps.tag.outputs.ref }}
           fetch-depth: 0
 
+      # webui.h is a generated, committed artefact. It silently drifted behind
+      # webui.html for several releases, so web-UI fixes were tagged, built and
+      # flashed without ever reaching the device. Fail the build instead.
+      - name: Verify webui.h matches webui.html
+        run: python tools/make_webui_header.py --check
+
       - name: Install arduino-cli
         uses: arduino/setup-arduino-cli@v2
 
