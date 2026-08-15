@@ -172,9 +172,9 @@ static void test_basicListing() {
     auto e = runParse(httpContentLength(body), cs);
     checkEqInt((long)e.size(), 3, "entry count (collection itself skipped)");
     if (e.size() == 3) {
-      checkEqStr(e[0].name.s, "Turrican", "entry 0 name");
-      checkEqStr(e[1].name.s, "Lemmings", "entry 1 name");
-      checkEqStr(e[2].name.s, "Zool",     "entry 2 name (LAST — regression guard for EOF drain)");
+      checkEqStr(e[0].name().s, "Turrican", "entry 0 name");
+      checkEqStr(e[1].name().s, "Lemmings", "entry 1 name");
+      checkEqStr(e[2].name().s, "Zool",     "entry 2 name (LAST — regression guard for EOF drain)");
       check(e[0].isDir && e[1].isDir && e[2].isDir, "all marked as directories");
     }
   });
@@ -194,8 +194,8 @@ static void test_chunkedFraming() {
       auto e = runParse(httpChunked(body, httpChunk), cs);
       checkEqInt((long)e.size(), 3, "entry count");
       if (e.size() == 3) {
-        checkEqStr(e[0].name.s, "Alpha", "entry 0");
-        checkEqStr(e[2].name.s, "Gamma", "entry 2 (last)");
+        checkEqStr(e[0].name().s, "Alpha", "entry 0");
+        checkEqStr(e[2].name().s, "Gamma", "entry 2 (last)");
       }
     });
   }
@@ -210,7 +210,7 @@ static void test_namespaceVariants() {
     forEachChunkSize("ns=" + (ns.empty() ? "(none)" : ns), [&](size_t cs) {
       auto e = runParse(httpContentLength(body), cs);
       checkEqInt((long)e.size(), 1, "entry count");
-      if (e.size() == 1) checkEqStr(e[0].name.s, "Hybris", "name");
+      if (e.size() == 1) checkEqStr(e[0].name().s, "Hybris", "name");
     });
   }
 }
@@ -227,10 +227,10 @@ static void test_entityDecoding() {
     auto e = runParse(httpContentLength(body), cs);
     checkEqInt((long)e.size(), 4, "entry count");
     if (e.size() == 4) {
-      checkEqStr(e[0].name.s, "Tom & Jerry",  "&amp; decoded");
-      checkEqStr(e[1].name.s, "\"Quoted\"",   "&quot; decoded");
-      checkEqStr(e[2].name.s, "A <B> C",      "&lt;/&gt; decoded");
-      checkEqStr(e[3].name.s, "Caf\xE9",      "numeric entity decoded");
+      checkEqStr(e[0].name().s, "Tom & Jerry",  "&amp; decoded");
+      checkEqStr(e[1].name().s, "\"Quoted\"",   "&quot; decoded");
+      checkEqStr(e[2].name().s, "A <B> C",      "&lt;/&gt; decoded");
+      checkEqStr(e[3].name().s, "Caf\xE9",      "numeric entity decoded");
     }
   });
 }
@@ -247,8 +247,8 @@ static void test_hrefFallbackWhenNoDisplayName() {
     auto e = runParse(httpContentLength(body), cs);
     checkEqInt((long)e.size(), 2, "entry count");
     if (e.size() == 2) {
-      checkEqStr(e[0].name.s, "Monkey Island 2", "percent-decoded href basename");
-      checkEqStr(e[1].name.s, "Sim City",        "second entry");
+      checkEqStr(e[0].name().s, "Monkey Island 2", "percent-decoded href basename");
+      checkEqStr(e[1].name().s, "Sim City",        "second entry");
     }
   });
 }
@@ -268,11 +268,11 @@ static void test_fileClassification() {
     // .exe and .db are dropped; 2 disks + cover + nfo remain.
     checkEqInt((long)e.size(), 4, "noise files filtered out");
     if (e.size() == 4) {
-      checkEqStr(e[0].name.s, "Turrican Disk 1.adf", "disk 1");
+      checkEqStr(e[0].name().s, "Turrican Disk 1.adf", "disk 1");
       checkEqInt((long)e[0].size, 901120, "disk 1 size parsed");
       check(!e[0].isDir, "disk is not a directory");
-      checkEqStr(e[2].coverFile.s, "cover.jpg", "cover tagged");
-      checkEqStr(e[3].nfoFile.s,   "notes.nfo", "nfo tagged");
+      check(e[2].hasCover, "cover tagged");
+      check(e[3].hasNfo, "nfo tagged");
     }
   });
 }
@@ -315,9 +315,9 @@ static void test_largeListingStress() {
     auto e = runParse(httpContentLength(full), cs);
     checkEqInt((long)e.size(), 3000, "all 3000 entries parsed");
     if (e.size() == 3000) {
-      checkEqStr(e[0].name.s,    "Game Number 0000", "first entry");
-      checkEqStr(e[1499].name.s, "Game Number 1499", "middle entry");
-      checkEqStr(e[2999].name.s, "Game Number 2999", "last entry");
+      checkEqStr(e[0].name().s,    "Game Number 0000", "first entry");
+      checkEqStr(e[1499].name().s, "Game Number 1499", "middle entry");
+      checkEqStr(e[2999].name().s, "Game Number 2999", "last entry");
     }
   }
 
@@ -325,7 +325,7 @@ static void test_largeListingStress() {
   g_currentTest = "stress/3000 chunked";
   auto e = runParse(httpChunked(full, 1400), 512);
   checkEqInt((long)e.size(), 3000, "all 3000 entries parsed (chunked)");
-  if (e.size() == 3000) checkEqStr(e[2999].name.s, "Game Number 2999", "last entry (chunked)");
+  if (e.size() == 3000) checkEqStr(e[2999].name().s, "Game Number 2999", "last entry (chunked)");
 }
 
 static void test_oversizedBlockResync() {
@@ -343,7 +343,7 @@ static void test_oversizedBlockResync() {
   // The huge block is expected to be lost; the parser must survive and still
   // deliver the well-formed entries that follow it.
   bool sawAfter = false;
-  for (auto &en : e) if (en.name.s == "After") sawAfter = true;
+  for (auto &en : e) if (en.name().s == "After") sawAfter = true;
   check(sawAfter, "recovered and parsed the entry after an oversized block");
   check(e.size() >= 1, "did not lose everything");
 }
@@ -360,7 +360,7 @@ static void test_truncatedStream() {
   g_currentTest = "truncated";
   auto e = runParse(http, 64);
   check(e.size() >= 1, "kept the entries that did arrive");
-  if (e.size() >= 1) checkEqStr(e[0].name.s, "One", "first entry intact");
+  if (e.size() >= 1) checkEqStr(e[0].name().s, "One", "first entry intact");
 }
 
 static void test_emptyCollection() {
@@ -397,6 +397,132 @@ static void test_scanTagUnitCases() {
   checkEqInt(GotekDAV::_scanTag(f, strlen(f), "collection", false), 0, "self-closing tag");
 }
 
+// ── Body pump (shared chunked / Content-Length reader) ────────────────────
+
+// Drive streamToBuffer end to end by pre-seeding the socket. The GET request
+// itself is discarded by the stub, so feeding a response is enough.
+struct PumpResult {
+  long   returned;
+  std::string got;
+  bool   truncated;
+};
+
+static PumpResult runStreamToBuffer(const std::string &httpResponse,
+                                    size_t bufSize, size_t sockChunk) {
+  static GotekDAV dav;          // static so lastTruncated() survives the call
+  WiFiClient sock;
+  sock.feed(httpResponse);
+  sock.chunkSize = sockChunk;
+
+  long cl = -1; bool ch = false;
+  dav._readHTTPHeaders(&sock, cl, ch);
+
+  std::vector<uint8_t> buf(bufSize + 1, 0);
+  size_t written = 0;
+  bool complete = false, truncated = false;
+  dav._pumpBody(&sock, cl, ch,
+      [&](const uint8_t *d, size_t n) -> size_t {
+        size_t space = bufSize - written;
+        size_t take  = (n < space) ? n : space;
+        if (take) { memcpy(buf.data() + written, d, take); written += take; }
+        return take;
+      },
+      &complete, &truncated);
+
+  return { (long)written, std::string((char *)buf.data(), written), truncated };
+}
+
+static std::string bodyOfLength(size_t n) {
+  std::string s;
+  s.reserve(n);
+  for (size_t i = 0; i < n; i++) s += (char)('A' + (i % 26));
+  return s;
+}
+
+static void test_pumpContentLength() {
+  std::string payload = bodyOfLength(5000);
+  forEachChunkSize("pump/content-length", [&](size_t cs) {
+    auto r = runStreamToBuffer(httpContentLength(payload, 200), 8192, cs);
+    checkEqInt(r.returned, 5000, "all bytes delivered");
+    check(r.got == payload, "payload byte-exact");
+    check(!r.truncated, "not flagged truncated");
+  });
+}
+
+static void test_pumpChunked() {
+  std::string payload = bodyOfLength(5000);
+  for (size_t httpChunk : { (size_t)1, (size_t)13, (size_t)1400 }) {
+    forEachChunkSize("pump/chunked/http=" + std::to_string(httpChunk), [&](size_t cs) {
+      auto r = runStreamToBuffer(httpChunked(payload, httpChunk, 200), 8192, cs);
+      checkEqInt(r.returned, 5000, "all bytes delivered");
+      check(r.got == payload, "payload byte-exact — chunk framing stripped, not stored");
+    });
+  }
+}
+
+static void test_pumpChunkedIntoSmallBuffer() {
+  // THE regression this pump exists for. The old streamToBuffer, on a full
+  // destination, advanced its chunk counter by bytes it had not actually read
+  // from the socket. Framing then desynchronised and the next "chunk size
+  // line" was parsed out of the middle of the payload, so the transfer died
+  // early while still reporting a positive byte count. The pump must instead
+  // keep draining, stop delivering, and say so.
+  std::string payload = bodyOfLength(20000);
+  for (size_t httpChunk : { (size_t)64, (size_t)1400 }) {
+    forEachChunkSize("pump/chunked-overflow/http=" + std::to_string(httpChunk), [&](size_t cs) {
+      auto r = runStreamToBuffer(httpChunked(payload, httpChunk, 200), 4096, cs);
+      checkEqInt(r.returned, 4096, "delivered exactly the buffer size");
+      check(r.truncated, "truncation reported");
+      check(r.got == payload.substr(0, 4096), "the bytes kept are the FIRST 4096, uncorrupted");
+    });
+  }
+}
+
+static void test_pumpConnectionClose() {
+  // No Content-Length, no chunked: the body ends when the peer closes.
+  std::string payload = bodyOfLength(3000);
+  std::string http = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n" + payload;
+  forEachChunkSize("pump/close-framed", [&](size_t cs) {
+    auto r = runStreamToBuffer(http, 8192, cs);
+    checkEqInt(r.returned, 3000, "all bytes delivered");
+    check(r.got == payload, "payload byte-exact");
+  });
+}
+
+static void test_pumpHeaderMatching() {
+  // A header whose VALUE contains "chunked" must not switch on chunked mode.
+  // The old code tested every header line for the bare substring.
+  g_currentTest = "pump/false-chunked-header";
+  std::string payload = bodyOfLength(500);
+  char hdr[320];
+  snprintf(hdr, sizeof hdr,
+           "HTTP/1.1 200 OK\r\n"
+           "ETag: \"chunked-cafe1234\"\r\n"
+           "Content-Disposition: attachment; filename=\"chunked.adf\"\r\n"
+           "Content-Length: %zu\r\n\r\n", payload.size());
+  auto r = runStreamToBuffer(std::string(hdr) + payload, 8192, 64);
+  checkEqInt(r.returned, 500, "treated as Content-Length, not chunked");
+  check(r.got == payload, "payload byte-exact");
+}
+
+static void test_pumpChunkedWinsOverContentLength() {
+  // RFC 9112: when both framings are advertised, chunked wins.
+  g_currentTest = "pump/both-framings";
+  std::string payload = bodyOfLength(2000);
+  std::string chunkedBody;
+  for (size_t i = 0; i < payload.size(); i += 500) {
+    size_t n = std::min((size_t)500, payload.size() - i);
+    char sz[32]; snprintf(sz, sizeof sz, "%zx\r\n", n);
+    chunkedBody += sz; chunkedBody += payload.substr(i, n); chunkedBody += "\r\n";
+  }
+  chunkedBody += "0\r\n\r\n";
+  std::string http = "HTTP/1.1 200 OK\r\nContent-Length: 99\r\n"
+                     "Transfer-Encoding: chunked\r\n\r\n" + chunkedBody;
+  auto r = runStreamToBuffer(http, 8192, 128);
+  checkEqInt(r.returned, 2000, "used chunked framing, ignored the bogus length");
+  check(r.got == payload, "payload byte-exact");
+}
+
 // ── main ──────────────────────────────────────────────────────────────────
 
 int main() {
@@ -415,6 +541,14 @@ int main() {
   test_oversizedBlockResync();
   test_truncatedStream();
   test_httpError();
+
+  test_pumpContentLength();
+  test_pumpChunked();
+  test_pumpChunkedIntoSmallBuffer();
+  test_pumpConnectionClose();
+  test_pumpHeaderMatching();
+  test_pumpChunkedWinsOverContentLength();
+
   test_largeListingStress();
 
   printf("\n%d passed, %d failed\n", g_pass, g_fail);

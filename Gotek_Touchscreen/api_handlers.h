@@ -1322,7 +1322,7 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
       for (int i = 0; i < (int)dav_entries.size(); i++) {
         if (!first) json += ",";
         first = false;
-        json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+        json += "{\"name\":\"" + jsonEscape(dav_entries[i].name()) + "\"";
         json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
         json += ",\"size\":" + String(dav_entries[i].size);
         json += "}";
@@ -1338,7 +1338,7 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
       for (int i = 0; i < (int)dav_entries.size(); i++) {
         if (!first) json += ",";
         first = false;
-        json += "{\"name\":\"" + jsonEscape(dav_entries[i].name) + "\"";
+        json += "{\"name\":\"" + jsonEscape(dav_entries[i].name()) + "\"";
         json += ",\"dir\":" + String(dav_entries[i].isDir ? "true" : "false");
         json += ",\"size\":" + String(dav_entries[i].size);
         json += "}";
@@ -1372,13 +1372,13 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
   }
   sdLog("API: DAV list OK, " + String(entries.size()) + " entries");
 
-  // Separate cover/nfo metadata from browsable entries
+  // Separate cover/nfo metadata from browsable entries. A file entry carries
+  // hasCover/hasNfo meaning "this file IS the cover / the NFO", so its own
+  // name is the filename we advertise.
   String coverFile = "", nfoFile = "";
   for (int i = 0; i < (int)entries.size(); i++) {
-    if (entries[i].coverFile.length() > 0 && coverFile.length() == 0)
-      coverFile = entries[i].coverFile;
-    if (entries[i].nfoFile.length() > 0 && nfoFile.length() == 0)
-      nfoFile = entries[i].nfoFile;
+    if (entries[i].hasCover && coverFile.length() == 0) coverFile = entries[i].name();
+    if (entries[i].hasNfo   && nfoFile.length()   == 0) nfoFile   = entries[i].name();
   }
 
   // Build JSON response — skip cover/nfo files from browsable list
@@ -1388,10 +1388,10 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
   json += ",\"entries\":[";
   bool first = true;
   for (int i = 0; i < (int)entries.size(); i++) {
-    if (entries[i].coverFile.length() > 0 || entries[i].nfoFile.length() > 0) continue;
+    if (!entries[i].isDir && (entries[i].hasCover || entries[i].hasNfo)) continue;
     if (!first) json += ",";
     first = false;
-    json += "{\"name\":\"" + jsonEscape(entries[i].name) + "\"";
+    json += "{\"name\":\"" + jsonEscape(entries[i].name()) + "\"";
     json += ",\"dir\":" + String(entries[i].isDir ? "true" : "false");
     json += ",\"size\":" + String(entries[i].size);
     json += "}";
@@ -1402,12 +1402,12 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
   json += "}";
   sendJSON(client, 200, json);
 
-  // Update in-memory and SD cache for root listing
+  // Update in-memory and SD cache for root listing. Moving rather than
+  // copying matters here: the element-by-element copy this replaces held two
+  // complete 3000-entry listings live at the same time, doubling the peak for
+  // no reason — `entries` is a local about to go out of scope.
   if (path == "/") {
-    dav_entries.clear();
-    for (int i = 0; i < (int)entries.size(); i++) {
-      dav_entries.push_back(entries[i]);
-    }
+    dav_entries = std::move(entries);
     davSaveCache();
     buildDAVActiveLetters();
     // Start background cover pre-caching

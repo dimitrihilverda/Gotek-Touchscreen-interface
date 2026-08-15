@@ -110,12 +110,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.12.0"
+#define FW_VERSION "v0.12.1"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.015"
+#define FW_INTERNAL "release.016"
 
 using std::vector;
 using std::sort;
@@ -2985,24 +2985,30 @@ void davAnimateProgress(const String &status, int targetPct, int durationMs) {
 }
 
 // ── DAV Cache (persistent on SD card) ──────────────────────────────────
-// Stores root-level folder listing so we don't need PROPFIND on every visit.
-// Format: one line per entry: "D|FolderName" for dirs, "F|size|FileName" for files
-// First line: "PATH=/path" to validate cache belongs to current server path
+// Stores the root-level folder listing so we don't PROPFIND on every visit.
+//   D|FolderName            directory
+//   F|size|Name|C|N         file, C/N = '1' when it is a cover / an NFO
+// Header lines pin the cache to a server + path, and VER lets an older
+// layout be discarded rather than misparsed.
 
 #define DAV_CACHE_FILE "/DAV_CACHE.TXT"
+// v2 dropped the coverFile/nfoFile name columns — they only ever repeated
+// the entry's own name, so they are now single flags.
+#define DAV_CACHE_VER  "2"
 
 void davSaveCache() {
   File f = SD_MMC.open(DAV_CACHE_FILE, "w");
   if (!f) return;
+  f.println("VER=" DAV_CACHE_VER);
   f.println("PATH=" + dav_current_path);
   f.println("HOST=" + cfg_dav_host);
   f.println("COUNT=" + String(dav_entries.size()));
   for (const auto &e : dav_entries) {
     if (e.isDir) {
-      f.println("D|" + e.name);
+      f.println("D|" + e.name());
     } else {
-      // F|size|name|coverFile|nfoFile
-      f.println("F|" + String(e.size) + "|" + e.name + "|" + e.coverFile + "|" + e.nfoFile);
+      f.println("F|" + String(e.size) + "|" + e.name() + "|" +
+                (e.hasCover ? "1" : "0") + "|" + (e.hasNfo ? "1" : "0"));
     }
   }
   f.close();
@@ -3016,13 +3022,18 @@ bool davLoadCache() {
   dav_entries.clear();
 
   String line;
-  bool pathOk = false, hostOk = false;
+  bool pathOk = false, hostOk = false, verOk = false;
 
   while (f.available()) {
     line = f.readStringUntil('\n');
     line.trim();
     if (line.length() == 0) continue;
 
+    if (line.startsWith("VER=")) {
+      verOk = (line.substring(4) == DAV_CACHE_VER);
+      if (!verOk) break;      // older layout — refetch rather than misparse
+      continue;
+    }
     if (line.startsWith("PATH=")) {
       pathOk = (line.substring(5) == "/");  // only cache root listing
       continue;
@@ -3033,23 +3044,22 @@ bool davLoadCache() {
     }
     if (line.startsWith("COUNT=")) continue;  // informational only
 
-    if (!pathOk || !hostOk) {
-      // Cache is for a different server or path — discard
+    if (!verOk || !pathOk || !hostOk) {
+      // Cache is stale, or for a different server or path — discard.
       f.close();
       dav_entries.clear();
       return false;
     }
 
     if (line.startsWith("D|")) {
-      DAVFileEntry entry;
-      entry.name = line.substring(2);
-      entry.isDir = true;
-      entry.size = 0;
+      dav_entries.emplace_back();
+      DAVFileEntry &entry = dav_entries.back();
+      entry.setName(line.substring(2));
+      entry.isDir    = true;
+      entry.size     = 0;
       entry.hasCover = false;
-      entry.hasNfo = false;
-      dav_entries.push_back(entry);
+      entry.hasNfo   = false;
     } else if (line.startsWith("F|")) {
-      // F|size|name|coverFile|nfoFile
       String rest = line.substring(2);
       int p1 = rest.indexOf('|');
       if (p1 < 0) continue;
@@ -3057,22 +3067,21 @@ bool davLoadCache() {
       if (p2 < 0) continue;
       int p3 = rest.indexOf('|', p2 + 1);
 
-      DAVFileEntry entry;
+      dav_entries.emplace_back();
+      DAVFileEntry &entry = dav_entries.back();
       entry.isDir = false;
-      entry.size = rest.substring(0, p1).toInt();
-      entry.name = rest.substring(p1 + 1, p2);
+      entry.size  = (uint32_t)rest.substring(0, p1).toInt();
+      entry.setName(rest.substring(p1 + 1, p2));
       entry.hasCover = false;
-      entry.hasNfo = false;
+      entry.hasNfo   = false;
       if (p3 >= 0) {
-        entry.coverFile = rest.substring(p2 + 1, p3);
-        entry.nfoFile = rest.substring(p3 + 1);
-        if (entry.coverFile.length() > 0) entry.hasCover = true;
-        if (entry.nfoFile.length() > 0) entry.hasNfo = true;
+        entry.hasCover = (rest.substring(p2 + 1, p3) == "1");
+        entry.hasNfo   = (rest.substring(p3 + 1)     == "1");
       }
-      dav_entries.push_back(entry);
     }
   }
   f.close();
+  if (!verOk) { dav_entries.clear(); return false; }
   return (dav_entries.size() > 0);
 }
 
@@ -3133,6 +3142,26 @@ long davReadCachedCover(const String &davPath, uint8_t *buf, size_t maxSize) {
   return rd;
 }
 
+// Local path of an already-cached cover for a DAV folder, or "" if we haven't
+// fetched one. Convention on the server is <Folder>/<Folder>.jpg with .png as
+// the fallback, so both are probed. Used by the list renderer to decide
+// between a real thumbnail and the letter placeholder — it only ever reads
+// what the pre-cache already put on the card, and never touches the network.
+String davCachedCoverFileFor(const String &basePath, const String &folderName) {
+  String base = basePath;
+  if (!base.endsWith("/")) base += "/";
+  // NB: don't name a variable `local` here — PNGdec pulls in zlib's zutil.h,
+  // which #defines `local` to `static` and turns any such declaration into a
+  // baffling "expected unqualified-id" error.
+  const char *exts[] = { ".jpg", ".png" };
+  for (int i = 0; i < 2; i++) {
+    String remote    = base + folderName + "/" + folderName + exts[i];
+    String cacheFile = davCoverCachePath(remote);
+    if (SD_MMC.exists(cacheFile.c_str())) return cacheFile;
+  }
+  return "";
+}
+
 // Save a cover to the SD cache
 void davSaveCachedCover(const String &davPath, const uint8_t *buf, size_t size) {
   // Create dir if needed
@@ -3183,10 +3212,11 @@ void davSaveCachedNfo(const String &davPath, const String &text) {
 }
 
 // Sub-folder listing — line-based, tab-separated:
-//   <name>\t<isDir 0|1>\t<size>\t<coverFile>\t<nfoFile>\n
-// Filenames rarely contain tabs so no escaping needed. Empty coverFile /
-// nfoFile serialise as an empty field. Reads are additive (out is cleared
-// first).
+//   <name>\t<isDir 0|1>\t<size>\t<isCover 0|1>\t<isNfo 0|1>\n
+// Filenames rarely contain tabs so no escaping is needed. The last two
+// columns used to repeat the filename; they are flags now, and a stale
+// file from the old layout parses its "Turrican.jpg" column as not-"1",
+// i.e. false — a harmless loss of a badge that the next refresh restores.
 bool davReadCachedDir(const String &davFolderPath, DAVEntryList &out) {
   String cachePath = davMetaCachePath(davFolderPath, "dir");
   if (!SD_MMC.exists(cachePath.c_str())) return false;
@@ -3202,15 +3232,13 @@ bool davReadCachedDir(const String &davFolderPath, DAVEntryList &out) {
     int p3 = (p2 >= 0) ? line.indexOf('\t', p2 + 1) : -1;
     int p4 = (p3 >= 0) ? line.indexOf('\t', p3 + 1) : -1;
     if (p4 < 0) continue;   // malformed line — skip
-    DAVFileEntry e{};
-    e.name      = line.substring(0, p1);
-    e.isDir     = (line.substring(p1 + 1, p2) == "1");
-    e.size      = (size_t)line.substring(p2 + 1, p3).toInt();
-    e.coverFile = line.substring(p3 + 1, p4);
-    e.nfoFile   = line.substring(p4 + 1);
-    e.hasCover  = e.coverFile.length() > 0;
-    e.hasNfo    = e.nfoFile.length()   > 0;
-    out.push_back(e);
+    out.emplace_back();
+    DAVFileEntry &e = out.back();
+    e.setName(line.substring(0, p1));
+    e.isDir    = (line.substring(p1 + 1, p2) == "1");
+    e.size     = (uint32_t)line.substring(p2 + 1, p3).toInt();
+    e.hasCover = (line.substring(p3 + 1, p4) == "1");
+    e.hasNfo   = (line.substring(p4 + 1)     == "1");
   }
   f.close();
   return out.size() > 0;
@@ -3222,94 +3250,132 @@ void davSaveCachedDir(const String &davFolderPath, const DAVEntryList &entries) 
   File f = SD_MMC.open(cachePath.c_str(), "w");
   if (!f) return;
   for (const auto &e : entries) {
-    f.print(e.name);      f.print('\t');
-    f.print(e.isDir ? '1' : '0'); f.print('\t');
-    f.print((uint32_t)e.size); f.print('\t');
-    f.print(e.coverFile); f.print('\t');
-    f.print(e.nfoFile);   f.print('\n');
+    f.print(e.cname());            f.print('\t');
+    f.print(e.isDir ? '1' : '0');  f.print('\t');
+    f.print((uint32_t)e.size);     f.print('\t');
+    f.print(e.hasCover ? '1' : '0'); f.print('\t');
+    f.print(e.hasNfo   ? '1' : '0'); f.print('\n');
   }
   f.close();
 }
 
 // ── Background cover pre-cacher ────────────────────────────────────────
-// Downloads one cover per loop iteration when idle, so covers are cached
-// on SD card before the user or web UI requests them.
+//
+// Fetches one cover per idle loop iteration so thumbnails appear in the DAV
+// list without ever blocking touch.
+//
+// This used to sweep the whole listing from index 0. On a 3000-folder library
+// that is ~3000 TLS handshakes and hundreds of megabytes — hours of radio time
+// for covers the user will never scroll past, on a device whose power budget
+// comes from a 30-year-old USB port. It also meant the covers you were
+// actually looking at were fetched last.
+//
+// Now the pump follows the viewport: it fills the rows on screen first, then a
+// short look-ahead, and stops. Scrolling re-targets it automatically, so the
+// covers under your thumb are always the ones being fetched.
 
-int dav_cover_precache_idx = -1;  // current index in dav_entries being pre-cached, -1 = idle
+int  dav_cover_precache_idx = -1;    // index being fetched, -1 = idle
 bool dav_cover_precache_active = false;
+int  dav_precache_anchor = -1;       // scroll offset the current window was built for
+uint32_t dav_precache_last_paint = 0;
+
+// Rows fetched beyond the bottom of the screen, so a slow scroll stays ahead
+// of the user instead of always catching up.
+#define DAV_PRECACHE_LOOKAHEAD 6
 
 void davStartCoverPrecache() {
-  dav_cover_precache_idx = 0;
+  dav_precache_anchor      = -1;   // forces a re-target on the next pump call
+  dav_cover_precache_idx   = -1;
   dav_cover_precache_active = true;
-  Serial.println("DAV cover pre-cache: starting (" + String(dav_entries.size()) + " entries)");
 }
 
-// Call this once per loop() iteration when idle (no touch activity).
-// Downloads ONE cover per call to keep touch responsive.
+// Call once per loop() iteration when idle (no touch, nothing else pending).
 void davPrecacheOneCover() {
   if (!dav_cover_precache_active) return;
-  if (dav_cover_precache_idx < 0 || dav_cover_precache_idx >= (int)dav_entries.size()) {
-    dav_cover_precache_active = false;
-    dav_cover_precache_idx = -1;
-    Serial.println("DAV cover pre-cache: done");
-    return;
+  if (dav_entries.empty()) { dav_cover_precache_active = false; return; }
+
+  // Re-target whenever the viewport has moved. Cheap and self-correcting —
+  // no need to hook every scroll site.
+  if (dav_precache_anchor != dav_scroll_offset) {
+    dav_precache_anchor    = dav_scroll_offset;
+    dav_cover_precache_idx = dav_scroll_offset;
   }
 
-  // Skip non-directories
-  while (dav_cover_precache_idx < (int)dav_entries.size() && !dav_entries[dav_cover_precache_idx].isDir) {
-    dav_cover_precache_idx++;
+  const int windowEnd = dav_scroll_offset + items_per_page() + DAV_PRECACHE_LOOKAHEAD;
+  const int listEnd   = (int)dav_entries.size();
+
+  // Skip entries that are files or already have a cover on the card.
+  while (dav_cover_precache_idx < windowEnd && dav_cover_precache_idx < listEnd) {
+    const DAVFileEntry &cand = dav_entries[dav_cover_precache_idx];
+    if (!cand.isDir) { dav_cover_precache_idx++; continue; }
+    if (davCachedCoverFileFor(dav_current_path, cand.name()).length() > 0) {
+      dav_cover_precache_idx++;
+      continue;
+    }
+    break;
   }
-  if (dav_cover_precache_idx >= (int)dav_entries.size()) {
-    dav_cover_precache_active = false;
-    Serial.println("DAV cover pre-cache: done");
-    return;
-  }
+
+  // Window satisfied — go quiet until the user scrolls.
+  if (dav_cover_precache_idx >= windowEnd || dav_cover_precache_idx >= listEnd) return;
 
   const DAVFileEntry &folder = dav_entries[dav_cover_precache_idx];
   String basePath = dav_current_path;
   if (!basePath.endsWith("/")) basePath += "/";
   // Convention: cover = FolderName/FolderName.jpg (or .png)
-  String coverPath = basePath + folder.name + "/" + folder.name + ".jpg";
-
-  // Check if already cached
+  String coverPath = basePath + folder.name() + "/" + folder.name() + ".jpg";
   String cachePath = davCoverCachePath(coverPath);
-  // Persistent "no cover found" marker sits at <hash>.miss next to the
-  // cached image. Without it we'd retry the same two TLS handshakes
-  // (JPG then PNG, ~30 s timeout each in the worst case) on every
-  // re-browse of a directory that legitimately has no covers.
+
+  // Persistent "no cover found" marker sits at <path>.miss next to where the
+  // cached image would live. Without it we'd retry the same two TLS
+  // handshakes (JPG then PNG) on every re-browse of a directory that
+  // legitimately has no covers.
   String missPath = cachePath + ".miss";
-  if (!SD_MMC.exists(cachePath.c_str()) && !SD_MMC.exists(missPath.c_str())) {
-    // Also check .png variant
-    String pngCoverPath = basePath + folder.name + "/" + folder.name + ".png";
-    String pngCachePath = davCoverCachePath(pngCoverPath);
-    if (!SD_MMC.exists(pngCachePath.c_str())) {
-      // Not cached — download .jpg first, fallback to .png
-      size_t maxCover = 100 * 1024;
-      uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
-      if (buf) {
-        long bytes = davClient.streamToBuffer(coverPath, buf, maxCover);
+  bool fetched = false;
+
+  if (!SD_MMC.exists(missPath.c_str())) {
+    String pngCoverPath = basePath + folder.name() + "/" + folder.name() + ".png";
+    // Covers are list thumbnails and detail-screen art; anything over 100 KB
+    // is a photo someone dropped in by mistake. Dip the backlight for the
+    // transfer like every other radio burst.
+    size_t maxCover = 100 * 1024;
+    uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
+    if (buf) {
+      BacklightDip _dip;
+      long bytes = davClient.streamToBuffer(coverPath, buf, maxCover);
+      if (bytes > 0) {
+        davSaveCachedCover(coverPath, buf, bytes);
+        fetched = true;
+      } else {
+        bytes = davClient.streamToBuffer(pngCoverPath, buf, maxCover);
         if (bytes > 0) {
-          davSaveCachedCover(coverPath, buf, bytes);
+          davSaveCachedCover(pngCoverPath, buf, bytes);
+          fetched = true;
         } else {
-          // Try .png
-          bytes = davClient.streamToBuffer(pngCoverPath, buf, maxCover);
-          if (bytes > 0) {
-            davSaveCachedCover(pngCoverPath, buf, bytes);
-          } else {
-            // Neither variant exists — write an empty marker so the next
-            // browse doesn't repeat the two-handshake dance. The marker
-            // is trivially cleared by deleting /DAV_COVERS/*.miss if
-            // the user later uploads covers to the server.
-            File m = SD_MMC.open(missPath.c_str(), "w");
-            if (m) m.close();
-          }
+          // Neither variant exists — leave a marker so the next browse
+          // doesn't repeat the two-handshake dance. Cleared by deleting
+          // /DAV_COVERS/*.miss if covers are uploaded to the server later.
+          File m = SD_MMC.open(missPath.c_str(), "w");
+          if (m) m.close();
         }
-        free(buf);
       }
+      free(buf);
     }
   }
 
+  const int fetchedIdx = dav_cover_precache_idx;
   dav_cover_precache_idx++;
+
+  // Repaint so the new cover actually appears, but only when it landed on a
+  // row that is currently visible, and at most a couple of times a second —
+  // a full list repaint per cover would make the list flicker while a
+  // screenful streams in.
+  if (fetched && current_screen == SCR_WEBDAV &&
+      fetchedIdx >= dav_scroll_offset &&
+      fetchedIdx <  dav_scroll_offset + items_per_page() &&
+      millis() - dav_precache_last_paint > 400) {
+    dav_precache_last_paint = millis();
+    drawDAVList();
+  }
 }
 
 // Byte-level progress hook — the DAV client calls this ~10 times / second
@@ -3407,9 +3473,19 @@ void davBrowsePath(const String &path) {
   // Dip backlight during PROPFIND. On a 3000-entry library this is ~20 s of
   // sustained WiFi RX and TLS decrypt — the exact stack that browns out
   // an aged Amiga USB port when the LCD is also drawing at full brightness.
+  //
+  // An oversized library can still exhaust PSRAM; the allocator throws so it
+  // arrives here as an exception rather than a reboot.
+  bool listOk = false;
   {
     BacklightDip _dip;
-    davClient.listDir(path, dav_entries);
+    try {
+      listOk = davClient.listDir(path, dav_entries);
+    } catch (const std::bad_alloc &) {
+      dav_entries.clear();
+      listOk = false;
+      sdLog("DAV: out of memory building listing for " + path);
+    }
   }
   davClient.setProgressCallback(nullptr);
 
@@ -3423,9 +3499,13 @@ void davBrowsePath(const String &path) {
 
   buildDAVActiveLetters();
 
-  // Save to cache for next time
-  if (path == "/") {
+  // Only cache a listing we know is complete. A truncated transfer that got
+  // written here would be served from cache on every later visit, leaving a
+  // permanently half-missing library that never refetches itself.
+  if (path == "/" && listOk) {
     davSaveCache();
+  } else if (!listOk) {
+    sdLog("DAV: listing not cached — " + davClient.lastError());
   }
 
   // Phase 4: Ready
@@ -3465,22 +3545,36 @@ void drawDAVList() {
     int thumbY2 = y + (LIST_ITEM_H - LIST_THUMB_H) / 2;
 
     if (e.isDir) {
-      // Folder — draw placeholder thumbnail with initial letter
-      gfx_fillRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x1082);
-      gfx_drawRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
-      gfx_fillRect(thumbX + 2, thumbY2, LIST_THUMB_W / 2, 6, TFT_YELLOW);
-      if (e.hasCover) {
-        gfx_setTextColor(TFT_GREEN, 0x1082);
-        gfx_setTextSize(1);
-        gfx_setCursor(thumbX + 4, thumbY2 + LIST_THUMB_H - 12);
-        gfx_print("IMG");
+      // Cover art, if the precache has already pulled this folder's image
+      // down. Covers land in /DAV_COVERS/ as ordinary JPEG/PNG files, so the
+      // same drawThumb() used by the SD list works unchanged — it adds its
+      // own 46x46 LRU on top, which is what keeps scrolling smooth once a
+      // screenful has been seen once.
+      bool thumbDrawn = false;
+      String cachedCover = davCachedCoverFileFor(dav_current_path, e.name());
+      if (cachedCover.length() > 0) {
+        thumbDrawn = drawThumb(thumbX, thumbY2, cachedCover);
       }
-      gfx_setTextColor(TFT_YELLOW, 0x1082);
-      gfx_setTextSize(3);
-      char initial = toupper(e.name.charAt(0));
-      gfx_setCursor(thumbX + (LIST_THUMB_W - 18) / 2, thumbY2 + 12);
-      char buf[2] = { initial, 0 };
-      gfx_print(buf);
+
+      if (!thumbDrawn) {
+        // Folder placeholder — initial letter on a folder-tab shape.
+        gfx_fillRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x1082);
+        gfx_drawRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
+        gfx_fillRect(thumbX + 2, thumbY2, LIST_THUMB_W / 2, 6, TFT_YELLOW);
+        if (e.hasCover) {
+          // Server says there IS a cover, we just haven't fetched it yet.
+          gfx_setTextColor(TFT_GREEN, 0x1082);
+          gfx_setTextSize(1);
+          gfx_setCursor(thumbX + 4, thumbY2 + LIST_THUMB_H - 12);
+          gfx_print("IMG");
+        }
+        gfx_setTextColor(TFT_YELLOW, 0x1082);
+        gfx_setTextSize(3);
+        char initial = toupper(e.cname()[0]);
+        gfx_setCursor(thumbX + (LIST_THUMB_W - 18) / 2, thumbY2 + 12);
+        char buf[2] = { initial, 0 };
+        gfx_print(buf);
+      }
     } else {
       // File — draw placeholder (shouldn't appear in game-folder view, but just in case)
       gfx_drawRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
@@ -3494,7 +3588,7 @@ void drawDAVList() {
     int textX = thumbX + LIST_THUMB_W + 8;
     gfx_setTextColor(e.isDir ? TFT_WHITE : TFT_GREY, TFT_BLACK);
     gfx_setTextSize(2);
-    String dispName = truncateToWidth(e.name, gW - textX - 54);
+    String dispName = truncateToWidth(e.name(), gW - textX - 54);
     gfx_setCursor(textX, y + 8);
     gfx_print(dispName);
 
@@ -3555,12 +3649,12 @@ void davOpenFolderDetail(int folderIndex) {
   dav_detail_needs_full_load = false;  // full load — clear lightweight flag
 
   dav_detail_index = folderIndex;
-  dav_detail_name = folder.name;
+  dav_detail_name = folder.name();
 
   // Build folder path
   String folderPath = dav_current_path;
   if (!folderPath.endsWith("/")) folderPath += "/";
-  folderPath += folder.name;
+  folderPath += folder.name();
   dav_detail_folder_path = folderPath;
 
   // Show loading
@@ -3572,8 +3666,11 @@ void davOpenFolderDetail(int folderIndex) {
   DAVEntryList folderContents;
   if (!davReadCachedDir(folderPath, folderContents)) {
     BacklightDip _dip;  // same power-dip rationale as davBrowsePath()
-    davClient.listDir(folderPath, folderContents);
-    if (!folderContents.empty()) davSaveCachedDir(folderPath, folderContents);
+    // Cache only a listing the client reports as complete — a partial one
+    // would stick around and quietly hide half of a game's disks.
+    if (davClient.listDir(folderPath, folderContents) && !folderContents.empty()) {
+      davSaveCachedDir(folderPath, folderContents);
+    }
   }
 
   dav_detail_disks.clear();
@@ -3587,16 +3684,16 @@ void davOpenFolderDetail(int folderIndex) {
   for (int i = 0; i < (int)folderContents.size(); i++) {
     const DAVFileEntry &f = folderContents[i];
     if (f.isDir) continue;
-    String lname = f.name;
+    String lname = f.name();
     lname.toLowerCase();
     if (lname.endsWith(".adf") || lname.endsWith(".dsk") || lname.endsWith(".adz") || lname.endsWith(".img")) {
-      dav_detail_disks.push_back(f.name);
+      dav_detail_disks.push_back(f.name());
     }
-    if (f.coverFile.length() > 0 && dav_detail_cover_path.length() == 0) {
-      dav_detail_cover_path = dirPath + f.coverFile;
+    if (f.hasCover && dav_detail_cover_path.length() == 0) {
+      dav_detail_cover_path = dirPath + f.name();
     }
-    if (f.nfoFile.length() > 0 && dav_detail_nfo_text.length() == 0) {
-      String nfoPath = dirPath + f.nfoFile;
+    if (f.hasNfo && dav_detail_nfo_text.length() == 0) {
+      String nfoPath = dirPath + f.name();
       // Try SD cache first — NFO is small text (~1 KB) and never changes for
       // an existing game folder, so caching it kills a full TLS handshake
       // + read every time the user opens this detail screen.
@@ -4112,7 +4209,7 @@ void buildDAVActiveLetters() {
   bool seen[26] = {false};
   for (int i = 0; i < (int)dav_entries.size(); i++) {
     if (!dav_entries[i].isDir) continue;
-    char c = toupper(dav_entries[i].name.charAt(0));
+    char c = toupper(dav_entries[i].cname()[0]);
     if (c >= 'A' && c <= 'Z') seen[c - 'A'] = true;
   }
   active_letter_count = 0;
@@ -4134,7 +4231,7 @@ int findFirstWithLetter(char letter, int count, String (*getNameFn)(int)) {
 
 // Name getters for the two list types
 String _sdGameName(int i) { return game_list[i].name; }
-String _davEntryName(int i) { return dav_entries[i].name; }
+String _davEntryName(int i) { return dav_entries[i].name(); }
 
 // Draw the alphabet bar for any list — pass current scrollOffset and total item count
 void drawAlphabetBar(int scrollOff, int totalItems) {
@@ -4148,7 +4245,7 @@ void drawAlphabetBar(int scrollOff, int totalItems) {
   char curLetter = 'A';
   if (current_screen == SCR_WEBDAV) {
     if (scrollOff >= 0 && scrollOff < (int)dav_entries.size())
-      curLetter = toupper(dav_entries[scrollOff].name.charAt(0));
+      curLetter = toupper(dav_entries[scrollOff].cname()[0]);
   } else {
     if (scrollOff >= 0 && scrollOff < (int)game_list.size())
       curLetter = toupper(game_list[scrollOff].name.charAt(0));
@@ -5020,6 +5117,15 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   long totalRead = davClient.streamToBuffer(remotePath, &ram_disk[DATA_OFFSET], maxData);
   davClient.setProgressCallback(nullptr);
 
+  // A disk image that filled the RAM disk without the response ending is
+  // truncated, and a truncated image is worse than none: it mounts, the
+  // machine boots partway, and the user blames the game. Refuse it.
+  if (totalRead > 0 && davClient.lastTruncated()) {
+    sdLog("DAV: refusing truncated image " + remotePath +
+          " (" + String(totalRead) + " B)");
+    totalRead = 0;
+  }
+
   if (totalRead <= 0) {
     gfx_setTextColor(TFT_RED, TFT_BLACK);
     gfx_setTextSize(2);
@@ -5407,7 +5513,7 @@ void loop() {
 
       nowPlaying.davFolderIndex = -1;
       for (int i = 0; i < (int)dav_entries.size(); i++) {
-        if (dav_entries[i].isDir && dav_entries[i].name == folderName) {
+        if (dav_entries[i].isDir && dav_entries[i].nameEquals(folderName.c_str())) {
           nowPlaying.davFolderIndex = i;
           break;
         }
@@ -5435,10 +5541,10 @@ void loop() {
       // Lightweight detail setup — just set state from what we already know
       const DAVFileEntry &folder = dav_entries[navIdx];
       dav_detail_index = navIdx;
-      dav_detail_name = folder.name;
+      dav_detail_name = folder.name();
       String folderPath = dav_current_path;
       if (!folderPath.endsWith("/")) folderPath += "/";
-      folderPath += folder.name;
+      folderPath += folder.name();
       dav_detail_folder_path = folderPath;
 
       // We know the loaded file from nowPlaying — set it as the only disk

@@ -22,31 +22,59 @@
 // WebDAV Types
 // ============================================================================
 
+// ---------------------------------------------------------------------------
+// One entry in a listing.
+//
+// The name is a fixed char buffer rather than a String, and this is the single
+// most important detail in the file. arduino-esp32 3.3.11 builds with
+// CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096, which means allocations LARGER
+// than 4 KB prefer PSRAM while everything SMALLER is forced into the ~300 KB
+// internal SRAM. Arduino String stores up to 14 characters inline and heap-
+// allocates beyond that, so 3000 folder names cost ~60 bytes of internal SRAM
+// each (rounded capacity + TLSF header + light poisoning) — roughly 180 KB,
+// held for the whole session, on a device that has ~150 KB free after WiFi,
+// TLS, SD and USB are up.
+//
+// It got worse during growth: String's move constructor is not noexcept, so
+// std::vector could not move-on-realloc and copied instead, briefly holding
+// two full sets of name strings. That transient spike at the 2048 -> 4096
+// boundary is what actually tipped the device over, and because the toolchain
+// enables C++ exceptions with no emergency pool, the resulting bad_alloc
+// aborted — reported as ESP_RST_PANIC rather than anything mentioning memory.
+//
+// With the name inline, an entry is plain-old-data: the whole array lives in
+// PSRAM, growth is a memcpy, and a listing costs zero internal heap.
+//
+// 96 bytes fits any real disk-image folder name; longer ones are truncated
+// for display but still address correctly because paths are rebuilt from the
+// server's own listing.
+// ---------------------------------------------------------------------------
 struct DAVFileEntry {
-  String name;
-  bool   isDir;
-  size_t size;
-  bool   hasCover;   // true if folder contains a .jpg/.png
-  bool   hasNfo;     // true if folder contains a .nfo
-  String coverFile;  // name of cover file (e.g. "cover.jpg")
-  String nfoFile;    // name of nfo file
+  char     nameBuf[96];
+  uint32_t size;
+  bool     isDir;
+  bool     hasCover;   // directory: contains a cover. file: IS a cover.
+  bool     hasNfo;     // directory: contains an NFO. file: IS an NFO.
+
+  void setName(const char *s) {
+    strncpy(nameBuf, s ? s : "", sizeof(nameBuf) - 1);
+    nameBuf[sizeof(nameBuf) - 1] = 0;
+  }
+  void setName(const String &s) { setName(s.c_str()); }
+  const char *cname() const { return nameBuf; }
+  String name() const { return String(nameBuf); }
+  bool nameEquals(const char *s) const { return strcmp(nameBuf, s) == 0; }
 };
 
 // ---------------------------------------------------------------------------
-// PSRAM-backed vector for entry lists.
+// PSRAM-backed vector for entry lists. 3000 entries is ~310 KB, which the
+// 8 MB of OPI PSRAM absorbs without noticing but the internal heap cannot.
 //
-// sizeof(DAVFileEntry) is ~56 bytes. A 3000-folder library therefore needs a
-// ~170 KB contiguous array — and std::vector grows by doubling, so the moment
-// it reallocates from 2048 to 4096 slots it wants old+new = ~340 KB live at
-// once. The ESP32-S3's internal heap is ~300 KB total, so that allocation
-// simply cannot succeed and the failure surfaces as an ESP_RST_PANIC reboot
-// partway through a listing. The 8 MB of OPI PSRAM has room to spare, so the
-// entry array lives there instead. Falls back to internal heap if ps_malloc
-// fails, which keeps small listings working on a board without PSRAM.
-//
-// Arduino String contents still allocate from the internal heap, but for a
-// folder listing only `name` is populated (cover/nfo stay empty and empty
-// Strings never allocate), so that is ~25 bytes per entry rather than 56.
+// allocate() must THROW on failure, never return null: std::vector does not
+// null-check, so a null return means elements get constructed at address 0 —
+// a StoreProhibited panic that looks exactly like the OOM we are trying to
+// report. Throwing gives callers something they can catch and turn into a
+// readable message.
 // ---------------------------------------------------------------------------
 template <class T>
 struct PsramAlloc {
@@ -54,8 +82,15 @@ struct PsramAlloc {
   PsramAlloc() noexcept {}
   template <class U> PsramAlloc(const PsramAlloc<U> &) noexcept {}
   T *allocate(size_t n) {
-    void *p = ps_malloc(n * sizeof(T));
-    if (!p) p = malloc(n * sizeof(T));   // no PSRAM (or exhausted) — try internal
+    const size_t bytes = n * sizeof(T);
+    void *p = ps_malloc(bytes);
+    if (!p) p = malloc(bytes);   // no PSRAM (or exhausted) — try internal
+    if (!p) {
+      sdLog("DAV: alloc FAILED " + String((unsigned)bytes) +
+            " B (psram=" + String(ESP.getFreePsram()) +
+            " heap=" + String(ESP.getFreeHeap()) + ")");
+      throw std::bad_alloc();
+    }
     return (T *)p;
   }
   void deallocate(T *p, size_t) noexcept { free(p); }
@@ -80,6 +115,12 @@ public:
   String lastError() { return _lastError; }
   String lastDebug() { return _debugLog; }
   bool isConnected() { return _connected; }
+
+  // True if the last streamToBuffer() filled its destination before the
+  // response ended. Callers loading a disk image must treat that as a
+  // failure — a half-read ADF is indistinguishable from a good one by size
+  // alone. Callers reading NFO text can happily use what they got.
+  bool lastTruncated() const { return _lastTruncated; }
 
   // Progress callback — invoked from within _readHTTPBody / streamToBuffer
   // as bytes arrive, throttled to ~10 Hz so it can't slow the transfer.
@@ -227,12 +268,14 @@ public:
       return false;
     }
 
-    // Reserve up front so the vector doesn't spend the listing doubling.
-    // ~230 bytes of XML per <response> is typical for Nextcloud/Stack with
-    // the four properties we request; over-reserving slightly is far cheaper
-    // than a reallocation storm.
-    if (contentLength > 0) {
-      size_t est = (size_t)(contentLength / 230) + 16;
+    // Reserve up front so the listing isn't spent reallocating. Nextcloud and
+    // Stack answer PROPFIND with chunked encoding and no Content-Length, so
+    // this must NOT be conditional on having a length — that is precisely the
+    // case that matters, and the one a `contentLength > 0` guard would skip.
+    // ~230 bytes of XML per <response> is typical for the properties we ask
+    // for; over-reserving slightly is far cheaper than a realloc storm.
+    {
+      size_t est = (contentLength > 0) ? (size_t)(contentLength / 230) + 16 : 512;
       if (est > 8192) est = 8192;
       entries.reserve(est);
     }
@@ -307,36 +350,16 @@ public:
     tcp->println("Connection: close");
     tcp->println();
 
-    // Skip HTTP headers, get content length
     long contentLength = -1;
-    unsigned long timeout = millis();
-    while (tcp->connected() && millis() - timeout < 15000) {
-      if (!tcp->available()) { delay(1); continue; }
-      String line = tcp->readStringUntil('\n');
-      line.trim();
-
-      // Check status line
-      if (line.startsWith("HTTP/")) {
-        int sp = line.indexOf(' ');
-        if (sp > 0) {
-          int code = line.substring(sp + 1, sp + 4).toInt();
-          if (code >= 400) {
-            _lastError = "HTTP " + String(code);
-            tcp->stop();
-            delete tcp;
-            return -1;
-          }
-        }
-      }
-
-      if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
-        contentLength = line.substring(line.indexOf(':') + 1).toInt();
-      }
-      if (line.length() == 0) break;  // End of headers
-      timeout = millis();
+    bool chunked = false;
+    _readHTTPHeaders(tcp, contentLength, chunked);
+    if (_httpStatus >= 400) {
+      _lastError = "HTTP " + String(_httpStatus);
+      tcp->stop();
+      delete tcp;
+      return -1;
     }
 
-    // Stream to file
     File outFile = SD_MMC.open(localPath.c_str(), "w");
     if (!outFile) {
       tcp->stop();
@@ -345,34 +368,28 @@ public:
       return -1;
     }
 
-    long totalBytes = 0;
-    uint8_t buf[4096];
-    timeout = millis();
-
-    while (tcp->connected() || tcp->available()) {
-      if (millis() - timeout > 30000) {
-        _lastError = "Download timeout";
-        break;
-      }
-      size_t avail = tcp->available();
-      if (avail == 0) { delay(5); continue; }
-
-      size_t toRead = (avail > sizeof(buf)) ? sizeof(buf) : avail;
-      size_t bytesRead = tcp->read(buf, toRead);
-      if (bytesRead > 0) {
-        outFile.write(buf, bytesRead);
-        totalBytes += bytesRead;
-        timeout = millis();
-      }
-    }
+    bool complete = false, truncated = false;
+    long totalBytes = _pumpBody(tcp, contentLength, chunked,
+        [&outFile](const uint8_t *d, size_t n) -> size_t {
+          return outFile.write(d, n);
+        },
+        &complete, &truncated);
 
     outFile.close();
     tcp->stop();
     delete tcp;
 
-    if (totalBytes == 0) {
+    // A short write means the card is full or failing. A partial download
+    // that lands at a plausible size is worse than no download at all: it
+    // sits on the card looking valid and only fails when the machine tries
+    // to boot it.
+    if (totalBytes <= 0 || !complete || truncated) {
       SD_MMC.remove(localPath.c_str());
-      if (_lastError.length() == 0) _lastError = "Zero bytes received";
+      if (_lastError.length() == 0) {
+        _lastError = (totalBytes <= 0) ? "Zero bytes received"
+                                       : "Download incomplete (" + String(totalBytes) + " B)";
+      }
+      _log("DAV: " + _lastError);
       return -1;
     }
 
@@ -426,109 +443,47 @@ public:
     tcp->println("Connection: close");
     tcp->println();
 
-    // Read HTTP headers
     long contentLength = -1;
     bool chunked = false;
-    unsigned long timeout = millis();
-    while (tcp->connected() && millis() - timeout < 15000) {
-      if (!tcp->available()) { delay(1); continue; }
-      String line = tcp->readStringUntil('\n');
-      line.trim();
-
-      if (line.startsWith("HTTP/")) {
-        int sp = line.indexOf(' ');
-        if (sp > 0) {
-          int code = line.substring(sp + 1, sp + 4).toInt();
-          if (code >= 400) {
-            _lastError = "HTTP " + String(code);
-            tcp->stop();
-            delete tcp;
-            return -1;
-          }
-        }
-      }
-      if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
-        contentLength = line.substring(line.indexOf(':') + 1).toInt();
-      }
-      if (line.indexOf("chunked") >= 0) chunked = true;
-      if (line.length() == 0) break;
-      timeout = millis();
+    _readHTTPHeaders(tcp, contentLength, chunked);
+    if (_httpStatus >= 400) {
+      _lastError = "HTTP " + String(_httpStatus);
+      tcp->stop();
+      delete tcp;
+      return -1;
     }
-
     _log("DAV: stream contentLen=" + String(contentLength) + (chunked ? " chunked" : ""));
 
-    long totalBytes = 0;
-    timeout = millis();
-
-    // Same freeze story as _readHTTPBody: reads were already buffered but
-    // never yielded when the socket had data flowing steadily. Add a
-    // yield() after each read burst so WiFi bookkeeping, touch polling
-    // and the USB MSC task get scheduling time during multi-second ADF
-    // downloads. Also refuses to spin if the socket is stalled with no
-    // data — the delay(1)/delay(5) branch was the only implicit yield
-    // and only fired on empty reads.
-    if (chunked) {
-      // Chunked transfer: read each chunk into buffer
-      while (tcp->connected() && millis() - timeout < 30000) {
-        if (!tcp->available()) { delay(1); continue; }
-        String sizeLine = tcp->readStringUntil('\n');
-        sizeLine.trim();
-        if (sizeLine.length() == 0) { timeout = millis(); continue; }
-        long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
-        if (chunkSize <= 0) break;
-        long bytesRead = 0;
-        while (bytesRead < chunkSize && tcp->connected() && millis() - timeout < 30000) {
-          if (tcp->available()) {
-            size_t avail = tcp->available();
-            size_t want = chunkSize - bytesRead;
-            if (avail > want) avail = want;
-            size_t space = bufSize - totalBytes;
-            if (space == 0) { bytesRead += avail; continue; }  // buffer full, drain
-            if (avail > space) avail = space;
-            size_t got = tcp->read(&buf[totalBytes], avail);
-            totalBytes += got;
-            bytesRead += got;
-            timeout = millis();
-            _fireProgress((size_t)totalBytes, contentLength > 0 ? (size_t)contentLength : 0);
-            yield();
-          } else {
-            delay(1);
-          }
-        }
-        // Drain any overflow if buffer was full
-        while (bytesRead < chunkSize && tcp->connected() && millis() - timeout < 30000) {
-          if (tcp->available()) { tcp->read(); bytesRead++; timeout = millis(); }
-          else delay(1);
-        }
-        if (tcp->available()) tcp->read();  // \r
-        if (tcp->available()) tcp->read();  // \n
-        timeout = millis();
-        yield();
-      }
-    } else {
-      // Content-Length or read-till-close
-      while ((tcp->connected() || tcp->available()) && millis() - timeout < 30000) {
-        size_t avail = tcp->available();
-        if (avail == 0) { delay(5); continue; }
-        size_t space = bufSize - totalBytes;
-        if (space == 0) break;  // buffer full
-        if (avail > space) avail = space;
-        size_t got = tcp->read(&buf[totalBytes], avail);
-        if (got > 0) {
-          totalBytes += got;
-          timeout = millis();
-          _fireProgress((size_t)totalBytes, contentLength > 0 ? (size_t)contentLength : 0);
-        }
-        yield();
-      }
-    }
+    size_t written = 0;
+    bool complete = false, truncated = false;
+    _pumpBody(tcp, contentLength, chunked,
+        [buf, bufSize, &written](const uint8_t *d, size_t n) -> size_t {
+          size_t space = bufSize - written;
+          size_t take  = (n < space) ? n : space;
+          if (take) { memcpy(buf + written, d, take); written += take; }
+          return take;
+        },
+        &complete, &truncated);
 
     tcp->stop();
     delete tcp;
 
+    long totalBytes = (long)written;
+    _lastTruncated = truncated;
+
     if (totalBytes == 0) {
       if (_lastError.length() == 0) _lastError = "Zero bytes received";
       return -1;
+    }
+    if (truncated) {
+      // Report it but still hand back what we got: NFO text is genuinely
+      // useful truncated, whereas a disk image is not — so the caller
+      // decides, via lastTruncated().
+      _lastError = "Response exceeds buffer (" + String((unsigned)bufSize) + " B)";
+      _log("DAV: " + _lastError);
+    } else if (!complete) {
+      _lastError = "Transfer incomplete (" + String(totalBytes) + " B)";
+      _log("DAV: " + _lastError);
     }
 
     _log("DAV: streamed " + String(totalBytes) + " bytes to RAM");
@@ -540,6 +495,8 @@ private:
   String _lastError;
   String _debugLog;
   int    _httpStatus;
+  bool   _resynced = false;      // parser had to drop data to recover
+  bool   _lastTruncated = false; // last streamToBuffer filled its destination
   ByteProgressCb _byteProgressCb;
 
   // Fire progress callback (if set) at most once per 100 ms so the UI
@@ -620,158 +577,122 @@ private:
         int sp = line.indexOf(' ');
         if (sp > 0) _httpStatus = line.substring(sp + 1, sp + 4).toInt();
       }
-      if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
+      // Match header names properly. Testing the whole line for "chunked"
+      // (as this used to) flips the client into chunked mode for any
+      // response whose ETag or Content-Disposition happens to contain that
+      // substring — after which the first "chunk size line" is actually
+      // payload and the transfer collapses in a way that is baffling to
+      // debug.
+      String lower = line;
+      lower.toLowerCase();
+      if (lower.startsWith("content-length:")) {
         contentLength = line.substring(line.indexOf(':') + 1).toInt();
       }
-      if (line.indexOf("chunked") >= 0) chunked = true;
+      if (lower.startsWith("transfer-encoding:") && lower.indexOf("chunked") >= 0) {
+        chunked = true;
+      }
       if (line.length() == 0) break;      // blank line ends the header section
       timeout = millis();
     }
+    // RFC 9112: if both are present, chunked wins and Content-Length is
+    // ignored. Leaving it set would make the pump stop short.
+    if (chunked) contentLength = -1;
   }
 
-  // Read HTTP response body (skip headers, handle chunked/content-length).
-  // Only the small GET paths use this now — listDir streams instead.
-  String _readHTTPBody(WiFiClient *tcp) {
-    _httpStatus = 0;
-    String body = "";
-    long contentLength = -1;
-    bool chunked = false;
-    // v0.11.3: log body progress at every 64-KB boundary. Populated by the
-    // three read paths below so we can watch heap fall as the body grows.
-    size_t lastLoggedKB = 0;
-
-    // Read headers
+  // ==========================================================================
+  // Shared HTTP body pump
+  //
+  // Handles chunked and Content-Length framing once, so the download paths
+  // don't each reimplement it — they used to, and two of the three copies
+  // were wrong in different ways: downloadFile ignored chunked entirely and
+  // wrote the hex chunk headers into the middle of .adf files, and
+  // streamToBuffer credited bytes it never read when its destination filled,
+  // desynchronising the framing and silently truncating.
+  //
+  // `sink(data, len)` returns how many bytes it accepted. Accepting fewer
+  // than offered means "full": the pump keeps draining the socket so framing
+  // stays in sync, but stops delivering and reports truncation.
+  //
+  // Returns bytes delivered to the sink, or -1 if the response never started.
+  // ==========================================================================
+  template <typename Sink>
+  long _pumpBody(WiFiClient *tcp, long contentLength, bool chunked,
+                 Sink sink, bool *outComplete, bool *outTruncated) {
+    uint8_t scratch[1024];
+    long delivered = 0;
+    long consumed  = 0;          // body bytes taken off the socket
+    bool truncated = false;
+    bool complete  = false;
+    long chunkRemaining = chunked ? 0 : -1;
     unsigned long timeout = millis();
-    while (tcp->connected() && millis() - timeout < 15000) {
-      if (!tcp->available()) { delay(1); continue; }
-      String line = tcp->readStringUntil('\n');
-      line.trim();
-      // Per-header sdLog removed — used to fire ~10 SD writes per response
-      // and contended with the loop task's other SD work. The batched
-      // "hdrs done" log below has status+length+chunked+heap in one line.
-      if (line.startsWith("HTTP/")) {
-        int sp = line.indexOf(' ');
-        if (sp > 0) _httpStatus = line.substring(sp + 1, sp + 4).toInt();
-      }
-      if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
-        contentLength = line.substring(line.indexOf(':') + 1).toInt();
-      }
-      if (line.indexOf("chunked") >= 0) chunked = true;
-      if (line.length() == 0) break;
-      timeout = millis();
-    }
-    _log("DAV: hdrs done HTTP " + String(_httpStatus) + " len=" + String(contentLength) +
-         (chunked ? " chunked" : "") + " heap=" + String(ESP.getFreeHeap()));
 
-    // Read body
-    timeout = millis();
-    // Chunked buffer-based reads. The previous implementation grew `body`
-    // one byte at a time (`body += (char)tcp->read()`) which is O(N²) for
-    // a String (each append checks capacity + realloc on growth) and
-    // never yielded when the socket had steady data available. Large
-    // PROPFIND responses (100+ KB) would freeze the loop task for several
-    // seconds and eventually trip the task watchdog. We now readBytes()
-    // into a stack buffer, append via null-terminated concat, and yield()
-    // every chunk so WiFi / touch / USB MSC all get their turn.
-    static const size_t READ_CHUNK = 256;
-    char cbuf[READ_CHUNK + 1];
-
-    if (chunked) {
-      // Chunked transfer encoding: each chunk starts with hex size + \r\n,
-      // followed by data, followed by \r\n. Final chunk is "0\r\n\r\n".
-      int chunkCount = 0;
-      while (tcp->connected() && millis() - timeout < 15000) {
-        if (!tcp->available()) { delay(1); continue; }
-        // Read chunk size line
+    while (millis() - timeout < 30000) {
+      // ---- chunk header -------------------------------------------------
+      if (chunked && chunkRemaining == 0) {
+        if (!tcp->available()) {
+          if (!tcp->connected()) break;      // died mid-stream
+          delay(1);
+          continue;
+        }
         String sizeLine = tcp->readStringUntil('\n');
         sizeLine.trim();
         if (sizeLine.length() == 0) { timeout = millis(); continue; }
-        long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
-        if (chunkSize <= 0) break;  // Final chunk
-        chunkCount++;
-        // Per-chunk sdLog removed — fired ~150 SD writes for a 750-KB
-        // library (mid-transfer + USB-MSC bus contention). 64-KB body
-        // breadcrumbs below are enough to watch heap decay.
-        // Pre-grow body so the concat below doesn't realloc mid-loop
-        body.reserve(body.length() + chunkSize);
-        long bytesRead = 0;
-        while (bytesRead < chunkSize && tcp->connected() && millis() - timeout < 15000) {
-          if (tcp->available()) {
-            size_t want = chunkSize - bytesRead;
-            if (want > READ_CHUNK) want = READ_CHUNK;
-            size_t got = tcp->readBytes(cbuf, want);
-            if (got > 0) {
-              cbuf[got] = '\0';
-              body.concat(cbuf);
-              bytesRead += got;
-              timeout = millis();
-              _fireProgress(body.length(), contentLength > 0 ? (size_t)contentLength : 0);
-              size_t curKB = body.length() >> 16;  // 64-KB units
-              if (curKB > lastLoggedKB) {
-                lastLoggedKB = curKB;
-                _log("DAV: body @" + String((unsigned)(curKB * 64)) +
-                     "K heap=" + String(ESP.getFreeHeap()));
-              }
-            }
-            yield();
-          } else {
-            delay(1);
-          }
-        }
-        // Read trailing \r\n after chunk data
-        if (tcp->available()) tcp->read();  // \r
-        if (tcp->available()) tcp->read();  // \n
+        chunkRemaining = strtol(sizeLine.c_str(), nullptr, 16);
         timeout = millis();
+        if (chunkRemaining <= 0) { complete = true; break; }   // terminal chunk
       }
-    } else if (contentLength > 0) {
-      body.reserve(contentLength);
-      while ((int)body.length() < contentLength && millis() - timeout < 15000) {
-        if (tcp->available()) {
-          size_t want = contentLength - body.length();
-          if (want > READ_CHUNK) want = READ_CHUNK;
-          size_t got = tcp->readBytes(cbuf, want);
-          if (got > 0) {
-            cbuf[got] = '\0';
-            body.concat(cbuf);
-            timeout = millis();
-            _fireProgress(body.length(), contentLength > 0 ? (size_t)contentLength : 0);
-            size_t curKB = body.length() >> 16;
-            if (curKB > lastLoggedKB) {
-              lastLoggedKB = curKB;
-              _log("DAV: body @" + String((unsigned)(curKB * 64)) +
-                   "K heap=" + String(ESP.getFreeHeap()));
-            }
-          }
-          yield();
-        } else {
-          delay(1);
+
+      // ---- how much may we take right now -------------------------------
+      size_t want = sizeof(scratch);
+      if (chunked) {
+        if ((long)want > chunkRemaining) want = (size_t)chunkRemaining;
+      } else if (contentLength > 0) {
+        long remain = contentLength - consumed;
+        if (remain <= 0) { complete = true; break; }
+        if ((long)want > remain) want = (size_t)remain;
+      }
+
+      if (!tcp->available()) {
+        if (!tcp->connected()) {
+          // Connection-close framing has no length; EOF IS the end.
+          if (!chunked && contentLength < 0) complete = true;
+          break;
+        }
+        delay(1);
+        continue;
+      }
+
+      size_t got = tcp->readBytes((char *)scratch, want);
+      if (got == 0) { delay(1); continue; }
+      consumed += got;
+      timeout = millis();
+
+      if (chunked) {
+        chunkRemaining -= got;
+        if (chunkRemaining == 0) {
+          // Consume the CRLF terminating the chunk body.
+          if (tcp->available()) tcp->read();
+          if (tcp->available()) tcp->read();
         }
       }
-    } else {
-      // Read until connection closes (or timeout)
-      while (tcp->connected() && millis() - timeout < 10000) {
-        if (tcp->available()) {
-          size_t got = tcp->readBytes(cbuf, READ_CHUNK);
-          if (got > 0) {
-            cbuf[got] = '\0';
-            body.concat(cbuf);
-            timeout = millis();
-            _fireProgress(body.length(), 0);
-            size_t curKB = body.length() >> 16;
-            if (curKB > lastLoggedKB) {
-              lastLoggedKB = curKB;
-              _log("DAV: body @" + String((unsigned)(curKB * 64)) +
-                   "K heap=" + String(ESP.getFreeHeap()));
-            }
-          }
-          yield();
-        } else {
-          delay(1);
-        }
+
+      // Deliver. Once full we keep reading (above) but stop handing over,
+      // which is what keeps chunk framing aligned.
+      if (!truncated) {
+        size_t accepted = sink(scratch, got);
+        delivered += (long)accepted;
+        if (accepted < got) truncated = true;
       }
+
+      _fireProgress((size_t)delivered, contentLength > 0 ? (size_t)contentLength : 0);
+      yield();
     }
-    return body;
+
+    if (outComplete)  *outComplete  = complete;
+    if (outTruncated) *outTruncated = truncated;
+    return delivered;
   }
+
 
   // ==========================================================================
   // Streaming PROPFIND parser
@@ -922,58 +843,64 @@ private:
 
     const bool isDir = (_scanTag(blk, len, "collection", false) >= 0);
 
-    size_t fileSize = 0;
+    uint32_t fileSize = 0;
     char sizeBuf[24];
     if (_extractTagBuf(blk, len, "getcontentlength", sizeBuf, sizeof(sizeBuf)) && sizeBuf[0]) {
-      fileSize = (size_t)strtoul(sizeBuf, nullptr, 10);
+      fileSize = (uint32_t)strtoul(sizeBuf, nullptr, 10);
     }
 
-    DAVFileEntry entry;
-    entry.isDir    = isDir;
-    entry.size     = fileSize;
-    entry.hasCover = false;
-    entry.hasNfo   = false;
-
+    bool isCover = false, isNfo = false;
     if (!isDir) {
       // Classify by extension; anything that isn't a disk image, cover or NFO
-      // is noise as far as the browser is concerned.
-      String lname(nameBuf);
-      lname.toLowerCase();
-      const bool isDisk  = _isDiskImageName(lname);
-      const bool isCover = lname.endsWith(".jpg") || lname.endsWith(".jpeg") ||
-                           lname.endsWith(".png");
-      const bool isNfo   = lname.endsWith(".nfo") || lname.endsWith(".txt");
+      // is noise as far as the browser is concerned. Compared on the raw
+      // buffer so a listing never allocates a String per entry.
+      const bool isDisk = _hasExt(nameBuf, kDiskExts);
+      isCover = _hasExt(nameBuf, kCoverExts);
+      isNfo   = _hasExt(nameBuf, kNfoExts);
       if (!isDisk && !isCover && !isNfo) return;
-      entry.name = nameBuf;
-      if (isCover) entry.coverFile = entry.name;
-      if (isNfo)   entry.nfoFile   = entry.name;
-    } else {
-      entry.name = nameBuf;
     }
 
-    entries.push_back(entry);
+    // Construct in place — a push_back of a local would copy the 104-byte
+    // entry an extra time for every row in the library.
+    entries.emplace_back();
+    DAVFileEntry &entry = entries.back();
+    entry.setName(nameBuf);
+    entry.isDir    = isDir;
+    entry.size     = fileSize;
+    entry.hasCover = isCover;
+    entry.hasNfo   = isNfo;
   }
 
-  // Disk-image extensions we surface. Kept in one place so adding a new
-  // platform's format (Atari .st/.msa, Spectrum +3 .dsk, HxC .hfe, raw .img)
-  // is a one-line change rather than a hunt through the parser.
-  static bool _isDiskImageName(const String &lower) {
-    static const char *kExts[] = {
-      ".adf", ".adz", ".dms",            // Amiga
-      ".dsk", ".cpc", ".edsk",           // Amstrad CPC / Spectrum +3
-      ".st",  ".msa", ".stx",            // Atari ST
-      ".img", ".ima", ".dmf",            // PC / generic raw
-      ".hfe",                            // HxC / FlashFloppy native
-      ".d64", ".d81",                    // Commodore
-      ".mgt", ".sad",                    // SAM Coupe
-      ".fdi", ".scp",                    // generic flux / disk image
-      ".zip",                            // archives (handled downstream)
-    };
-    for (unsigned i = 0; i < sizeof(kExts) / sizeof(kExts[0]); i++) {
-      if (lower.endsWith(kExts[i])) return true;
+  // Case-insensitive suffix match against a NULL-terminated extension table.
+  // Operates on the raw char buffer specifically to avoid a String temporary
+  // per entry — at 3000 entries those add up to real internal-heap churn.
+  static bool _hasExt(const char *name, const char *const *exts) {
+    const size_t nlen = strlen(name);
+    for (const char *const *e = exts; *e; ++e) {
+      const size_t elen = strlen(*e);
+      if (nlen > elen && strcasecmp(name + nlen - elen, *e) == 0) return true;
     }
     return false;
   }
+
+  // Disk-image extensions we surface. Kept in one table so adding another
+  // platform's format is a one-line change rather than a hunt through the
+  // parser. Covers the machines a Gotek actually gets fitted to, not just
+  // the Amiga.
+  static constexpr const char *kDiskExts[] = {
+    ".adf", ".adz", ".dms",            // Amiga
+    ".dsk", ".cpc", ".edsk",           // Amstrad CPC / Spectrum +3
+    ".st",  ".msa", ".stx",            // Atari ST
+    ".img", ".ima", ".dmf",            // PC / generic raw
+    ".hfe",                            // HxC / FlashFloppy native
+    ".d64", ".d81",                    // Commodore
+    ".mgt", ".sad",                    // SAM Coupe
+    ".fdi", ".scp",                    // generic flux / disk image
+    ".zip",                            // archives (handled downstream)
+    nullptr
+  };
+  static constexpr const char *kCoverExts[] = { ".jpg", ".jpeg", ".png", nullptr };
+  static constexpr const char *kNfoExts[]   = { ".nfo", ".txt", nullptr };
 
   // Pull the multistatus document off the socket, emitting entries as blocks
   // complete. Handles both chunked and Content-Length framing.
@@ -988,7 +915,9 @@ private:
     bool   firstBlock = true;    // first <response> is the collection itself
     long   chunkRemaining = chunked ? 0 : -1;   // -1 = not chunked
     bool   eof = false;
+    bool   complete = false;    // false unless we reach a clean end of stream
     unsigned long timeout = millis();
+    _resynced = false;
 
     // Loop until the socket is drained AND the window has been parsed out.
     // EOF must never short-circuit straight to the exit: the final reads
@@ -1098,6 +1027,7 @@ private:
         } else {
           used = 0;    // nothing recognisable — start over
         }
+        _resynced = true;   // data was dropped — the listing is not trustworthy
         _log("DAV: parse window overflow, resynced");
       }
 
@@ -1106,159 +1036,36 @@ private:
       // still making progress. `consumed == 0` at EOF means what's left in
       // the window is a trailing fragment (</multistatus>, whitespace) with
       // no further complete block in it.
-      if (eof && consumed == 0) break;
+      if (eof && consumed == 0) { complete = true; break; }
       yield();
     }
 
     free(win);
-    _log("DAV: stream parse done, " + String(entries.size()) + " entries, " +
+
+    // Content-Length framing gives us an exact expectation — hold it to that,
+    // otherwise a connection that dies at 90 % looks identical to success.
+    if (complete && contentLength > 0 && totalBytes < (size_t)contentLength) {
+      complete = false;
+    }
+
+    _log("DAV: stream parse " + String(complete ? "ok" : "TRUNCATED") + ", " +
+         String(entries.size()) + " entries, " +
          String((unsigned)(totalBytes / 1024)) + " KB, heap=" +
-         String(ESP.getFreeHeap()));
-    return true;
+         String(ESP.getFreeHeap()) + " psram=" + String(ESP.getFreePsram()));
+
+    if (!complete) {
+      // Reporting success here would be worse than failing: davBrowsePath
+      // writes the result straight to the SD listing cache, so one bad
+      // transfer would leave a permanently half-missing library that never
+      // refetches.
+      _lastError = "Listing truncated after " + String(entries.size()) + " entries";
+    } else if (_resynced) {
+      _lastError = "Listing incomplete (oversized entry skipped)";
+      complete = false;
+    }
+    return complete;
   }
 
-  // Parse PROPFIND multistatus XML response (legacy whole-document path).
-  // Retained for reference/fallback; the live path is _streamParsePropfind.
-  void _parsePropfindResponse(const String &xml, const String &basePath,
-                               DAVEntryList &entries) {
-    int pos = 0;
-    bool firstEntry = true;
-
-    while (pos < (int)xml.length()) {
-      // Find next <D:response> or <d:response>
-      int respStart = _findTagCI(xml, "response", pos);
-      if (respStart < 0) break;
-
-      int respEnd = _findTagCI(xml, "/response", respStart);
-      if (respEnd < 0) respEnd = xml.length();
-
-      String block = xml.substring(respStart, respEnd);
-
-      // Extract href
-      String href = _extractTagValue(block, "href");
-      href = _urlDecodePath(href);
-
-      // Skip the base directory itself (first entry)
-      if (firstEntry) {
-        firstEntry = false;
-        pos = respEnd + 1;
-        continue;
-      }
-
-      // Extract displayname (may be empty)
-      String displayName = _extractTagValue(block, "displayname");
-
-      // If displayname is empty, derive from href
-      if (displayName.length() == 0 && href.length() > 0) {
-        String h = href;
-        if (h.endsWith("/")) h = h.substring(0, h.length() - 1);
-        int ls = h.lastIndexOf('/');
-        if (ls >= 0) displayName = h.substring(ls + 1);
-        else displayName = h;
-      }
-
-      if (displayName.length() == 0 || displayName == "." || displayName == "..") {
-        pos = respEnd + 1;
-        continue;
-      }
-
-      // Check if it's a collection (directory)
-      bool isDir = (block.indexOf("collection") >= 0);
-
-      // Get content length
-      size_t fileSize = 0;
-      String sizeStr = _extractTagValue(block, "getcontentlength");
-      if (sizeStr.length() > 0) fileSize = sizeStr.toInt();
-
-      DAVFileEntry entry;
-      entry.name = displayName;
-      entry.isDir = isDir;
-      entry.size = fileSize;
-      entry.hasCover = false;
-      entry.hasNfo = false;
-
-      // Categorize files
-      if (!entry.isDir) {
-        String lname = displayName;
-        lname.toLowerCase();
-        bool isDiskImage = lname.endsWith(".adf") || lname.endsWith(".dsk") ||
-                           lname.endsWith(".adz") || lname.endsWith(".img") ||
-                           lname.endsWith(".zip");
-        bool isCover = lname.endsWith(".jpg") || lname.endsWith(".jpeg") || lname.endsWith(".png");
-        bool isNfo = lname.endsWith(".nfo");
-
-        // Skip files that aren't disk images, covers, or nfo
-        if (!isDiskImage && !isCover && !isNfo) {
-          pos = respEnd + 1;
-          continue;
-        }
-        // Mark cover/nfo files specially (they'll be used as metadata)
-        if (isCover) { entry.coverFile = displayName; }
-        if (isNfo)   { entry.nfoFile = displayName; }
-      }
-
-      entries.push_back(entry);
-      pos = respEnd + 1;
-    }
-  }
-
-  // Find a tag case-insensitively (handles D:tag, d:tag, tag variants)
-  // For closing tags, pass tagName without the slash (isClose=true)
-  int _findTagCI(const String &xml, const String &tagName, int startPos, bool isClose = false) {
-    String actualTag = tagName;
-    // Legacy support: strip leading slash, treat as close tag
-    if (actualTag.startsWith("/")) {
-      actualTag = actualTag.substring(1);
-      isClose = true;
-    }
-    String prefix = isClose ? "</" : "<";
-    String variants[] = { prefix + "D:" + actualTag, prefix + "d:" + actualTag, prefix + actualTag };
-    int earliest = -1;
-    for (int v = 0; v < 3; v++) {
-      int found = xml.indexOf(variants[v], startPos);
-      if (found >= 0 && (earliest < 0 || found < earliest)) {
-        earliest = found;
-      }
-    }
-    return earliest;
-  }
-
-  // Extract text content of an XML tag (case-insensitive namespace)
-  String _extractTagValue(const String &xml, const String &tagName) {
-    // Try D:tag, d:tag, tag
-    String variants[] = { "D:" + tagName, "d:" + tagName, tagName };
-    for (int v = 0; v < 3; v++) {
-      String openTag = "<" + variants[v];
-      int start = xml.indexOf(openTag);
-      if (start < 0) continue;
-      // Skip to end of opening tag
-      int gt = xml.indexOf('>', start);
-      if (gt < 0) continue;
-      // Check for self-closing tag
-      if (xml.charAt(gt - 1) == '/') return "";
-      // Find closing tag
-      String closeTag = "</" + variants[v] + ">";
-      int end = xml.indexOf(closeTag, gt + 1);
-      if (end < 0) continue;
-      return xml.substring(gt + 1, end);
-    }
-    return "";
-  }
-
-  // URL-decode a path string
-  String _urlDecodePath(const String &s) {
-    String result = "";
-    for (int i = 0; i < (int)s.length(); i++) {
-      if (s.charAt(i) == '%' && i + 2 < (int)s.length()) {
-        char hex[3] = { s.charAt(i+1), s.charAt(i+2), 0 };
-        result += (char)strtol(hex, nullptr, 16);
-        i += 2;
-      } else {
-        result += s.charAt(i);
-      }
-    }
-    return result;
-  }
 };
 
 // Global WebDAV client instance
