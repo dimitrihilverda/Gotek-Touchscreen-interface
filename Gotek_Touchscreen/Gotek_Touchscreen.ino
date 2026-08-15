@@ -108,12 +108,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.11.4"
+#define FW_VERSION "v0.11.5"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.011"
+#define FW_INTERNAL "release.012"
 
 using std::vector;
 using std::sort;
@@ -1431,6 +1431,91 @@ void sdLogClear() {
 }
 
 // ============================================================================
+// AmiCrush sample game — install if missing on any boot (not just fresh SD)
+// ============================================================================
+//
+// Copies the embedded AmiCrush 1.0 ADF + JPEG cover + NFO into
+// /ADF/AmiCrush/ when they aren't already there. Runs on EVERY boot so
+// pre-v0.11.2 SD cards (which have a CONFIG.TXT and therefore skip
+// firstBootScaffold) still receive AmiCrush after the firmware upgrade.
+// Guarded on AmiCrush.adf existence — if the user has deleted the game,
+// next boot restores it. Explicit "keep it deleted" flag can be added
+// later if that becomes annoying.
+void ensureAmiCrushInstalled() {
+  if (SD_MMC.exists("/ADF/AmiCrush/AmiCrush.adf")) return;
+
+  // /ADF may not exist on a very fresh install where firstBootScaffold
+  // hasn't run yet (or on an SD where the user renamed folders).
+  if (!SD_MMC.exists("/ADF")) SD_MMC.mkdir("/ADF");
+  SD_MMC.mkdir("/ADF/AmiCrush");
+
+  Serial.println("Installing AmiCrush 1.0 to /ADF/AmiCrush/ ...");
+
+  // --- ADF (raw PROGMEM → SD in 4 KB chunks) --------------------------
+  // Direct byte copy — no decompressor needed. arduino-esp32 declares
+  // uncompress() via the ROM headers but doesn't link a miniz impl,
+  // and pulling in our own inflater for a one-shot copy isn't worth
+  // the code weight. The 880 KB flash cost is comfortable in the
+  // ~3.1 MB APP slot.
+  {
+    File a = SD_MMC.open("/ADF/AmiCrush/AmiCrush.adf", "w");
+    if (a) {
+      uint8_t buf[4096];
+      size_t written = 0;
+      while (written < amicrush_adf_len) {
+        size_t chunk = amicrush_adf_len - written;
+        if (chunk > sizeof(buf)) chunk = sizeof(buf);
+        memcpy_P(buf, amicrush_adf + written, chunk);
+        a.write(buf, chunk);
+        written += chunk;
+        yield();
+      }
+      a.close();
+      Serial.println("  Wrote /ADF/AmiCrush/AmiCrush.adf (" +
+                     String((uint32_t)amicrush_adf_len) + " bytes)");
+    }
+  }
+
+  // --- Cover JPEG (raw byte-for-byte from PROGMEM) --------------------
+  if (!SD_MMC.exists("/ADF/AmiCrush/AmiCrush.jpg")) {
+    File c = SD_MMC.open("/ADF/AmiCrush/AmiCrush.jpg", "w");
+    if (c) {
+      size_t written = 0;
+      uint8_t buf[256];
+      while (written < amicrush_cover_jpg_len) {
+        size_t chunk = amicrush_cover_jpg_len - written;
+        if (chunk > sizeof(buf)) chunk = sizeof(buf);
+        memcpy_P(buf, amicrush_cover_jpg + written, chunk);
+        c.write(buf, chunk);
+        written += chunk;
+        yield();
+      }
+      c.close();
+      Serial.println("  Wrote /ADF/AmiCrush/AmiCrush.jpg (" +
+                     String((uint32_t)amicrush_cover_jpg_len) + " bytes)");
+    }
+  }
+
+  // --- NFO (title / developer / blurb) --------------------------------
+  if (!SD_MMC.exists("/ADF/AmiCrush/AmiCrush.nfo")) {
+    File n = SD_MMC.open("/ADF/AmiCrush/AmiCrush.nfo", "w");
+    if (n) {
+      n.println("Title: AmiCrush");
+      n.println("Developer: OMEGAWARE");
+      n.println("Year: 2026");
+      n.println("");
+      n.println("A Candy Crush-style match-three puzzle for the Amiga 500.");
+      n.println("Four levels, glossy candies, animated swap/pop/gravity,");
+      n.println("SFX + MOD music, arcade leaderboard. Boots on KS 1.3.");
+      n.println("");
+      n.println("Built and shipped by OMEGAWARE. Tap INSERT to load into");
+      n.println("the RAM disk and enjoy from the Amiga side.");
+      n.close();
+    }
+  }
+}
+
+// ============================================================================
 // First-boot scaffolding — create SD folder structure + default config + theme
 // ============================================================================
 void firstBootScaffold() {
@@ -1465,75 +1550,9 @@ void firstBootScaffold() {
     }
   }
 
-  // Ship AmiCrush 1.0 in the /ADF/ folder so a freshly-flashed device with
-  // an empty SD card has one playable game out of the box. Embedded as a
-  // zlib-compressed blob (~130 KB vs 880 KB raw) plus a 400-wide JPEG
-  // cover (~46 KB). Only runs on the fresh-SD path, so a user's own edits
-  // or a deleted AmiCrush folder are never touched again.
-  {
-    SD_MMC.mkdir("/ADF/AmiCrush");
-
-    // --- ADF (raw PROGMEM → SD in 4 KB chunks) ------------------------
-    // Direct byte copy — no decompressor needed. arduino-esp32 declares
-    // uncompress() via the ROM headers but doesn't link a miniz impl,
-    // and pulling in our own inflater for a one-shot on fresh SD isn't
-    // worth the code weight. The 880 KB flash cost is comfortable in
-    // the ~3.1 MB APP slot.
-    {
-      File a = SD_MMC.open("/ADF/AmiCrush/AmiCrush.adf", "w");
-      if (a) {
-        uint8_t buf[4096];
-        size_t written = 0;
-        while (written < amicrush_adf_len) {
-          size_t chunk = amicrush_adf_len - written;
-          if (chunk > sizeof(buf)) chunk = sizeof(buf);
-          memcpy_P(buf, amicrush_adf + written, chunk);
-          a.write(buf, chunk);
-          written += chunk;
-          yield();
-        }
-        a.close();
-        Serial.println("  Wrote /ADF/AmiCrush/AmiCrush.adf (" +
-                       String((uint32_t)amicrush_adf_len) + " bytes)");
-      }
-    }
-
-    // --- Cover JPEG (raw byte-for-byte from PROGMEM) ------------------
-    if (!SD_MMC.exists("/ADF/AmiCrush/AmiCrush.jpg")) {
-      File c = SD_MMC.open("/ADF/AmiCrush/AmiCrush.jpg", "w");
-      if (c) {
-        size_t written = 0;
-        uint8_t buf[256];
-        while (written < amicrush_cover_jpg_len) {
-          size_t chunk = amicrush_cover_jpg_len - written;
-          if (chunk > sizeof(buf)) chunk = sizeof(buf);
-          memcpy_P(buf, amicrush_cover_jpg + written, chunk);
-          c.write(buf, chunk);
-          written += chunk;
-          yield();
-        }
-        c.close();
-        Serial.println("  Wrote /ADF/AmiCrush/AmiCrush.jpg (" +
-                       String((uint32_t)amicrush_cover_jpg_len) + " bytes)");
-      }
-    }
-
-    // --- NFO (title / developer / blurb) ------------------------------
-    File n = SD_MMC.open("/ADF/AmiCrush/AmiCrush.nfo", "w");
-    if (n) {
-      n.println("Title: AmiCrush");
-      n.println("Developer: OMEGAWARE");
-      n.println("Year: 2026");
-      n.println("");
-      n.println("A Candy Crush-style match-three puzzle for the Amiga 500.");
-      n.println("Four levels, glossy candies, animated swap/pop/gravity,");
-      n.println("SFX + MOD music, arcade leaderboard. Boots on KS 1.3.");
-      n.println("");
-      n.println("Built and shipped by OMEGAWARE. Tap INSERT to load into");
-      n.println("the RAM disk and enjoy from the Amiga side.");
-      n.close();
-    }
-  }
+  // AmiCrush install lives in its own helper (called separately from setup)
+  // so an existing SD card without AmiCrush still gets it — this scaffold
+  // early-returns on any SD with a CONFIG.TXT and would otherwise skip.
 
   // Write default theme PNGs from PROGMEM
   for (int i = 0; i < default_theme_files_count; i++) {
@@ -5020,6 +5039,7 @@ void setup() {
   init_sd_card();
   Serial.println("SD card initialized");
   firstBootScaffold();
+  ensureAmiCrushInstalled();  // idempotent — reaches pre-v0.11.2 SDs too
   loadConfig();
   Serial.println("Config loaded");
   sdLog(String("Last reset reason: ") + resetReasonName(g_resetReason));
