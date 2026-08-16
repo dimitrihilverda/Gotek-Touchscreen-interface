@@ -719,10 +719,31 @@ void handleHttpRequest(WiFiClient &client) {
     }
   }
 
-  // ── Dynamic theme route: /api/themes/{name}/activate ──
+  if (req.path == "/api/themes/font" && req.method == "GET") {
+    handleThemeFont(client);
+    return;
+  }
+  if (req.path == "/api/themes/geometry" && req.method == "GET") {
+    handleThemeGeometry(client);
+    return;
+  }
+
+  // ── Dynamic theme routes: /api/themes/{name}/... ──
   if (req.path.startsWith("/api/themes/") && req.path.endsWith("/activate") && req.method == "POST") {
     String name = req.path.substring(12, req.path.length() - 9);
     handleThemeActivateParsed(client, name);
+    return;
+  }
+  // Theme editor: one PNG per request, name in the path, asset in ?file=
+  if (req.path.startsWith("/api/themes/") && req.path.endsWith("/asset") && req.method == "POST") {
+    String name = req.path.substring(12, req.path.length() - 6);
+    handleThemeAssetUpload(client, req, name);
+    return;
+  }
+  if (req.path.startsWith("/api/themes/") && req.method == "DELETE") {
+    String name = req.path.substring(12);
+    if (name.endsWith("/")) name = name.substring(0, name.length() - 1);
+    handleThemeDelete(client, name);
     return;
   }
 

@@ -1052,6 +1052,228 @@ void handleThemesList(WiFiClient &client) {
 }
 
 // ============================================================================
+// Theme authoring — used by the theme editor in the web UI
+// ============================================================================
+
+// Every BTN_* asset the firmware draws. A theme missing one falls back to a
+// plain rect + label, which is what the whole UI looked like before the
+// default theme covered the full set.
+static const char *kThemeAssets[] = {
+  "BTN_ADF", "BTN_BACK", "BTN_DAV", "BTN_DOWN", "BTN_DSK", "BTN_INFO",
+  "BTN_LOAD", "BTN_SD", "BTN_THEME", "BTN_UNLOAD", "BTN_UP", "BTN_WIFI",
+};
+static const int kThemeAssetCount = sizeof(kThemeAssets) / sizeof(kThemeAssets[0]);
+
+// Theme names become directory names on the card and are echoed into paths,
+// so they get the strictest validation in the API: uppercase, digits and
+// underscore only. No dots, no separators, nothing that can escape /THEMES/.
+static bool validThemeName(const String &n) {
+  if (n.length() == 0 || n.length() > 16) return false;
+  for (unsigned i = 0; i < n.length(); i++) {
+    const char c = n[i];
+    const bool ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+static bool validThemeAsset(const String &a) {
+  for (int i = 0; i < kThemeAssetCount; i++) {
+    if (a == kThemeAssets[i]) return true;
+  }
+  return false;
+}
+
+// Drain a request body we are about to reject, so the socket stays in sync
+// and the browser sees our status code instead of a connection reset.
+static void drainBody(WiFiClient &client, int bytes) {
+  unsigned long t = millis();
+  int seen = 0;
+  while (seen < bytes && millis() - t < 3000) {
+    if (client.available()) { client.read(); seen++; }
+    else { yield(); delay(1); }
+  }
+}
+
+// GET /api/themes/font
+//
+// The firmware's 6x8 glyph table, base64'd. The theme editor renders its
+// preview with the device's OWN font rather than a browser font, so what you
+// see while designing is what the panel draws — and so a generated button's
+// label matches the fallback label the firmware prints when an asset is
+// missing. Serving it beats duplicating 570 bytes of glyphs in the web UI,
+// where the two copies would drift.
+void handleThemeFont(WiFiClient &client) {
+  static const char *b64 =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const uint8_t *src = (const uint8_t *)font6x8;
+  const size_t len = sizeof(font6x8);
+
+  String out;
+  out.reserve((len + 2) / 3 * 4 + 32);
+  out = "{\"cols\":6,\"rows\":8,\"first\":32,\"data\":\"";
+  for (size_t i = 0; i < len; i += 3) {
+    const uint32_t n = ((uint32_t)pgm_read_byte(src + i) << 16) |
+                       ((i + 1 < len ? (uint32_t)pgm_read_byte(src + i + 1) : 0) << 8) |
+                       ((i + 2 < len ? (uint32_t)pgm_read_byte(src + i + 2) : 0));
+    out += b64[(n >> 18) & 0x3F];
+    out += b64[(n >> 12) & 0x3F];
+    out += (i + 1 < len) ? b64[(n >> 6) & 0x3F] : '=';
+    out += (i + 2 < len) ? b64[n & 0x3F] : '=';
+  }
+  out += "\"}";
+  sendJSON(client, 200, out);
+}
+
+// GET /api/themes/geometry
+//
+// The button sizes this panel actually draws, so the editor renders assets at
+// the right dimensions instead of hardcoding one display's numbers. This is
+// what makes a theme portable across panel sizes without needing SVG on the
+// device: the style is the theme, the PNGs are output for a given geometry.
+void handleThemeGeometry(WiFiClient &client) {
+  const int bar = (gW - 20 - 3 * 8) / 4;
+  const int det = (148 < gW - 20) ? 148 : (gW - 20);
+  String json = "{\"gW\":" + String(gW) + ",\"gH\":" + String(gH) + ",\"buttons\":[";
+  struct { const char *n; int w; int h; const char *label; const char *glyph; } spec[] = {
+    { "BTN_ADF",    bar, 36, "ADF",    "" },
+    { "BTN_DSK",    bar, 36, "DSK",    "" },
+    { "BTN_THEME",  bar, 36, "THEME",  "" },
+    { "BTN_WIFI",   bar, 36, "WIFI",   "" },
+    { "BTN_BACK",   bar, 36, "BACK",   "" },
+    { "BTN_LOAD",   det, 36, "INSERT", "" },
+    { "BTN_UNLOAD", det, 36, "EJECT",  "" },
+    { "BTN_DAV",     44, 36, "DAV",    "" },
+    { "BTN_SD",      40, 36, "SD",     "" },
+    { "BTN_INFO",    40, 36, "i",      "" },
+    { "BTN_UP",      44, 36, "",       "up" },
+    { "BTN_DOWN",    44, 36, "",       "down" },
+  };
+  for (unsigned i = 0; i < sizeof(spec) / sizeof(spec[0]); i++) {
+    if (i) json += ",";
+    json += "{\"n\":\"" + String(spec[i].n) + "\",\"w\":" + String(spec[i].w) +
+            ",\"h\":" + String(spec[i].h) +
+            ",\"label\":\"" + String(spec[i].label) + "\"" +
+            ",\"glyph\":\"" + String(spec[i].glyph) + "\"}";
+  }
+  json += "]}";
+  sendJSON(client, 200, json);
+}
+
+// POST /api/themes/{name}/asset?file=BTN_ADF
+// Body: raw PNG bytes.
+//
+// One asset per request rather than a single multipart bundle: the assets are
+// a couple of hundred bytes each, so twelve small sequential writes are less
+// code and less risk than extending the multipart parser, and the editor gets
+// natural per-asset progress.
+void handleThemeAssetUpload(WiFiClient &client, const HttpRequest &req, const String &name) {
+  if (!validThemeName(name)) {
+    drainBody(client, req.contentLength);
+    sendJSON(client, 400, "{\"error\":\"Invalid theme name (A-Z 0-9 _ , max 16)\"}");
+    return;
+  }
+  const String asset = getFormValue(req.query, "file");
+  if (!validThemeAsset(asset)) {
+    drainBody(client, req.contentLength);
+    sendJSON(client, 400, "{\"error\":\"Unknown asset name\"}");
+    return;
+  }
+  // Generated buttons are ~200 bytes; 64 KB is already absurdly generous and
+  // keeps a malformed request from parking megabytes in RAM.
+  if (req.contentLength <= 0 || req.contentLength > 64 * 1024) {
+    drainBody(client, req.contentLength);
+    sendJSON(client, 413, "{\"error\":\"Bad or oversized asset (max 64 KB)\"}");
+    return;
+  }
+
+  uint8_t *buf = (uint8_t *)malloc(req.contentLength);
+  if (!buf) {
+    drainBody(client, req.contentLength);
+    sendJSON(client, 500, "{\"error\":\"Out of memory\"}");
+    return;
+  }
+
+  int pos = 0;
+  unsigned long timeout = millis();
+  while (pos < req.contentLength && millis() - timeout < 10000) {
+    if (client.available()) {
+      int n = client.read(buf + pos, req.contentLength - pos);
+      if (n > 0) { pos += n; timeout = millis(); }
+    } else {
+      yield();
+      delay(1);
+    }
+  }
+  if (pos != req.contentLength) {
+    free(buf);
+    sendJSON(client, 400, "{\"error\":\"Incomplete upload\"}");
+    return;
+  }
+  // Reject anything that isn't actually a PNG before it reaches the card —
+  // the firmware's decoder would just fail later, on screen, with no clue why.
+  if (pos < 8 || buf[0] != 0x89 || buf[1] != 'P' || buf[2] != 'N' || buf[3] != 'G') {
+    free(buf);
+    sendJSON(client, 400, "{\"error\":\"Not a PNG\"}");
+    return;
+  }
+
+  if (!SD_MMC.exists("/THEMES")) SD_MMC.mkdir("/THEMES");
+  const String dir = "/THEMES/" + name;
+  if (!SD_MMC.exists(dir.c_str())) SD_MMC.mkdir(dir.c_str());
+
+  const String path = dir + "/" + asset + ".png";
+  File f = SD_MMC.open(path.c_str(), "w");
+  if (!f) {
+    free(buf);
+    sendJSON(client, 500, "{\"error\":\"Cannot write asset\"}");
+    return;
+  }
+  const size_t written = f.write(buf, pos);
+  f.close();
+  free(buf);
+
+  if ((int)written != pos) {
+    SD_MMC.remove(path.c_str());
+    sendJSON(client, 500, "{\"error\":\"Short write — card full?\"}");
+    return;
+  }
+
+  scanThemes();          // a brand-new theme must appear in the list
+  clearButtonCache();    // cached tiles may belong to the asset just replaced
+  sdLog("Theme asset written: " + path + " (" + String((unsigned)written) + " B)");
+  sendJSON(client, 200, "{\"status\":\"ok\",\"asset\":\"" + jsonEscape(asset) +
+                        "\",\"bytes\":" + String((unsigned)written) + "}");
+}
+
+// DELETE /api/themes/{name}
+void handleThemeDelete(WiFiClient &client, const String &name) {
+  if (!validThemeName(name)) {
+    sendJSON(client, 400, "{\"error\":\"Invalid theme name\"}");
+    return;
+  }
+  if (name == cfg_theme) {
+    sendJSON(client, 409, "{\"error\":\"Cannot delete the active theme\"}");
+    return;
+  }
+  const String dir = "/THEMES/" + name;
+  if (!SD_MMC.exists(dir.c_str())) {
+    sendJSON(client, 404, "{\"error\":\"Theme not found\"}");
+    return;
+  }
+  // Only ever removes the known asset filenames, so a mis-routed request can
+  // never turn into a recursive delete of something else.
+  for (int i = 0; i < kThemeAssetCount; i++) {
+    const String p = dir + "/" + kThemeAssets[i] + ".png";
+    if (SD_MMC.exists(p.c_str())) SD_MMC.remove(p.c_str());
+  }
+  SD_MMC.rmdir(dir.c_str());
+  scanThemes();
+  sdLog("Theme deleted: " + name);
+  sendJSON(client, 200, "{\"status\":\"ok\"}");
+}
+
+// ============================================================================
 // POST /api/themes/{name}/activate
 // ============================================================================
 

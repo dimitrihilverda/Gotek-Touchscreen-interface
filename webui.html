@@ -387,6 +387,53 @@ textarea{min-height:80px;resize:vertical}
     <h2>Installed Themes</h2>
     <div class="theme-grid" id="theme-grid"></div>
   </div>
+
+  <div class="card">
+    <h2>Theme Editor</h2>
+    <p style="font-size:13px;color:#555;margin-bottom:10px">
+      Start from a preset, adjust the style, and save it to the SD card as your
+      own theme. Buttons are generated from the style, so they always match each
+      other &mdash; and they are rendered at the sizes this panel actually uses.
+    </p>
+
+    <div class="net-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end">
+      <div><label>Start from</label>
+        <select id="te-preset" style="width:auto;min-width:150px"></select></div>
+      <div><label>Save as</label>
+        <input type="text" id="te-name" placeholder="MY_THEME" maxlength="16"
+               style="width:auto;min-width:140px;text-transform:uppercase"></div>
+    </div>
+
+    <div class="net-row" style="flex-wrap:wrap;gap:14px;margin-top:10px">
+      <div><label>Fill</label><input type="color" id="te-fill" style="width:56px;padding:2px"></div>
+      <div><label>Highlight</label><input type="color" id="te-light" style="width:56px;padding:2px"></div>
+      <div><label>Shadow</label><input type="color" id="te-dark" style="width:56px;padding:2px"></div>
+      <div><label>Text</label><input type="color" id="te-text" style="width:56px;padding:2px"></div>
+      <div><label>Edge</label>
+        <select id="te-bevel" style="width:auto">
+          <option value="raised">Raised (Amiga)</option>
+          <option value="flat">Flat border</option>
+          <option value="none">None</option>
+        </select></div>
+      <div><label>Edge width</label>
+        <input type="number" id="te-bevelw" min="0" max="6" value="2" style="width:64px"></div>
+      <div><label>Corner radius</label>
+        <input type="number" id="te-radius" min="0" max="12" value="0" style="width:64px"></div>
+      <div><label>Text size</label>
+        <input type="number" id="te-scale" min="1" max="4" value="2" style="width:64px"></div>
+    </div>
+
+    <label style="margin-top:12px">Preview (actual size)</label>
+    <div id="te-preview"
+         style="background:#000;padding:12px;border:2px inset #999;border-radius:2px;
+                display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-height:60px"></div>
+
+    <div class="net-row" style="margin-top:12px">
+      <button class="btn btn-primary" id="te-save">Save theme to device</button>
+      <button class="btn" id="te-apply" title="Save, then make it the active theme">Save &amp; activate</button>
+      <span id="te-status" style="font-size:13px;color:#555"></span>
+    </div>
+  </div>
 </div>
 
 <!-- LOG VIEWER -->
@@ -481,7 +528,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.view === 'games') loadGames();
     if (tab.dataset.view === 'ftp') ftpLoadStatus();
     if (tab.dataset.view === 'webdav') davLoadStatus();
-    if (tab.dataset.view === 'themes') loadThemes();
+    if (tab.dataset.view === 'themes') { loadThemes(); teInit(); }
     if (tab.dataset.view === 'log') loadLog();
   });
 });
@@ -1101,6 +1148,236 @@ async function activateTheme(name) {
   await api(`/api/themes/${encodeURIComponent(name)}/activate`, { method: 'POST' });
   toast('Theme changed to ' + name);
   loadThemes();
+}
+
+// ══════════════ THEME EDITOR ══════════════
+//
+// A theme is a STYLE, not artwork. The twelve buttons are generated from a
+// handful of parameters, which is what keeps them consistent with each other
+// and what makes a theme portable: the device reports the button sizes its
+// panel uses, and the same style renders to whatever geometry it asks for.
+// tools/make_theme.py renders the shipped default from the identical model,
+// so designing here and building the firmware produce the same look.
+//
+// Labels are drawn with the device's own 6x8 font, fetched from the device,
+// so a generated button matches the fallback the firmware draws when an asset
+// is missing.
+
+const TE_PRESETS = {
+  AMIGA_WB2:   { fill:'#a8a8a8', light:'#ffffff', dark:'#000000', text:'#000000', bevel:'raised', bevelW:2, radius:0, scale:2 },
+  AMIGA_WB13:  { fill:'#0055aa', light:'#ffffff', dark:'#000044', text:'#ffffff', bevel:'raised', bevelW:2, radius:0, scale:2 },
+  PAPER_WHITE: { fill:'#eeeeea', light:'#ffffff', dark:'#787874', text:'#141414', bevel:'raised', bevelW:2, radius:3, scale:2 },
+  MIDNIGHT:    { fill:'#222630', light:'#485062', dark:'#0c0e14', text:'#dee4f0', bevel:'flat',   bevelW:1, radius:4, scale:2 },
+  PHOSPHOR:    { fill:'#08180c', light:'#28c85a', dark:'#040c06', text:'#50ff82', bevel:'flat',   bevelW:1, radius:0, scale:2 },
+};
+
+let teFont = null;      // Uint8Array, 95 glyphs x 6 columns
+let teGeom = null;      // [{n,w,h,label,glyph}]
+
+function teHexToRgb(h) {
+  return [parseInt(h.substr(1,2),16), parseInt(h.substr(3,2),16), parseInt(h.substr(5,2),16)];
+}
+
+function teStyle() {
+  return {
+    fill:   document.getElementById('te-fill').value,
+    light:  document.getElementById('te-light').value,
+    dark:   document.getElementById('te-dark').value,
+    text:   document.getElementById('te-text').value,
+    bevel:  document.getElementById('te-bevel').value,
+    bevelW: parseInt(document.getElementById('te-bevelw').value) || 0,
+    radius: parseInt(document.getElementById('te-radius').value) || 0,
+    scale:  parseInt(document.getElementById('te-scale').value) || 2,
+  };
+}
+
+function teApplyPreset(name) {
+  const p = TE_PRESETS[name] || TE_PRESETS.AMIGA_WB2;
+  document.getElementById('te-fill').value   = p.fill;
+  document.getElementById('te-light').value  = p.light;
+  document.getElementById('te-dark').value   = p.dark;
+  document.getElementById('te-text').value   = p.text;
+  document.getElementById('te-bevel').value  = p.bevel;
+  document.getElementById('te-bevelw').value = p.bevelW;
+  document.getElementById('te-radius').value = p.radius;
+  document.getElementById('te-scale').value  = p.scale;
+  teRenderPreview();
+}
+
+// Every glyph reserves its sixth column as spacing, so measuring len*6 puts
+// short labels visibly left of centre. Mirrors text_width() in make_theme.py.
+function teTextWidth(text, scale) { return text ? (text.length * 6 - 1) * scale : 0; }
+
+function teInRounded(x, y, w, h, r) {
+  if (r <= 0) return true;
+  const cs = [[r,r],[w-1-r,r],[r,h-1-r],[w-1-r,h-1-r]];
+  for (const [cx, cy] of cs) {
+    const nearX = (x < r && cx === r) || (x > w-1-r && cx === w-1-r);
+    const nearY = (y < r && cy === r) || (y > h-1-r && cy === h-1-r);
+    if (nearX && nearY && ((x-cx)**2 + (y-cy)**2) > r*r) return false;
+  }
+  return true;
+}
+
+function teRenderButton(spec, st) {
+  const w = spec.w, h = spec.h;
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  const D = img.data;
+  const fill = teHexToRgb(st.fill), light = teHexToRgb(st.light),
+        dark = teHexToRgb(st.dark), txt = teHexToRgb(st.text);
+  const bw = st.bevelW, r = st.radius;
+
+  const put = (x, y, c) => {
+    const i = (y * w + x) * 4;
+    D[i] = c[0]; D[i+1] = c[1]; D[i+2] = c[2]; D[i+3] = 255;
+  };
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!teInRounded(x, y, w, h, r)) { put(x, y, [0,0,0]); continue; }
+      let c = fill;
+      if (st.bevel === 'raised') {
+        if (y < bw || x < bw) c = light;
+        if (y >= h-bw || x >= w-bw) c = dark;
+        // Highlight wins along the top-left so the edge reads as lit from
+        // the top-left, the Workbench convention.
+        if ((y < bw && x < w-bw) || (x < bw && y < h-bw)) c = light;
+      } else if (st.bevel === 'flat') {
+        if (x < bw || y < bw || x >= w-bw || y >= h-bw) c = light;
+      }
+      put(x, y, c);
+    }
+  }
+
+  if (spec.glyph === 'up' || spec.glyph === 'down') {
+    const size = Math.floor(Math.min(w, h) / 3);
+    const cx = w >> 1, cy = h >> 1;
+    for (let row = 0; row < size; row++) {
+      // Point at the top widening downwards for 'up'; mirrored for 'down'.
+      const half = spec.glyph === 'up' ? row : size - 1 - row;
+      const yy = cy - (size >> 1) + row;
+      for (let xx = cx - half; xx <= cx + half; xx++) {
+        if (xx >= 0 && xx < w && yy >= 0 && yy < h) put(xx, yy, txt);
+      }
+    }
+  } else if (spec.label && teFont) {
+    let scale = st.scale;
+    while (teTextWidth(spec.label, scale) > w - 8 && scale > 1) scale--;
+    const tx = Math.floor((w - teTextWidth(spec.label, scale)) / 2);
+    const ty = Math.floor((h - 8 * scale) / 2);
+    for (let ci = 0; ci < spec.label.length; ci++) {
+      const code = spec.label.charCodeAt(ci);
+      if (code < 32 || code > 126) continue;
+      const off = (code - 32) * 6;
+      for (let col = 0; col < 6; col++) {
+        const bits = teFont[off + col];
+        for (let row = 0; row < 8; row++) {
+          if (!(bits & (1 << row))) continue;
+          const bx = tx + (ci * 6 + col) * scale, by = ty + row * scale;
+          for (let dy = 0; dy < scale; dy++)
+            for (let dx = 0; dx < scale; dx++) {
+              const px = bx + dx, py = by + dy;
+              if (px >= 0 && px < w && py >= 0 && py < h) put(px, py, txt);
+            }
+        }
+      }
+    }
+  }
+
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+
+function teRenderPreview() {
+  const host = document.getElementById('te-preview');
+  if (!host) return;
+  if (!teGeom) { host.textContent = 'Loading panel geometry…'; return; }
+  const st = teStyle();
+  host.innerHTML = '';
+  for (const spec of teGeom) {
+    const cv = teRenderButton(spec, st);
+    cv.title = spec.n + ' — ' + spec.w + '×' + spec.h;
+    cv.style.imageRendering = 'pixelated';
+    host.appendChild(cv);
+  }
+}
+
+async function teInit() {
+  const sel = document.getElementById('te-preset');
+  if (!sel || sel.options.length) return;    // already built
+  sel.innerHTML = Object.keys(TE_PRESETS).map(k => `<option value="${k}">${k}</option>`).join('');
+  sel.addEventListener('change', () => teApplyPreset(sel.value));
+  ['te-fill','te-light','te-dark','te-text','te-bevel','te-bevelw','te-radius','te-scale']
+    .forEach(id => document.getElementById(id).addEventListener('input', teRenderPreview));
+  document.getElementById('te-save').addEventListener('click', () => teSave(false));
+  document.getElementById('te-apply').addEventListener('click', () => teSave(true));
+
+  try {
+    const [f, g] = await Promise.all([api('/api/themes/font'), api('/api/themes/geometry')]);
+    const bin = atob(f.data);
+    teFont = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) teFont[i] = bin.charCodeAt(i);
+    teGeom = g.buttons;
+  } catch (e) {
+    document.getElementById('te-preview').textContent =
+      'Could not read font/geometry from the device.';
+    return;
+  }
+  teApplyPreset('AMIGA_WB2');
+}
+
+function teCanvasToBlob(cv) {
+  return new Promise(res => cv.toBlob(res, 'image/png'));
+}
+
+async function teSave(activate) {
+  const nameEl = document.getElementById('te-name');
+  const status = document.getElementById('te-status');
+  const name = (nameEl.value || '').toUpperCase().trim();
+  if (!/^[A-Z0-9_]{1,16}$/.test(name)) {
+    toast('Theme name: A-Z, 0-9 and _ only, max 16 characters', 'error');
+    nameEl.focus();
+    return;
+  }
+  if (!teGeom) { toast('Panel geometry not loaded yet', 'error'); return; }
+
+  const st = teStyle();
+  const btns = [document.getElementById('te-save'), document.getElementById('te-apply')];
+  btns.forEach(b => b.disabled = true);
+
+  try {
+    // One asset per request. They are a couple of hundred bytes each, and the
+    // device serves requests one at a time, so this is sent in series rather
+    // than firing twelve at a single-threaded server.
+    for (let i = 0; i < teGeom.length; i++) {
+      const spec = teGeom[i];
+      status.textContent = `Uploading ${spec.n} (${i + 1}/${teGeom.length})…`;
+      const blob = await teCanvasToBlob(teRenderButton(spec, st));
+      const res = await fetch(
+        `${API}/api/themes/${encodeURIComponent(name)}/asset?file=${encodeURIComponent(spec.n)}`,
+        { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: blob });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(`${spec.n}: ${d.error || 'HTTP ' + res.status}`);
+      }
+    }
+    status.textContent = '';
+    if (activate) {
+      await api(`/api/themes/${encodeURIComponent(name)}/activate`, { method: 'POST' });
+      toast(`Theme "${name}" saved and activated`);
+    } else {
+      toast(`Theme "${name}" saved`);
+    }
+    loadThemes();
+  } catch (e) {
+    status.textContent = '';
+    toast('Save failed: ' + (e.message || 'Unknown'), 'error');
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
 }
 
 // ── FTP Functions ──
