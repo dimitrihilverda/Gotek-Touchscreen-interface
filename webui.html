@@ -440,8 +440,13 @@ textarea{min-height:80px;resize:vertical}
 <div class="content view hidden" id="view-log">
   <div class="card">
     <h2>System Log</h2>
-    <p style="font-size:13px;color:#555;margin-bottom:10px">Device boot log and runtime events. Enable logging in Config: <code>LOG_ENABLED=1</code></p>
-    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center">
+    <p style="font-size:13px;color:#555;margin-bottom:10px">Device boot log and runtime events, written to <code>/LOG.TXT</code> on the SD card.</p>
+    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label style="margin:0;font-size:13px;display:flex;align-items:center;gap:6px;
+                    padding:6px 10px;background:var(--light);border:1px inset #999;border-radius:2px">
+        <input type="checkbox" id="log-enabled" onchange="setLogEnabled(this.checked)">
+        <strong>Logging enabled</strong>
+      </label>
       <button class="btn btn-primary" onclick="loadLog()">Refresh</button>
       <button class="btn btn-danger" onclick="clearLog()">Clear Log</button>
       <label style="margin:0;font-size:13px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="log-auto-scroll" checked> Auto-scroll</label>
@@ -1355,10 +1360,20 @@ async function teSave(activate) {
     for (let i = 0; i < teGeom.length; i++) {
       const spec = teGeom[i];
       status.textContent = `Uploading ${spec.n} (${i + 1}/${teGeom.length})…`;
+      // base64url in a form body, not a raw binary POST: the device's HTTP
+      // server reads the body of every non-multipart POST before the handler
+      // runs, so a handler cannot read the socket itself. '+' and '/' are
+      // swapped out because form values get URL-decoded on arrival.
       const blob = await teCanvasToBlob(teRenderButton(spec, st));
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let bin = '';
+      for (let b = 0; b < bytes.length; b++) bin += String.fromCharCode(bytes[b]);
+      const b64url = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
       const res = await fetch(
-        `${API}/api/themes/${encodeURIComponent(name)}/asset?file=${encodeURIComponent(spec.n)}`,
-        { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: blob });
+        `${API}/api/themes/${encodeURIComponent(name)}/asset`,
+        { method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'file=' + encodeURIComponent(spec.n) + '&data=' + b64url });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(`${spec.n}: ${d.error || 'HTTP ' + res.status}`);
@@ -2091,6 +2106,12 @@ document.addEventListener('keydown', (e) => {
 
 async function loadLog() {
   const el = document.getElementById('log-content');
+  // Reflect the device's current setting rather than assuming, so the box
+  // is right even after a reboot or a change made on the device.
+  try {
+    const info = await api('/api/system/info');
+    document.getElementById('log-enabled').checked = !!info.log_enabled;
+  } catch (e) { /* the log fetch below reports connection trouble */ }
   try {
     const data = await api('/api/log');
     el.textContent = data.log || 'Empty log';
@@ -2099,6 +2120,28 @@ async function loadLog() {
     }
   } catch (e) {
     el.textContent = 'Failed to load log: ' + e.message;
+  }
+}
+
+// Toggle /LOG.TXT writing without pulling the SD card out to edit CONFIG.TXT
+// by hand — which was the only way to do it before.
+async function setLogEnabled(on) {
+  const box = document.getElementById('log-enabled');
+  box.disabled = true;
+  try {
+    const res = await fetch(API + '/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'LOG_ENABLED=' + (on ? '1' : '0')
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    toast(on ? 'Logging enabled' : 'Logging disabled');
+    if (on) loadLog();
+  } catch (e) {
+    box.checked = !on;                  // put the box back where it was
+    toast('Could not change logging: ' + (e.message || 'Unknown'), 'error');
+  } finally {
+    box.disabled = false;
   }
 }
 

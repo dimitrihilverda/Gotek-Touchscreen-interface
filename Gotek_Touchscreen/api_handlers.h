@@ -403,6 +403,13 @@ void handleConfigGet(WiFiClient &client) {
 void handleConfigPost(WiFiClient &client, const String &body) {
   String val;
 
+  // Presence test, not emptiness: "0" is a meaningful value here and
+  // getFormValue returns "" both for absent and for empty.
+  if (body.indexOf("LOG_ENABLED=") >= 0) {
+    val = getFormValue(body, "LOG_ENABLED");
+    cfg_log_enabled = (val == "1" || val == "true");
+  }
+
   val = getFormValue(body, "DISPLAY");
   if (val.length() > 0) cfg_display = val;
 
@@ -1160,54 +1167,81 @@ void handleThemeGeometry(WiFiClient &client) {
   sendJSON(client, 200, json);
 }
 
-// POST /api/themes/{name}/asset?file=BTN_ADF
-// Body: raw PNG bytes.
+// Decode base64url (RFC 4648 §5: '-' and '_' instead of '+' and '/', padding
+// optional) into `out`. Returns the byte count, or -1 on a bad character.
 //
-// One asset per request rather than a single multipart bundle: the assets are
-// a couple of hundred bytes each, so twelve small sequential writes are less
-// code and less risk than extending the multipart parser, and the editor gets
-// natural per-asset progress.
+// base64url specifically, not plain base64: request bodies go through
+// urlDecode() before a handler sees them, so a '+' would arrive as a space
+// and quietly corrupt every fourth byte.
+static int b64urlDecode(const String &in, uint8_t *out, size_t outCap) {
+  auto val = [](char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '-' || c == '+') return 62;
+    if (c == '_' || c == '/') return 63;
+    return -1;
+  };
+  uint32_t acc = 0;
+  int bits = 0;
+  size_t n = 0;
+  for (unsigned i = 0; i < in.length(); i++) {
+    const char c = in[i];
+    if (c == '=' || c == '\r' || c == '\n') continue;
+    const int v = val(c);
+    if (v < 0) return -1;
+    acc = (acc << 6) | (uint32_t)v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (n >= outCap) return -1;
+      out[n++] = (uint8_t)((acc >> bits) & 0xFF);
+    }
+  }
+  return (int)n;
+}
+
+// POST /api/themes/{name}/asset
+// Body: file=BTN_ADF&data=<base64url PNG>
+//
+// The PNG arrives base64'd in a normal form body rather than as a raw binary
+// body, because the request reader in webserver.h consumes the body into
+// req.body for every non-multipart POST before any handler runs — a handler
+// reading the socket itself finds it already drained. Encoding costs a third
+// more bytes on an asset of a couple of hundred, which is nothing, and it
+// keeps this working with the server as it is instead of special-casing it.
+//
+// One asset per request: twelve small sequential writes are less code and
+// less risk than extending the multipart parser, and the editor gets natural
+// per-asset progress.
 void handleThemeAssetUpload(WiFiClient &client, const HttpRequest &req, const String &name) {
   if (!validThemeName(name)) {
-    drainBody(client, req.contentLength);
     sendJSON(client, 400, "{\"error\":\"Invalid theme name (A-Z 0-9 _ , max 16)\"}");
     return;
   }
-  const String asset = getFormValue(req.query, "file");
+  const String asset = getFormValue(req.body, "file");
   if (!validThemeAsset(asset)) {
-    drainBody(client, req.contentLength);
     sendJSON(client, 400, "{\"error\":\"Unknown asset name\"}");
     return;
   }
-  // Generated buttons are ~200 bytes; 64 KB is already absurdly generous and
-  // keeps a malformed request from parking megabytes in RAM.
-  if (req.contentLength <= 0 || req.contentLength > 64 * 1024) {
-    drainBody(client, req.contentLength);
-    sendJSON(client, 413, "{\"error\":\"Bad or oversized asset (max 64 KB)\"}");
+  const String data = getFormValue(req.body, "data");
+  // Generated buttons are ~200 bytes, so ~270 base64 chars; 64 KB of encoded
+  // data is already absurdly generous.
+  if (data.length() == 0 || data.length() > 64 * 1024) {
+    sendJSON(client, 413, "{\"error\":\"Missing or oversized asset data\"}");
     return;
   }
 
-  uint8_t *buf = (uint8_t *)malloc(req.contentLength);
+  const size_t cap = (data.length() / 4) * 3 + 4;
+  uint8_t *buf = (uint8_t *)malloc(cap);
   if (!buf) {
-    drainBody(client, req.contentLength);
     sendJSON(client, 500, "{\"error\":\"Out of memory\"}");
     return;
   }
-
-  int pos = 0;
-  unsigned long timeout = millis();
-  while (pos < req.contentLength && millis() - timeout < 10000) {
-    if (client.available()) {
-      int n = client.read(buf + pos, req.contentLength - pos);
-      if (n > 0) { pos += n; timeout = millis(); }
-    } else {
-      yield();
-      delay(1);
-    }
-  }
-  if (pos != req.contentLength) {
+  const int pos = b64urlDecode(data, buf, cap);
+  if (pos <= 0) {
     free(buf);
-    sendJSON(client, 400, "{\"error\":\"Incomplete upload\"}");
+    sendJSON(client, 400, "{\"error\":\"Malformed base64 payload\"}");
     return;
   }
   // Reject anything that isn't actually a PNG before it reaches the card —

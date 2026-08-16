@@ -110,12 +110,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.14.0"
+#define FW_VERSION "v0.14.1"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.021"
+#define FW_INTERNAL "release.022"
 
 using std::vector;
 using std::sort;
@@ -1347,6 +1347,11 @@ void saveConfig() {
     f.println("DAV_PATH=" + cfg_dav_path);
     f.println("DAV_HTTPS=" + String(cfg_dav_https ? "1" : "0"));
   }
+
+  // Logging. This was read from CONFIG.TXT but never written back, so any
+  // save — changing a theme, connecting WiFi — silently reset it to off and
+  // the setting looked like it had been ignored.
+  f.println("LOG_ENABLED=" + String(cfg_log_enabled ? "1" : "0"));
 
   f.close();
 }
