@@ -371,6 +371,7 @@ void handleConfigGet(WiFiClient &client) {
   json += "\"LASTFILE\":\"" + jsonEscape(cfg_lastfile) + "\",";
   json += "\"LASTMODE\":\"" + jsonEscape(cfg_lastmode) + "\",";
   json += "\"THEME\":\"" + jsonEscape(cfg_theme) + "\",";
+  json += "\"WALLPAPER_PCT\":\"" + String(cfg_wallpaper_pct) + "\",";
   json += "\"WIFI_ENABLED\":\"" + String(cfg_wifi_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_SSID\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
   json += "\"WIFI_PASS\":\"" + jsonEscape(cfg_wifi_pass) + "\",";
@@ -405,6 +406,13 @@ void handleConfigPost(WiFiClient &client, const String &body) {
 
   // Presence test, not emptiness: "0" is a meaningful value here and
   // getFormValue returns "" both for absent and for empty.
+  if (body.indexOf("WALLPAPER_PCT=") >= 0) {
+    int v = getFormValue(body, "WALLPAPER_PCT").toInt();
+    if (v < 0)   v = 0;
+    if (v > 100) v = 100;
+    cfg_wallpaper_pct = v;
+  }
+
   if (body.indexOf("LOG_ENABLED=") >= 0) {
     val = getFormValue(body, "LOG_ENABLED");
     cfg_log_enabled = (val == "1" || val == "true");

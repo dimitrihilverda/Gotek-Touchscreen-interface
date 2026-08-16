@@ -110,12 +110,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.14.1"
+#define FW_VERSION "v0.15.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.022"
+#define FW_INTERNAL "release.023"
 
 using std::vector;
 using std::sort;
@@ -449,6 +449,9 @@ bool   cfg_dav_https   = true;
 
 // Logging config — write step-by-step log to SD card for debugging
 bool   cfg_log_enabled = false;
+// Wallpaper brightness for the active game's cover behind the list screens,
+// as a percentage. 0 disables it entirely.
+int    cfg_wallpaper_pct = 20;
 
 // Backlight (0..255). Lower default reduces current draw on USB-powered Amiga 5V rail.
 // Can be raised after boot in the settings UI once power has stabilised.
@@ -1272,6 +1275,10 @@ void loadConfig() {
       cfg_dav_path = val;
     } else if (key == "DAV_HTTPS") {
       cfg_dav_https = (val == "1" || val == "true");
+    } else if (key == "WALLPAPER_PCT") {
+      cfg_wallpaper_pct = val.toInt();
+      if (cfg_wallpaper_pct < 0)   cfg_wallpaper_pct = 0;
+      if (cfg_wallpaper_pct > 100) cfg_wallpaper_pct = 100;
     } else if (key == "LOG_ENABLED") {
       cfg_log_enabled = (val == "1" || val == "true");
     } else if (key == "BACKLIGHT") {
@@ -1351,6 +1358,7 @@ void saveConfig() {
   // Logging. This was read from CONFIG.TXT but never written back, so any
   // save — changing a theme, connecting WiFi — silently reset it to off and
   // the setting looked like it had been ignored.
+  f.println("WALLPAPER_PCT=" + String(cfg_wallpaper_pct));
   f.println("LOG_ENABLED=" + String(cfg_log_enabled ? "1" : "0"));
 
   f.close();
@@ -1697,6 +1705,9 @@ void firstBootScaffold() {
     cfg.println("FTP_USER=");
     cfg.println("FTP_PASS=");
     cfg.println("FTP_PATH=/");
+    cfg.println("");
+    cfg.println("# Active game's cover as a dimmed full-screen backdrop (0 = off)");
+    cfg.println("WALLPAPER_PCT=20");
     cfg.println("");
     cfg.println("# Logging — write step-by-step log to /LOG.TXT on SD card");
     cfg.println("LOG_ENABLED=0");
@@ -2501,6 +2512,142 @@ bool getPngSize(const char *path, int *w, int *h) {
 // because drawThemedButton (right below) is its only consumer and it needs
 // the gfx_* primitives declared above.
 #include "button_cache.h"
+
+// ============================================================================
+// Wallpaper — the active game's cover, dimmed, behind the list screens
+// ============================================================================
+//
+// Held as a ready-to-blit, framebuffer-sized, framebuffer-byte-order image in
+// PSRAM. Decoding and dimming happen ONCE, when the loaded game changes, so a
+// repaint costs a memcpy rather than a JPEG decode — the alternative would put
+// a full decode on the scroll path, which is the one place that cannot afford
+// it.
+//
+// Scaled to COVER rather than fit: the image fills the screen and whatever
+// overflows is cropped, which is what "always full screen" means and why this
+// cannot reuse gfx_drawJpgFile (that one fits inside its box and letterboxes).
+#if ACTIVE_DISPLAY == DISPLAY_JC3248
+static uint16_t *g_wallpaper = nullptr;   // gW*gH, already byte-swapped
+static bool      g_wallpaperValid = false;
+static String    g_wallpaperSrc;          // path it was built from, to skip rebuilds
+
+// Scale one RGB565 channel triple toward black. Done at build time so the
+// per-frame cost stays zero.
+static inline uint16_t dimRGB565(uint16_t c, int pct) {
+  int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+  r = r * pct / 100; g = g * pct / 100; b = b * pct / 100;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+void wallpaperClear() {
+  // Button tiles are captured from the framebuffer AFTER the background has
+  // been laid down, so a cached button carries a patch of whatever was behind
+  // it. Changing the backdrop therefore invalidates them — without this,
+  // buttons keep showing a crop of the previous game's cover.
+  if (g_wallpaperValid) clearButtonCache();
+  g_wallpaperValid = false;
+  g_wallpaperSrc = "";
+}
+
+bool wallpaperActive() { return g_wallpaperValid && g_wallpaper; }
+
+// Decode `path` and store it dimmed to `pct` percent brightness.
+bool wallpaperBuild(const String &path, int pct) {
+  if (cfg_wallpaper_pct <= 0) { wallpaperClear(); return false; }
+  if (path.length() == 0) { wallpaperClear(); return false; }
+  if (g_wallpaperValid && g_wallpaperSrc == path) return true;   // already current
+
+  String lower = path;
+  lower.toLowerCase();
+  if (!(lower.endsWith(".jpg") || lower.endsWith(".jpeg"))) {
+    // Only JPEG covers are worth the effort here; PNG covers are rare and the
+    // PNG path decodes straight to the framebuffer rather than to a buffer.
+    wallpaperClear();
+    return false;
+  }
+
+  File f = SD_MMC.open(path.c_str(), "r");
+  if (!f) { wallpaperClear(); return false; }
+  size_t sz = f.size();
+  if (sz == 0 || sz > 512 * 1024) { f.close(); wallpaperClear(); return false; }
+  uint8_t *raw = (uint8_t *)ps_malloc(sz);
+  if (!raw) { f.close(); wallpaperClear(); return false; }
+  f.read(raw, sz);
+  f.close();
+
+  if (!jpegdec.openRAM(raw, sz, jpeg_buf_cb)) { free(raw); wallpaperClear(); return false; }
+  int jw = jpegdec.getWidth(), jh = jpegdec.getHeight();
+  if (jw <= 0 || jh <= 0 || jw > 2000 || jh > 2000) {
+    jpegdec.close(); free(raw); wallpaperClear(); return false;
+  }
+
+  jpeg_tmp_buf = (uint16_t *)ps_malloc((size_t)jw * jh * 2);
+  if (!jpeg_tmp_buf) { jpegdec.close(); free(raw); wallpaperClear(); return false; }
+  memset(jpeg_tmp_buf, 0, (size_t)jw * jh * 2);
+  jpeg_tmp_w = jw; jpeg_tmp_h = jh;
+  jpegdec.decode(0, 0, 0);
+  jpegdec.close();
+  free(raw);
+
+  if (!g_wallpaper) {
+    g_wallpaper = (uint16_t *)ps_malloc((size_t)gW * gH * 2);
+    if (!g_wallpaper) {
+      free(jpeg_tmp_buf); jpeg_tmp_buf = nullptr;
+      wallpaperClear();
+      return false;
+    }
+  }
+
+  // COVER fit: the larger of the two ratios, so neither axis leaves a gap.
+  const float sx = (float)gW / (float)jw;
+  const float sy = (float)gH / (float)jh;
+  const float scale = (sx > sy) ? sx : sy;
+  const int drawW = (int)(jw * scale), drawH = (int)(jh * scale);
+  const int offX = (gW - drawW) / 2, offY = (gH - drawH) / 2;   // negative = cropped
+
+  for (int vy = 0; vy < gH; vy++) {
+    int srcY = (int)((vy - offY) / scale);
+    if (srcY < 0) srcY = 0;
+    if (srcY >= jh) srcY = jh - 1;
+    const uint16_t *srcRow = jpeg_tmp_buf + (size_t)srcY * jw;
+    uint16_t *dstRow = g_wallpaper + (size_t)vy * gW;
+    for (int vx = 0; vx < gW; vx++) {
+      int srcX = (int)((vx - offX) / scale);
+      if (srcX < 0) srcX = 0;
+      if (srcX >= jw) srcX = jw - 1;
+      // Stored pre-swapped so the blit is a straight memcpy into the
+      // framebuffer, which keeps it the same cost as the fillScreen it
+      // replaces.
+      dstRow[vx] = swap16(dimRGB565(srcRow[srcX], pct));
+    }
+    yield();
+  }
+
+  free(jpeg_tmp_buf);
+  jpeg_tmp_buf = nullptr;
+  g_wallpaperValid = true;
+  g_wallpaperSrc = path;
+  clearButtonCache();   // tiles captured over the old backdrop are now stale
+  sdLog("Wallpaper: " + path + " @ " + String(pct) + "%");
+  return true;
+}
+
+// Clear the screen for a list repaint: the wallpaper if there is one, plain
+// black otherwise. Drop-in for gfx_fillScreen(TFT_BLACK).
+void drawScreenBackground() {
+  if (wallpaperActive()) {
+    memcpy(framebuffer, g_wallpaper, (size_t)gW * gH * 2);
+  } else {
+    gfx_fillScreen(TFT_BLACK);
+  }
+}
+#else
+// Waveshare draws straight to the panel and has no framebuffer to blit into.
+static inline void wallpaperClear() {}
+static inline bool wallpaperActive() { return false; }
+static inline bool wallpaperBuild(const String &, int) { return false; }
+static inline void drawScreenBackground() { gfx_fillScreen(TFT_BLACK); }
+#endif
 
 // Draw a themed button: PNG from /THEME/ + label text overlaid, or simple
 // rect+text fallback when the PNG is missing. The label is always rendered on
@@ -3623,7 +3770,8 @@ void davBrowsePath(const String &path) {
 }
 
 void drawDAVList() {
-  gfx_fillScreen(TFT_BLACK);
+  refreshWallpaper();
+  drawScreenBackground();
 
   int perPage = items_per_page();
 
@@ -4283,6 +4431,14 @@ void drawInfoScreen() {
 // ALPHABET BAR (used by game list) — constants defined above with list layout
 // ============================================================================
 
+// Right edge of the clickable "Now Playing" bar on the list screen, i.e. where
+// the bottom-right button strip begins. Drawing and hit-testing both derive
+// from this so the tappable area can never drift away from the drawn one —
+// that drift is exactly what made the DAV button unreachable.
+static inline int listNowPlayingRightEdge() {
+  return gW - (cfg_dav_enabled ? 92 : 44) - 4;
+}
+
 int items_per_page() {
   return (LIST_BOTTOM - LIST_START_Y) / LIST_ITEM_H;
 }
@@ -4424,8 +4580,42 @@ bool handleAlphabetTouch(uint16_t px, uint16_t py) {
   return true;
 }
 
+// Point the wallpaper at whatever is loaded right now.
+//
+// Called from the list draw functions rather than from the eight places that
+// assign nowPlaying: wallpaperBuild() returns immediately when the source path
+// is unchanged, so this is a no-op on every repaint and only does real work
+// the first time a screen is drawn after the loaded game changed. That keeps
+// the two in sync without a hook on every load path, including the ones the
+// web UI drives.
+void refreshWallpaper() {
+  if (cfg_wallpaper_pct <= 0) { wallpaperClear(); return; }
+
+  String cover;
+  if (nowPlaying.source == NP_SD && nowPlaying.path.length() > 0) {
+    cover = findJPGFor(nowPlaying.path);
+  } else if (nowPlaying.source == NP_DAV && nowPlaying.path.length() > 0) {
+    // Remote covers live in the local cache by convention <folder>/<folder>.jpg.
+    String folderPath = nowPlaying.path;
+    int sl = folderPath.lastIndexOf('/');
+    if (sl > 0) {
+      folderPath = folderPath.substring(0, sl);
+      String folderName = folderPath;
+      int sl2 = folderName.lastIndexOf('/');
+      if (sl2 >= 0) folderName = folderName.substring(sl2 + 1);
+      String remote = folderPath + "/" + folderName + ".jpg";
+      String cached = davCoverCachePath(remote);
+      if (SD_MMC.exists(cached.c_str())) cover = cached;
+    }
+  }
+
+  if (cover.length() == 0) { wallpaperClear(); return; }
+  wallpaperBuild(cover, cfg_wallpaper_pct);
+}
+
 void drawList() {
-  gfx_fillScreen(TFT_BLACK);
+  refreshWallpaper();
+  drawScreenBackground();
 
   int perPage = items_per_page();
 
@@ -4494,7 +4684,7 @@ void drawList() {
   int bottomBtnsW = cfg_dav_enabled ? 92 : 44;  // 2 buttons or 1
   if (nowPlaying.source != NP_NONE) {
     uint16_t bgColor = (nowPlaying.source == NP_DAV) ? 0x0841 : 0x0320;
-    gfx_fillRect(0, gH - 46, gW - bottomBtnsW - 4, 46, bgColor);
+    gfx_fillRect(0, gH - 46, listNowPlayingRightEdge(), 46, bgColor);
     gfx_setTextSize(1);
     gfx_setTextColor(TFT_GREEN, bgColor);
     gfx_setCursor(8, gH - 43);
@@ -4502,7 +4692,7 @@ void drawList() {
     gfx_setTextSize(2);
     gfx_setTextColor(TFT_WHITE, bgColor);
     gfx_setCursor(8, gH - 28);
-    gfx_print(truncateToWidth(nowPlaying.name, gW - bottomBtnsW - 16));
+    gfx_print(truncateToWidth(nowPlaying.name, listNowPlayingRightEdge() - 16));
   } else {
     gfx_setTextSize(1);
     gfx_setTextColor(TFT_GREY, TFT_BLACK);
@@ -5996,8 +6186,12 @@ void handleTap(uint16_t px, uint16_t py) {
       return;
     }
 
-    // "Now Playing" bar tap → go to detail page of loaded game (any source)
-    if (nowPlaying.source != NP_NONE && py >= gH - 46 && px < gW - 48) {
+    // "Now Playing" bar tap → go to detail page of loaded game (any source).
+    // The right edge MUST come from the same helper the bar is drawn with:
+    // this used to hardcode gW - 48, which overlapped the DAV button by its
+    // full width, so with a game loaded that button could never be tapped —
+    // every press opened the loaded game's detail page instead.
+    if (nowPlaying.source != NP_NONE && py >= gH - 46 && px < listNowPlayingRightEdge()) {
       if (nowPlaying.source == NP_SD && nowPlaying.sdIndex >= 0) {
         selected_index = nowPlaying.sdIndex;
         game_selected = findGameIndex(nowPlaying.sdIndex);
