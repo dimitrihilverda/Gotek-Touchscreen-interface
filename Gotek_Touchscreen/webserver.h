@@ -228,6 +228,7 @@ struct HttpRequest {
   int contentLength;
   String body;          // POST body
   String boundary;      // multipart boundary
+  String ifNoneMatch;   // ETag the browser already holds, for 304 replies
 };
 
 // Full URL decode: %XX hex → char, + → space
@@ -309,6 +310,10 @@ bool parseHttpRequest(WiFiClient &client, HttpRequest &req) {
     else if (lower.startsWith("content-length:")) {
       req.contentLength = line.substring(15).toInt();
     }
+    else if (lower.startsWith("if-none-match:")) {
+      req.ifNoneMatch = line.substring(14);
+      req.ifNoneMatch.trim();
+    }
   }
 
   // Read body for POST/DELETE (non-multipart only)
@@ -365,15 +370,31 @@ void sendJSON(WiFiClient &client, int code, const String &json) {
   sendResponse(client, code, "application/json", json);
 }
 
+// Serve a gzipped blob from PROGMEM.
+//
+// `etag` opts the response into revalidation instead of blind caching. The web
+// UI is the application, and it changes with every firmware build — serving it
+// with a flat max-age meant a freshly flashed device kept showing the OLD page
+// until the browser's copy expired, so new controls appeared to be missing
+// entirely. With an ETag the browser asks every time and gets a 25-byte 304
+// when nothing changed, which costs less than the old cached path did on a
+// cold load and is correct the instant the firmware is updated.
 void sendGzipResponse(WiFiClient &client, const char *contentType,
-                      const uint8_t *data, size_t len) {
+                      const uint8_t *data, size_t len,
+                      const char *etag = nullptr) {
   client.println("HTTP/1.1 200 OK");
   client.print("Content-Type: ");
   client.println(contentType);
   client.println("Content-Encoding: gzip");
   client.print("Content-Length: ");
   client.println(len);
-  client.println("Cache-Control: max-age=86400");
+  if (etag) {
+    client.print("ETag: ");
+    client.println(etag);
+    client.println("Cache-Control: no-cache");   // revalidate, don't re-download
+  } else {
+    client.println("Cache-Control: max-age=86400");
+  }
   client.println("Access-Control-Allow-Origin: *");
   client.println("Connection: close");
   client.println();
@@ -606,7 +627,19 @@ void handleHttpRequest(WiFiClient &client) {
 
   // ── Serve SPA ──
   if (req.path == "/" || req.path == "/index.html") {
-    sendGzipResponse(client, "text/html", webui_gz, webui_gz_len);
+    // Tagged with the firmware version, so flashing new firmware always
+    // invalidates the browser's copy — that is the whole point.
+    static const char *kUiEtag = "\"" FW_VERSION "-" FW_INTERNAL "\"";
+    if (req.ifNoneMatch == kUiEtag) {
+      client.println("HTTP/1.1 304 Not Modified");
+      client.print("ETag: ");
+      client.println(kUiEtag);
+      client.println("Cache-Control: no-cache");
+      client.println("Connection: close");
+      client.println();
+      return;
+    }
+    sendGzipResponse(client, "text/html", webui_gz, webui_gz_len, kUiEtag);
     return;
   }
 
