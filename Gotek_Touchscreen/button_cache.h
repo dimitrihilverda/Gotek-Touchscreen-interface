@@ -38,6 +38,7 @@ struct BtnSlot {
   char      key[24];    // "<pngName>|<w>x<h>" — geometry is part of identity
   int16_t   w, h;
   uint16_t *pixels;     // w*h RGB565 in PSRAM
+  size_t    cap;        // BYTES actually allocated at `pixels`
   bool      valid;      // holds a captured tile
   bool      missing;    // theme has no such PNG — negative cache
 };
@@ -51,6 +52,7 @@ static void btnCacheInit() {
   for (int i = 0; i < BTN_CACHE_SLOTS; i++) {
     g_btnCache[i].key[0]  = 0;
     g_btnCache[i].pixels  = nullptr;
+    g_btnCache[i].cap     = 0;
     g_btnCache[i].valid   = false;
     g_btnCache[i].missing = false;
     g_btnCache[i].w = g_btnCache[i].h = 0;
@@ -98,9 +100,28 @@ static void btnCacheBlit(int x, int y, const BtnSlot *s) {
 static bool btnCacheCapture(int x, int y, int w, int h, BtnSlot *s) {
 #if ACTIVE_DISPLAY == DISPLAY_JC3248
   if (w <= 0 || h <= 0 || w > BTN_CACHE_MAX_W || h > BTN_CACHE_MAX_H) return false;
-  if (!s->pixels) {
-    s->pixels = (uint16_t *)ps_malloc((size_t)w * h * 2);
-    if (!s->pixels) return false;
+
+  // Reallocate when the slot's block is too small for this geometry.
+  //
+  // This was a heap overflow. The only gate here used to be `if (!s->pixels)`,
+  // and nothing recorded how big the block was — while clearButtonCache
+  // deliberately keeps the PSRAM pointer and only blanks the key. A slot first
+  // filled by a 40x36 button (2880 B) could therefore be handed to a 148x36
+  // one (10656 B) and captured straight past the end of a live allocation,
+  // over the TLSF block headers that sit inline right after it. The panic then
+  // lands much later, in an unrelated ps_malloc or free, with a backtrace
+  // pointing at innocent code — which is exactly how it presented.
+  const size_t need = (size_t)w * h * 2;
+  if (!s->pixels || s->cap < need) {
+    free(s->pixels);
+    s->pixels = (uint16_t *)ps_malloc(need);
+    if (!s->pixels) {
+      s->cap = 0;
+      s->valid = false;
+      s->w = s->h = 0;
+      return false;
+    }
+    s->cap = need;
   }
   for (int yy = 0; yy < h; yy++) {
     for (int xx = 0; xx < w; xx++) {

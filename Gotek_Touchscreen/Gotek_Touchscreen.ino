@@ -110,12 +110,20 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
          r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
 }
 
-#define FW_VERSION "v0.15.0"
+// The loop task's stack is shared by everything that is not an interrupt: the
+// UI render path, SD access, the HTTP server (polled from loop()), and the
+// WebDAV client including its mbedTLS handshake. The arduino-esp32 default is
+// 8 KB, which a TLS handshake reached through a web handler can exhaust — a
+// stack overflow reports as ESP_RST_PANIC with a backtrace in unrelated code.
+// 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
+#define FW_VERSION "v0.15.1"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.023"
+#define FW_INTERNAL "release.024"
 
 using std::vector;
 using std::sort;
@@ -2527,9 +2535,13 @@ bool getPngSize(const char *path, int *w, int *h) {
 // overflows is cropped, which is what "always full screen" means and why this
 // cannot reuse gfx_drawJpgFile (that one fits inside its box and letterboxes).
 #if ACTIVE_DISPLAY == DISPLAY_JC3248
-static uint16_t *g_wallpaper = nullptr;   // gW*gH, already byte-swapped
+// Stored in PHYSICAL framebuffer layout (LCD_WIDTH x LCD_HEIGHT, byte-swapped)
+// so the blit is a plain memcpy. See wallpaperBuild for why it is captured
+// rather than composed directly.
+static uint16_t *g_wallpaper = nullptr;
 static bool      g_wallpaperValid = false;
 static String    g_wallpaperSrc;          // path it was built from, to skip rebuilds
+static bool      g_wallpaperFlip = false; // orientation it was captured under
 
 // Scale one RGB565 channel triple toward black. Done at build time so the
 // per-frame cost stays zero.
@@ -2555,7 +2567,10 @@ bool wallpaperActive() { return g_wallpaperValid && g_wallpaper; }
 bool wallpaperBuild(const String &path, int pct) {
   if (cfg_wallpaper_pct <= 0) { wallpaperClear(); return false; }
   if (path.length() == 0) { wallpaperClear(); return false; }
-  if (g_wallpaperValid && g_wallpaperSrc == path) return true;   // already current
+  // A snapshot is orientation-specific, so flipping the display has to force a
+  // rebuild — otherwise the stored image stays in the old rotation.
+  if (g_wallpaperValid && g_wallpaperSrc == path &&
+      g_wallpaperFlip == cfg_display_flip) return true;   // already current
 
   String lower = path;
   lower.toLowerCase();
@@ -2590,7 +2605,7 @@ bool wallpaperBuild(const String &path, int pct) {
   free(raw);
 
   if (!g_wallpaper) {
-    g_wallpaper = (uint16_t *)ps_malloc((size_t)gW * gH * 2);
+    g_wallpaper = (uint16_t *)ps_malloc((size_t)LCD_WIDTH * LCD_HEIGHT * 2);
     if (!g_wallpaper) {
       free(jpeg_tmp_buf); jpeg_tmp_buf = nullptr;
       wallpaperClear();
@@ -2605,28 +2620,36 @@ bool wallpaperBuild(const String &path, int pct) {
   const int drawW = (int)(jw * scale), drawH = (int)(jh * scale);
   const int offX = (gW - drawW) / 2, offY = (gH - drawH) / 2;   // negative = cropped
 
+  // Paint through gfx_drawPixel and snapshot the result, rather than writing
+  // the image into the buffer directly.
+  //
+  // The framebuffer is PHYSICAL (LCD_WIDTH x LCD_HEIGHT) while gW/gH are the
+  // rotated virtual dimensions, and fb_setPixel maps between them — including
+  // the cfg_display_flip case. Building a gW-strided image and memcpy'ing it
+  // into a LCD_WIDTH-strided buffer copies the right number of bytes with the
+  // wrong stride, which is exactly a 90-degree rotation. Reusing the one
+  // mapping that is already correct avoids reimplementing it here and getting
+  // it wrong a second time.
   for (int vy = 0; vy < gH; vy++) {
     int srcY = (int)((vy - offY) / scale);
     if (srcY < 0) srcY = 0;
     if (srcY >= jh) srcY = jh - 1;
     const uint16_t *srcRow = jpeg_tmp_buf + (size_t)srcY * jw;
-    uint16_t *dstRow = g_wallpaper + (size_t)vy * gW;
     for (int vx = 0; vx < gW; vx++) {
       int srcX = (int)((vx - offX) / scale);
       if (srcX < 0) srcX = 0;
       if (srcX >= jw) srcX = jw - 1;
-      // Stored pre-swapped so the blit is a straight memcpy into the
-      // framebuffer, which keeps it the same cost as the fillScreen it
-      // replaces.
-      dstRow[vx] = swap16(dimRGB565(srcRow[srcX], pct));
+      gfx_drawPixel(vx, vy, dimRGB565(srcRow[srcX], pct));
     }
     yield();
   }
+  memcpy(g_wallpaper, framebuffer, (size_t)LCD_WIDTH * LCD_HEIGHT * 2);
 
   free(jpeg_tmp_buf);
   jpeg_tmp_buf = nullptr;
   g_wallpaperValid = true;
   g_wallpaperSrc = path;
+  g_wallpaperFlip = cfg_display_flip;
   clearButtonCache();   // tiles captured over the old backdrop are now stale
   sdLog("Wallpaper: " + path + " @ " + String(pct) + "%");
   return true;
@@ -2636,7 +2659,7 @@ bool wallpaperBuild(const String &path, int pct) {
 // black otherwise. Drop-in for gfx_fillScreen(TFT_BLACK).
 void drawScreenBackground() {
   if (wallpaperActive()) {
-    memcpy(framebuffer, g_wallpaper, (size_t)gW * gH * 2);
+    memcpy(framebuffer, g_wallpaper, (size_t)LCD_WIDTH * LCD_HEIGHT * 2);
   } else {
     gfx_fillScreen(TFT_BLACK);
   }
@@ -4928,13 +4951,19 @@ void sortByDisplay() {
 
 // Find the game_list index for a given file_list index
 int findGameIndex(int fileIndex) {
+  // fileIndex comes from state that outlives a list rebuild — nowPlaying.sdIndex
+  // and loaded_disk_index in particular survive an ADF/DSK toggle, a web-UI
+  // upload or a delete, any of which can shrink file_list. Indexing it
+  // unchecked is an out-of-bounds read on a vector of Strings, which is a
+  // StoreProhibited panic rather than anything that mentions the list.
+  if (fileIndex < 0 || fileIndex >= (int)file_list.size()) return -1;
+
+  // Hoisted: these were recomputed on every iteration, and the `dir` result
+  // was never used at all — it only performed the out-of-bounds access.
+  const String fileBase = getGameBaseName(file_list[fileIndex]);
   for (int i = 0; i < (int)game_list.size(); i++) {
-    // Check if this game entry contains the file
-    String baseName = game_list[i].name;
-    String dir = parentDir(file_list[fileIndex]);
-    String fileBase = getGameBaseName(file_list[fileIndex]);
     if (game_list[i].first_file_index == fileIndex) return i;
-    if (game_list[i].disk_count > 1 && fileBase == baseName) return i;
+    if (game_list[i].disk_count > 1 && fileBase == game_list[i].name) return i;
   }
   return 0;
 }
@@ -4944,6 +4973,12 @@ int findGameIndex(int fileIndex) {
 // Also finds cover art (JPG/PNG) for each game.
 void buildGameList() {
   game_list.clear();
+  // disk_set holds indexes INTO file_list, so it is invalid the moment that
+  // list is rebuilt. Leaving it populated let the multi-disk selector index a
+  // shorter list. Deliberately not resetting selected_index here: refreshGameList
+  // runs on every web upload, and that would move the user's selection out from
+  // under them mid-browse.
+  disk_set.clear();
   game_selected = 0;
   scroll_offset = 0;
 
@@ -5152,7 +5187,11 @@ bool remoteSendFile(int index) {
   tcpClient.println();
 
   // Stream file data in chunks
-  uint8_t buf[4096];
+  // static, not a stack local: the loop task has one 8 KB stack shared by
+    // the HTTP handlers, the TLS client, SD I/O and the whole render path,
+    // and a 4 KB frame here left an mbedTLS handshake with ~2 KB. The web
+    // server is polled from loop() and never reentered, so static is safe.
+  static uint8_t buf[1024];
   size_t totalSent = 0;
   int lastPctDrawn = -1;
 
@@ -5781,12 +5820,21 @@ void loop() {
     uint32_t freeHeap  = ESP.getFreeHeap();
     uint32_t minHeap   = ESP.getMinFreeHeap();
     uint32_t freePsram = ESP.getFreePsram();
-    Serial.printf("heap: up=%us free=%uK min=%uK psram=%uK\n",
-                  up_s, freeHeap / 1024, minHeap / 1024, freePsram / 1024);
+    uint32_t maxBlk    = ESP.getMaxAllocHeap();
+    // Bytes of loop-task stack never used. This is the number that tells a
+    // stack overflow apart from an out-of-memory: if it trends toward zero
+    // while browsing, the stack is the problem, not the heap. maxBlk does the
+    // same job for fragmentation — it collapses long before freeHeap does.
+    uint32_t stackFree = uxTaskGetStackHighWaterMark(NULL);
+    Serial.printf("heap: up=%us free=%uK min=%uK maxblk=%uK psram=%uK stack=%u\n",
+                  up_s, freeHeap / 1024, minHeap / 1024, maxBlk / 1024,
+                  freePsram / 1024, stackFree);
     if (cfg_log_enabled) {
       sdLog("heap: up=" + String(up_s) + "s free=" + String(freeHeap / 1024) +
             "K min=" + String(minHeap / 1024) +
-            "K psram=" + String(freePsram / 1024) + "K");
+            "K maxblk=" + String(maxBlk / 1024) +
+            "K psram=" + String(freePsram / 1024) +
+            "K stack=" + String(stackFree));
     }
   }
 
@@ -6192,7 +6240,12 @@ void handleTap(uint16_t px, uint16_t py) {
     // full width, so with a game loaded that button could never be tapped —
     // every press opened the loaded game's detail page instead.
     if (nowPlaying.source != NP_NONE && py >= gH - 46 && px < listNowPlayingRightEdge()) {
-      if (nowPlaying.source == NP_SD && nowPlaying.sdIndex >= 0) {
+      if (nowPlaying.source == NP_SD && nowPlaying.sdIndex >= 0 &&
+                 nowPlaying.sdIndex < (int)file_list.size()) {
+        // The upper bound matters: sdIndex is captured when a disk is loaded
+        // and survives every later rebuild of file_list — an ADF/DSK toggle, a
+        // web-UI upload, a delete. Tapping NOW PLAYING after one of those was
+        // an out-of-bounds read straight into a vector of Strings.
         selected_index = nowPlaying.sdIndex;
         game_selected = findGameIndex(nowPlaying.sdIndex);
         detail_filename = file_list[selected_index];
@@ -6291,7 +6344,15 @@ void handleTap(uint16_t px, uint16_t py) {
         int btnLeft = startX + hitIdx * (btnW + gap);
         if (hitIdx >= 0 && hitIdx < numDisks &&
             px >= btnLeft && px <= btnLeft + btnW) {
-          selected_index = disk_set[hitIdx];
+          const int fi = disk_set[hitIdx];
+          if (fi < 0 || fi >= (int)file_list.size()) {
+            // The set was built against an older file_list — rebuild it for
+            // the current selection instead of indexing off the end.
+            findRelatedDisks(selected_index);
+            drawDetailsFromNFO(detail_filename);
+            return;
+          }
+          selected_index = fi;
           detail_filename = file_list[selected_index];
           showBusyIndicator(cfg_remote_enabled ? "SENDING DISK..." : "SWITCHING DISK...");
           waitForRelease();
@@ -6484,7 +6545,12 @@ void handleTap(uint16_t px, uint16_t py) {
     if (nowPlaying.source != NP_NONE && px < gW - 92 && py >= gH - 46) {
       if (nowPlaying.source == NP_DAV && nowPlaying.davFolderIndex >= 0) {
         davOpenFolderDetail(nowPlaying.davFolderIndex);
-      } else if (nowPlaying.source == NP_SD && nowPlaying.sdIndex >= 0) {
+      } else if (nowPlaying.source == NP_SD && nowPlaying.sdIndex >= 0 &&
+                 nowPlaying.sdIndex < (int)file_list.size()) {
+        // The upper bound matters: sdIndex is captured when a disk is loaded
+        // and survives every later rebuild of file_list — an ADF/DSK toggle, a
+        // web-UI upload, a delete. Tapping NOW PLAYING after one of those was
+        // an out-of-bounds read straight into a vector of Strings.
         selected_index = nowPlaying.sdIndex;
         game_selected = findGameIndex(nowPlaying.sdIndex);
         detail_filename = file_list[selected_index];

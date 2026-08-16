@@ -1823,7 +1823,11 @@ void handleDAVCover(WiFiClient &client, const String &queryPath) {
       client.print("ETag: "); client.println(etag);
       client.println("Connection: close");
       client.println();
-      uint8_t chunk[4096];
+      // static, not a stack local: the loop task has one 8 KB stack shared by
+    // the HTTP handlers, the TLS client, SD I/O and the whole render path,
+    // and a 4 KB frame here left an mbedTLS handshake with ~2 KB. The web
+    // server is polled from loop() and never reentered, so static is safe.
+      static uint8_t chunk[1024];
       while (f.available()) {
         int n = f.read(chunk, sizeof(chunk));
         if (n <= 0) break;

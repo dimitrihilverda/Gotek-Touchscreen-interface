@@ -230,7 +230,11 @@ public:
 
     // Stream download
     long totalBytes = 0;
-    uint8_t buf[4096];
+    // static, not a stack local: the loop task has one 8 KB stack shared by
+    // the HTTP handlers, the TLS client, SD I/O and the whole render path,
+    // and a 4 KB frame here left an mbedTLS handshake with ~2 KB. The web
+    // server is polled from loop() and never reentered, so static is safe.
+    static uint8_t buf[1024];
     unsigned long timeout = millis();
 
     while (data.connected() || data.available()) {
