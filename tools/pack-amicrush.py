@@ -32,13 +32,30 @@ import sys
 from PIL import Image
 
 REPO         = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_ADF  = r"C:\Users\dimx\claude-sessions\amicrush-fast.adf"
+# The canonical build output of the AmiCrush repo's tools/build_amiga.sh,
+# which verifies that the ADF contains the freshly built binary. The old
+# default pointed at amicrush-fast.adf, which that build no longer produces.
+DEFAULT_ADF  = r"C:\Users\dimx\claude-sessions\amicrush.adf"
 DEFAULT_ART  = r"C:\Users\dimx\claude-sessions\assets\title.png"
 HDR_ADF      = os.path.join(REPO, "Gotek_Touchscreen", "amicrush_adf.h")
 HDR_COVER    = os.path.join(REPO, "Gotek_Touchscreen", "amicrush_cover.h")
 
 COVER_MAX  = 400
 COVER_JPEG_QUALITY = 82
+
+
+def fnv1a(data: bytes) -> int:
+    """32-bit FNV-1a over the payload — a build identity, not a checksum.
+
+    Stamped into the header so the firmware can tell "the embedded game
+    changed" from "the user edited their copy", and overwrite only in the
+    first case. Without it the choice is rewriting 900 KB on every boot or
+    never updating at all.
+    """
+    h = 2166136261
+    for b in data:
+        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+    return h
 
 
 def write_header(path: str, name: str, data: bytes, meta_lines: list[str]) -> None:
@@ -50,6 +67,7 @@ def write_header(path: str, name: str, data: bytes, meta_lines: list[str]) -> No
         "#include <stdint.h>",
         "",
         f"static const size_t {name}_len = {len(data)}u;",
+        f"static const uint32_t {name}_id = 0x{fnv1a(data):08x}u;",
         f"static const uint8_t {name}[] PROGMEM = {{",
     ]
     for i in range(0, len(data), 16):

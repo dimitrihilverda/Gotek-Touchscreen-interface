@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.16.0"
+#define FW_VERSION "v0.16.1"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.026"
+#define FW_INTERNAL "release.027"
 
 using std::vector;
 using std::sort;
@@ -1546,10 +1546,39 @@ static bool _amicrushWriteProgmemFile(const char *path,
   return true;
 }
 
+// Build identity of the AmiCrush currently on the card, as last written by
+// this firmware. Absent on cards written by an older build.
+#define AMICRUSH_STAMP "/ADF/AmiCrush/.build"
+
+static uint32_t _amicrushInstalledId() {
+  File f = SD_MMC.open(AMICRUSH_STAMP, "r");
+  if (!f) return 0;
+  String s = f.readStringUntil('\n');
+  f.close();
+  return (uint32_t)strtoul(s.c_str(), nullptr, 16);
+}
+
+static void _amicrushWriteStamp() {
+  File f = SD_MMC.open(AMICRUSH_STAMP, "w");
+  if (!f) return;
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%08lx", (unsigned long)amicrush_adf_id);
+  f.println(buf);
+  f.close();
+}
+
 void ensureAmiCrushInstalled() {
-  bool needADF = !_amicrushHasValidFile("/ADF/AmiCrush/AmiCrush.adf", 100 * 1024);
-  bool needJPG = !_amicrushHasValidFile("/ADF/AmiCrush/AmiCrush.jpg", 1024);
-  bool needNFO = !SD_MMC.exists("/ADF/AmiCrush/AmiCrush.nfo");
+  // Refresh when the EMBEDDED game changed, not merely because a file exists.
+  //
+  // Flashing new firmware that carries a newer AmiCrush should put that build
+  // on the card — otherwise the sample game silently stays at whatever version
+  // first landed there. Keying on a content hash rather than a timestamp means
+  // this fires exactly once per new build: no 900 KB rewrite on every boot,
+  // and a card that already has the current build is left alone.
+  const bool stale   = (_amicrushInstalledId() != amicrush_adf_id);
+  bool needADF = stale || !_amicrushHasValidFile("/ADF/AmiCrush/AmiCrush.adf", 100 * 1024);
+  bool needJPG = stale || !_amicrushHasValidFile("/ADF/AmiCrush/AmiCrush.jpg", 1024);
+  bool needNFO = stale || !SD_MMC.exists("/ADF/AmiCrush/AmiCrush.nfo");
   if (!needADF && !needJPG && !needNFO) return;
 
   if (!SD_MMC.exists("/ADF")) SD_MMC.mkdir("/ADF");
@@ -1603,6 +1632,10 @@ void ensureAmiCrushInstalled() {
       sdLog("AmiCrush: NFO write FAILED");
     }
   }
+
+  // Record what we just wrote, so the next boot recognises it as current and
+  // leaves the card alone.
+  _amicrushWriteStamp();
 }
 
 // ============================================================================
