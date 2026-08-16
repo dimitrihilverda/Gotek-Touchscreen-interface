@@ -28,3 +28,7 @@ theme_preview.html
 
 # Host-side test binaries (tools/test/run.sh rebuilds them)
 tools/test/*.exe
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc
