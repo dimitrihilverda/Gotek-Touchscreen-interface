@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.16.2"
+#define FW_VERSION "v0.16.3"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.028"
+#define FW_INTERNAL "release.029"
 
 using std::vector;
 using std::sort;
@@ -3650,15 +3650,36 @@ void davStartCoverPrecache() {
 void davPrecacheOneCover() {
   // Serve queued web-UI requests first — someone is looking at those right
   // now, whereas the viewport sweep below is speculative.
+  // Each fetch opens a TLS connection, and the handshake is the expensive
+  // part — a session log showed all-time minimum free heap touching 2 KB
+  // while these ran back to back. Skip a tick when headroom is thin rather
+  // than adding another connection on top; covers are cosmetic and the
+  // browser will ask again.
+  if (ESP.getFreeHeap() < 40 * 1024) return;
+
   String queued;
   if (davDequeueCoverFetch(queued)) {
     size_t maxCover = 100 * 1024;
     uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
     if (buf) {
       BacklightDip _dip;
+      // Try the requested extension, then the other one. Resolving this on
+      // the device rather than letting the browser retry halves the number of
+      // connections: the browser used to request .jpg, get a 404, and fire a
+      // second request for .png that was queued and always failed.
       long bytes = davClient.streamToBuffer(queued, buf, maxCover);
+      String savedAs = queued;
+      if (bytes <= 0 || davClient.lastTruncated()) {
+        String alt = queued;
+        if (alt.endsWith(".jpg"))      alt = alt.substring(0, alt.length() - 4) + ".png";
+        else if (alt.endsWith(".png")) alt = alt.substring(0, alt.length() - 4) + ".jpg";
+        if (alt != queued) {
+          bytes = davClient.streamToBuffer(alt, buf, maxCover);
+          savedAs = alt;
+        }
+      }
       if (bytes > 0 && !davClient.lastTruncated()) {
-        davSaveCachedCover(queued, buf, bytes);
+        davSaveCachedCover(savedAs, buf, bytes);
       } else {
         // Remember the failure, or the browser will ask again on every render.
         String missPath = davCoverCachePath(queued) + ".miss";

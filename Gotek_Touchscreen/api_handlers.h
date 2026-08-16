@@ -1821,7 +1821,24 @@ void handleDAVCover(WiFiClient &client, const String &queryPath) {
   // the file to the socket; no ps_malloc, no 150 KB copy, no double buffer.
   // Also sets ETag + immutable so a warmed browser cache serves subsequent
   // requests without ever hitting us.
+  // Resolve the extension here rather than making the browser retry. A cover
+  // may be stored as either .jpg or .png; the browser asking for one, getting
+  // a 404 and firing a second request for the other doubled the number of
+  // requests AND the number of queued fetches, and the second one always
+  // failed.
   String cachePath = davCoverCachePath(queryPath);
+  if (!SD_MMC.exists(cachePath.c_str())) {
+    String altQuery = queryPath;
+    if (altQuery.endsWith(".jpg"))      altQuery = altQuery.substring(0, altQuery.length() - 4) + ".png";
+    else if (altQuery.endsWith(".png")) altQuery = altQuery.substring(0, altQuery.length() - 4) + ".jpg";
+    if (altQuery != queryPath) {
+      String altCache = davCoverCachePath(altQuery);
+      if (SD_MMC.exists(altCache.c_str())) {
+        cachePath = altCache;
+        ct = altQuery.endsWith(".png") ? "image/png" : "image/jpeg";
+      }
+    }
+  }
   if (SD_MMC.exists(cachePath.c_str())) {
     File f = SD_MMC.open(cachePath.c_str(), "r");
     if (f) {

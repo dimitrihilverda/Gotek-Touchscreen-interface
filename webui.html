@@ -1934,12 +1934,11 @@ function davRenderGameList(folders) {
   // Cover fallback, also delegated: try .png once, then show a placeholder.
   // The device answers 404 for a cover it has not fetched yet and queues it,
   // so a later render picks it up.
+  // One request per cover, not two. The device resolves .jpg vs .png itself
+  // now — the browser retrying the other extension doubled both the requests
+  // and the queued fetches behind them, and the retry always failed.
   list.querySelectorAll('img.game-cover[data-fallback]').forEach(img => {
     img.addEventListener('error', function onErr() {
-      if (this.src.endsWith('.jpg')) {
-        this.src = this.src.replace(/\.jpg$/, '.png');
-        return;
-      }
       this.removeEventListener('error', onErr);
       const ph = document.createElement('div');
       ph.className = 'game-cover empty';
@@ -2046,13 +2045,9 @@ async function davOpenFolder(folderPath, folderName) {
   let coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(folderPath + '/' + folderName + '.jpg');
   coverImg.src = coverUrl;
   coverImg.style.display = 'block';
-  coverImg.onerror = function() {
-    if (this.src.endsWith('.jpg')) {
-      this.src = this.src.replace(/\.jpg$/, '.png');
-    } else {
-      this.style.display = 'none';
-    }
-  };
+  // No .png retry: the device resolves the extension itself, so a 404 here
+  // genuinely means there is no cover yet.
+  coverImg.onerror = function() { this.style.display = 'none'; };
 
   // Auto-connect if needed (user clicked game from cache while disconnected)
   if (!davConnected) {
