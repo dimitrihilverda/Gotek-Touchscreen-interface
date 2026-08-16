@@ -315,7 +315,11 @@ void handleDiskLoad(WiFiClient &client, const String &mode, const String &name, 
 // ============================================================================
 
 void handleDiskUnload(WiFiClient &client) {
-  if (loaded_disk_index < 0) {
+  // nowPlaying, not loaded_disk_index. A WebDAV-loaded disk sets that index to
+  // the -2 sentinel because it has no entry in file_list, so `< 0` was true
+  // for every DAV game and eject from the web UI silently reported success
+  // while doing nothing at all.
+  if (nowPlaying.source == NP_NONE) {
     sendJSON(client, 200, "{\"status\":\"ok\",\"message\":\"No disk loaded\"}");
     return;
   }

@@ -2011,9 +2011,28 @@ function npStartPolling() {
 }
 document.addEventListener('DOMContentLoaded', npStartPolling);
 
+// Bumped on every open. An in-flight listing compares against the value it
+// captured and abandons its results if another game has been opened since —
+// otherwise a slow or failed fetch leaves the PREVIOUS game's disks, cover and
+// NFO on screen under the new game's title, and inserting from that dropdown
+// mounts the wrong disk.
+let davDetailToken = 0;
+
 async function davOpenFolder(folderPath, folderName) {
+  const myToken = ++davDetailToken;
+
   document.getElementById('dav-modal-title').textContent = folderName;
   document.getElementById('dav-modal-load-status').textContent = '';
+
+  // Wipe the previous game out before anything can be awaited. Leaving it up
+  // as a "loading state" is what made stale disks look like real ones.
+  const diskSelEl = document.getElementById('dav-modal-disk-select');
+  diskSelEl.innerHTML = '<option value="-1">Loading…</option>';
+  diskSelEl.disabled = true;
+  document.getElementById('dav-modal-load-btn').disabled = true;
+  document.getElementById('dav-modal-disks').innerHTML =
+    '<p style="color:#888;font-size:13px">Reading folder…</p>';
+  document.getElementById('dav-modal-nfo').innerHTML = '';
 
   // Show modal immediately with loading state
   const modal = document.getElementById('modal-dav-detail');
@@ -2047,18 +2066,28 @@ async function davOpenFolder(folderPath, folderName) {
   // PROPFIND the folder to find disk files and NFO
   try {
     const data = await api('/api/dav/list?path=' + encodeURIComponent(folderPath));
+    if (myToken !== davDetailToken) return;   // a newer open won; drop these results
     davShowDebug(data);
     const entries = data.entries || [];
     const diskExts = ['ADF','DSK','ADZ','IMG'];
     const disks = entries.filter(e => !e.dir && diskExts.includes(e.name.split('.').pop().toUpperCase()));
     disks.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Disk selector
+    // Disk selector. Numbered only for a multi-disk set — on a single-disk
+    // game "Disk 1 of 1" is noise, but on a four-disk game knowing which one
+    // you are about to insert is the whole point.
+    const multi = disks.length > 1;
     const diskSel = document.getElementById('dav-modal-disk-select');
     diskSel.innerHTML = disks.map((d, i) => {
-      let sizeStr = d.size > 1048576 ? (d.size/1048576).toFixed(1)+' MB' : (d.size/1024).toFixed(0)+' KB';
-      return '<option value="' + i + '">' + esc(d.name) + ' (' + sizeStr + ')</option>';
+      const sizeStr = d.size > 1048576 ? (d.size/1048576).toFixed(1)+' MB' : (d.size/1024).toFixed(0)+' KB';
+      const prefix = multi ? ('Disk ' + (i + 1) + ' of ' + disks.length + ' — ') : '';
+      return '<option value="' + i + '">' + prefix + esc(d.name) + ' (' + sizeStr + ')</option>';
     }).join('');
+    diskSel.disabled = (disks.length === 0);
+    document.getElementById('dav-modal-load-btn').disabled = (disks.length === 0);
+    if (disks.length === 0) {
+      diskSel.innerHTML = '<option value="-1">No disk images in this folder</option>';
+    }
 
     // Disk file list
     const disksEl = document.getElementById('dav-modal-disks');
@@ -2077,6 +2106,7 @@ async function davOpenFolder(folderPath, folderName) {
     if (nfoFile) {
       try {
         const nfoData = await api('/api/dav/nfo?path=' + encodeURIComponent(folderPath + '/' + nfoFile.name));
+        if (myToken !== davDetailToken) return;   // superseded while fetching
         // The endpoint returns {"nfo": "..."}. This read .content, so DAV
         // notes were silently blank in the web UI no matter what the file said.
         nfoEl.innerHTML = '<label>NFO / Description</label><pre style="font-size:12px;background:var(--light);padding:8px;border:1px inset #999;border-radius:2px;max-height:150px;overflow:auto;white-space:pre-wrap">' + esc(nfoData.nfo || '') + '</pre>';
@@ -2090,8 +2120,15 @@ async function davOpenFolder(folderPath, folderName) {
     // Check if currently playing
     const isPlaying = davLoadedFile && davLoadedFile.startsWith(folderPath + '/');
     if (isPlaying) {
-      let loadedName = davLoadedFile.split('/').pop();
-      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>Playing: ' + esc(loadedName) + '</span>';
+      const loadedName = davLoadedFile.split('/').pop();
+      const at = disks.findIndex(d => d.name === loadedName);
+      // Which disk, not just that something is playing — the point of asking
+      // is to know where you are in a multi-disk set.
+      const which = (multi && at >= 0) ? ('Disk ' + (at + 1) + ' of ' + disks.length + ': ') : '';
+      document.getElementById('dav-modal-load-status').innerHTML =
+        '<span style="color:var(--green)"><span class="active-indicator"></span>Playing ' +
+        which + esc(loadedName) + '</span>';
+      if (at >= 0) diskSel.value = String(at);   // preselect what is mounted
     }
 
     // Load button handler
@@ -2115,9 +2152,16 @@ async function davOpenFolder(folderPath, folderName) {
         davLoadedFile = remotePath;
         this.textContent = 'Insert';
         this.disabled = false;
-        document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>Playing: ' + esc(disk.name) + '</span>';
-        let loadMsg = rdata.name + ' loading...';
-        if (rdata.bytes) loadMsg = rdata.name + ' loaded! (' + (rdata.bytes / 1024).toFixed(0) + ' KB)';
+        const which = multi ? ('Disk ' + (idx + 1) + ' of ' + disks.length + ': ') : '';
+        document.getElementById('dav-modal-load-status').innerHTML =
+          '<span style="color:var(--green)"><span class="active-indicator"></span>Playing ' +
+          which + esc(disk.name) + '</span>';
+        let loadMsg = (multi ? ('Disk ' + (idx + 1) + '/' + disks.length + ' — ') : '') +
+                      rdata.name + ' loading...';
+        if (rdata.bytes) {
+          loadMsg = (multi ? ('Disk ' + (idx + 1) + '/' + disks.length + ' — ') : '') +
+                    rdata.name + ' loaded! (' + (rdata.bytes / 1024).toFixed(0) + ' KB)';
+        }
         toast(loadMsg);
       } catch(e) {
         this.textContent = 'Insert';

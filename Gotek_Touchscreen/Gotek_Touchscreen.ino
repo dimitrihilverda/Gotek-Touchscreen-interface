@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.16.1"
+#define FW_VERSION "v0.16.2"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.027"
+#define FW_INTERNAL "release.028"
 
 using std::vector;
 using std::sort;
@@ -5232,6 +5232,22 @@ size_t loadFileToRam(int index) {
   String okMsg = "OK! " + String(totalRead / 1024) + " KB";
   gfx_setCursor((gW - gfx_textWidth(okMsg)) / 2, 200);
   gfx_print(okMsg);
+
+  // Which disk of the set just went in. Only shown for a multi-disk game —
+  // on a single-disk title "Disk 1 of 1" is noise, but mid-set it is the one
+  // thing worth confirming.
+  if (disk_set.size() > 1) {
+    int which = -1;
+    for (int i = 0; i < (int)disk_set.size(); i++) {
+      if (disk_set[i] == index) { which = i; break; }
+    }
+    if (which >= 0) {
+      String dmsg = "Disk " + String(which + 1) + " of " + String((int)disk_set.size());
+      gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+      gfx_setCursor((gW - gfx_textWidth(dmsg)) / 2, 224);
+      gfx_print(dmsg);
+    }
+  }
   gfx_flush();
   delay(500);
 
@@ -5610,6 +5626,24 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   String okMsg = "OK! " + String(totalRead / 1024) + " KB";
   gfx_setCursor((gW - gfx_textWidth(okMsg)) / 2, 200);
   gfx_print(okMsg);
+
+  // Same as the SD path: name the disk within its set, but only when the
+  // folder actually holds more than one.
+  if (dav_detail_disks.size() > 1) {
+    String justLoaded = remotePath;
+    int sl = justLoaded.lastIndexOf('/');
+    if (sl >= 0) justLoaded = justLoaded.substring(sl + 1);
+    int which = -1;
+    for (int i = 0; i < (int)dav_detail_disks.size(); i++) {
+      if (dav_detail_disks[i] == justLoaded) { which = i; break; }
+    }
+    if (which >= 0) {
+      String dmsg = "Disk " + String(which + 1) + " of " + String((int)dav_detail_disks.size());
+      gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+      gfx_setCursor((gW - gfx_textWidth(dmsg)) / 2, 224);
+      gfx_print(dmsg);
+    }
+  }
   gfx_flush();
   delay(500);
 
