@@ -164,6 +164,16 @@ textarea{min-height:80px;resize:vertical}
                         this.value === '0' ? 'Off' : this.value + '%'">
         <span id="cfg-wallpaper-val" style="font-size:13px;color:#555;min-width:40px">20%</span>
       </div>
+      <label>Diagnostic logging</label>
+      <select name="LOG_ENABLED" id="cfg-log-enabled">
+        <option value="0">Off</option>
+        <option value="1">Write /LOG.TXT on the SD card</option>
+      </select>
+      <p style="font-size:12px;color:#555;margin:4px 0 8px">
+        Records boot steps, WebDAV transfers, heap and stack. Turn this on
+        before reproducing a problem, then read it on the Log tab.
+      </p>
+
       <p style="font-size:12px;color:#555;margin:4px 0 0">
         Shows the loaded game's cover behind the game list, dimmed and cropped to
         fill the screen. 0 turns it off. Above about 30% the artwork starts
@@ -524,6 +534,13 @@ textarea{min-height:80px;resize:vertical}
     <div style="font-size:36px;margin-bottom:6px">&#128225;</div>
     <h3 style="margin:0 0 6px">Loading WebDAV&hellip;</h3>
     <div id="dav-busy-msg" style="color:#666;font-size:13px;line-height:1.4"></div>
+    <div style="margin-top:12px">
+      <button class="btn" id="dav-busy-cancel">Cancel</button>
+    </div>
+    <div style="font-size:11px;color:#888;margin-top:6px">
+      Cancelling stops the browser waiting. The device finishes the request it
+      already started.
+    </div>
   </div>
 </div>
 
@@ -600,6 +617,11 @@ const debouncedFilterGames    = debounce(() => filterGames(), 250);
 const debouncedDavFilterGames = debounce(() => davFilterGames(), 250);
 
 let davBusyDepth = 0;
+// Bumped by Cancel. In-flight awaits compare against the value they captured
+// and bail if it moved — the device cannot be interrupted mid-request, but the
+// browser does not have to keep waiting for it.
+let davBusyGeneration = 0;
+
 function davShowBusy(msg) {
   davBusyDepth++;
   document.getElementById('dav-busy-msg').textContent =
@@ -612,6 +634,20 @@ function davHideBusy() {
     document.getElementById('dav-busy-overlay').classList.remove('show');
   }
 }
+function davCancelBusy() {
+  davBusyGeneration++;
+  davBusyDepth = 0;
+  document.getElementById('dav-busy-overlay').classList.remove('show');
+  toast('Cancelled — the device may still be finishing the current request');
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('dav-busy-cancel');
+  if (btn) btn.addEventListener('click', davCancelBusy);
+  // Escape is the reflex for a stuck modal; honour it.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && davBusyDepth > 0) davCancelBusy();
+  });
+});
 
 // ═══════════════ DASHBOARD ═══════════════
 
@@ -685,6 +721,8 @@ async function loadConfig() {
              ? 20 : parseInt(cfg.WALLPAPER_PCT);
   document.getElementById('cfg-wallpaper').value = wp;
   document.getElementById('cfg-wallpaper-val').textContent = wp === 0 ? 'Off' : wp + '%';
+  document.getElementById('cfg-log-enabled').value =
+    (cfg.LOG_ENABLED === '1' || cfg.LOG_ENABLED === 1 || cfg.LOG_ENABLED === true) ? '1' : '0';
 
   // Load themes for dropdown
   const themes = await api('/api/themes/list');
@@ -1870,15 +1908,19 @@ function davRenderGameList(folders) {
     return;
   }
 
+  // The folder name goes in a data- attribute, never interpolated into an
+  // inline onclick. It used to be, and any title containing an apostrophe —
+  // "Boppin'", "Pirates of Darkwater" — was unopenable: esc() turns ' into
+  // &#39;, the HTML parser turns that back into ' before the JS is parsed,
+  // and the string terminates early. The handler is delegated instead, so
+  // the name never passes through a JavaScript parser at all.
   list.innerHTML = folders.map(f => {
-    let fullPath = davCurrentPath.endsWith('/') ? davCurrentPath + f.name : davCurrentPath + '/' + f.name;
-    let coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + f.name + '.jpg');
-    let isPlaying = davLoadedFile && davLoadedFile.startsWith(fullPath + '/');
-    return '<div class="game-item' + (isPlaying ? ' active' : '') + '" onclick="davOpenFolder(\'' + fullPath.replace(/'/g, "\\'") + '\',\'' + esc(f.name).replace(/'/g, "\\'") + '\')">' +
-      '<img class="game-cover" src="' + coverUrl + '" loading="lazy" onerror="' +
-        'if(this.src.endsWith(\'.jpg\')){this.src=this.src.replace(/\\.jpg$/,\'.png\')}' +
-        'else{this.outerHTML=\'<div class=&quot;game-cover empty&quot;>No Art</div>\'}' +
-      '">' +
+    const fullPath = davCurrentPath.endsWith('/') ? davCurrentPath + f.name : davCurrentPath + '/' + f.name;
+    const coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + f.name + '.jpg');
+    const isPlaying = davLoadedFile && davLoadedFile.startsWith(fullPath + '/');
+    return '<div class="game-item' + (isPlaying ? ' active' : '') + '"' +
+      ' data-path="' + esc(fullPath) + '" data-name="' + esc(f.name) + '">' +
+      '<img class="game-cover" src="' + coverUrl + '" loading="lazy" data-fallback="1">' +
       '<div class="game-info">' +
         '<div class="game-name">' + (isPlaying ? '<span class="active-indicator"></span>' : '') + esc(f.name) + '</div>' +
         '<div class="game-meta">' +
@@ -1888,7 +1930,37 @@ function davRenderGameList(folders) {
       '</div>' +
       '</div>';
   }).join('');
+
+  // Cover fallback, also delegated: try .png once, then show a placeholder.
+  // The device answers 404 for a cover it has not fetched yet and queues it,
+  // so a later render picks it up.
+  list.querySelectorAll('img.game-cover[data-fallback]').forEach(img => {
+    img.addEventListener('error', function onErr() {
+      if (this.src.endsWith('.jpg')) {
+        this.src = this.src.replace(/\.jpg$/, '.png');
+        return;
+      }
+      this.removeEventListener('error', onErr);
+      const ph = document.createElement('div');
+      ph.className = 'game-cover empty';
+      ph.textContent = 'No Art';
+      this.replaceWith(ph);
+    });
+  });
 }
+
+// One delegated listener for the whole DAV list, attached once. Row markup
+// carries data-path / data-name, so a title with quotes or apostrophes in it
+// is just attribute text and never reaches a JavaScript parser.
+document.addEventListener('DOMContentLoaded', () => {
+  const list = document.getElementById('dav-list');
+  if (!list) return;
+  list.addEventListener('click', (e) => {
+    const row = e.target.closest('.game-item[data-path]');
+    if (!row) return;
+    davOpenFolder(row.dataset.path, row.dataset.name);
+  });
+});
 
 // Open a DAV folder as a game detail modal (like SD game detail)
 async function davEnsureConnected() {
@@ -1909,6 +1981,36 @@ async function davEnsureConnected() {
   }
 }
 
+// Poll the device so NOW PLAYING follows what happens on the touchscreen.
+// Without this the web UI only noticed a disk change on a tab switch or a
+// full page reload, which made the two look like separate devices.
+let npPollTimer = null;
+let npLastSignature = '';
+
+async function npPoll() {
+  try {
+    const s = await api('/api/disk/status');
+    const sig = (s.source || '') + '|' + (s.name || '') + '|' + (s.np_path || '');
+    if (sig !== npLastSignature) {
+      npLastSignature = sig;
+      // Refresh whichever list is on screen so the PLAYING badge moves with it.
+      const games = document.getElementById('view-games');
+      const dav   = document.getElementById('view-webdav');
+      if (games && !games.classList.contains('hidden')) loadGames();
+      else if (dav && !dav.classList.contains('hidden') && davAllEntries.length) davFilterGames();
+    }
+  } catch (e) { /* device busy or rebooting — try again next tick */ }
+}
+
+function npStartPolling() {
+  if (npPollTimer) return;
+  // 4 s: fast enough that inserting a disk on the panel shows up while you are
+  // still looking at the browser, slow enough not to add to the request load
+  // that was freezing the device in the first place.
+  npPollTimer = setInterval(npPoll, 4000);
+}
+document.addEventListener('DOMContentLoaded', npStartPolling);
+
 async function davOpenFolder(folderPath, folderName) {
   document.getElementById('dav-modal-title').textContent = folderName;
   document.getElementById('dav-modal-load-status').textContent = '';
@@ -1916,7 +2018,9 @@ async function davOpenFolder(folderPath, folderName) {
   // Show modal immediately with loading state
   const modal = document.getElementById('modal-dav-detail');
   modal.classList.add('show');
-  davShowBusy('Opening &laquo;' + folderName + '&raquo;…');
+  // Real characters, not HTML entities: this goes through textContent, which
+  // does not decode them — the overlay literally read "Opening &laquo;...".
+  davShowBusy('Opening “' + folderName + '”…');
 
   // Cover
   const coverImg = document.getElementById('dav-modal-cover');

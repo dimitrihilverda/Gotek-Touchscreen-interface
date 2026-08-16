@@ -34,6 +34,9 @@ extern Screen current_screen;
 extern void loadConfig();
 extern void saveConfig();
 extern void scanThemes();
+// Defer a cover fetch to the idle pump. Request handlers must never do
+// network I/O themselves — they run on the loop task.
+extern void davQueueCoverFetch(const String &davPath);
 extern vector<String> listImages();
 extern void buildDisplayNames(const vector<String> &files);
 extern void sortByDisplay();

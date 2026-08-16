@@ -26,6 +26,8 @@ public:
   void feed(const std::string &d) { data = d; pos = 0; open = true; }
 
   virtual bool connect(const char *, uint16_t) { return true; }
+  // Overload with an explicit connect timeout, matching arduino-esp32.
+  virtual bool connect(const char *, uint16_t, int32_t) { return true; }
   virtual void setTimeout(unsigned long) {}
   void stop() { open = false; }
 

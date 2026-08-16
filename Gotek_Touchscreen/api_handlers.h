@@ -234,6 +234,15 @@ void handleDiskStatus(WiFiClient &client) {
     json += "\"disk_total\":0,";
   }
 
+  // nowPlaying is the authority on what is actually mounted, and unlike
+  // loaded_disk_index it covers WebDAV too (which uses a -2 sentinel there).
+  // The web UI polls these three fields to keep its NOW PLAYING in step with
+  // the touchscreen instead of only noticing on a reload.
+  const char *srcName = (nowPlaying.source == NP_SD)  ? "SD"
+                      : (nowPlaying.source == NP_DAV) ? "DAV" : "";
+  json += "\"source\":\"" + String(srcName) + "\",";
+  json += "\"name\":\"" + jsonEscape(nowPlaying.name) + "\",";
+  json += "\"np_path\":\"" + jsonEscape(nowPlaying.path) + "\",";
   json += "\"mode\":\"" + String(g_mode == MODE_ADF ? "ADF" : "DSK") + "\"";
   json += "}";
 
@@ -372,6 +381,7 @@ void handleConfigGet(WiFiClient &client) {
   json += "\"LASTMODE\":\"" + jsonEscape(cfg_lastmode) + "\",";
   json += "\"THEME\":\"" + jsonEscape(cfg_theme) + "\",";
   json += "\"WALLPAPER_PCT\":\"" + String(cfg_wallpaper_pct) + "\",";
+  json += "\"LOG_ENABLED\":\"" + String(cfg_log_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_ENABLED\":\"" + String(cfg_wifi_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_SSID\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
   json += "\"WIFI_PASS\":\"" + jsonEscape(cfg_wifi_pass) + "\",";
@@ -1847,41 +1857,28 @@ void handleDAVCover(WiFiClient &client, const String &queryPath) {
     return;
   }
 
-  // Slow path — not yet cached. Download to a PSRAM buffer, save to SD,
-  // then stream. Only happens once per new cover.
-  size_t maxCover = 150 * 1024;
-  uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
-  if (!buf) {
-    sendJSON(client, 500, "{\"error\":\"Out of PSRAM\"}");
-    return;
-  }
-  long bytes = davClient.streamToBuffer(queryPath, buf, maxCover);
-  if (bytes <= 0) {
-    // Write a miss marker so subsequent web requests short-circuit here too.
-    if (!SD_MMC.exists(DAV_COVER_DIR)) SD_MMC.mkdir(DAV_COVER_DIR);
-    File m = SD_MMC.open((cachePath + ".miss").c_str(), "w");
-    if (m) m.close();
-    free(buf);
-    sendJSON(client, 404, "{\"error\":\"Cover not found\"}");
-    return;
-  }
-  davSaveCachedCover(queryPath, buf, bytes);
-
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: " + ct);
-  client.println("Content-Length: " + String((uint32_t)bytes));
-  client.println("Cache-Control: max-age=604800, immutable");
+  // Not cached. Hand it to the background fetcher and answer NOW.
+  //
+  // This used to download it here — a TLS handshake plus transfer inside the
+  // request handler, on the loop task. Opening a letter in the web UI renders
+  // dozens of <img> tags at once, so that was dozens of sequential network
+  // round trips with the touchscreen, the USB service and every other request
+  // frozen behind them. A log from a real session showed a single one of these
+  // blocking for 362 seconds, and an ADF download timing out at 374 KB of 880
+  // because it was competing with the flood.
+  //
+  // The browser gets a 404 now and shows its "No Art" placeholder; the cover
+  // appears on the next render once the idle pump has fetched it. Nothing in
+  // a request handler is allowed to touch the network.
+  davQueueCoverFetch(queryPath);
+  client.println("HTTP/1.1 404 Not Found");
+  client.println("Content-Type: application/json");
+  // Briefly cacheable: the browser should retry soon (the fetch is queued),
+  // but not on every single scroll.
+  client.println("Cache-Control: max-age=30");
   client.println("Connection: close");
   client.println();
-  size_t sent = 0;
-  while (sent < (size_t)bytes) {
-    size_t chunk = bytes - sent;
-    if (chunk > 4096) chunk = 4096;
-    client.write(&buf[sent], chunk);
-    sent += chunk;
-    yield();
-  }
-  free(buf);
+  client.println("{\"error\":\"Cover queued\",\"queued\":true}");
 }
 
 // ============================================================================

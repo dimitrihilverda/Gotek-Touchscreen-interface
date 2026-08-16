@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.15.2"
+#define FW_VERSION "v0.16.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.025"
+#define FW_INTERNAL "release.026"
 
 using std::vector;
 using std::sort;
@@ -503,6 +503,11 @@ String remote_dongle_file = "";    // currently loaded file on dongle
 
 // Theme system
 String theme_path = "/THEMES/DEFAULT";  // resolved path to active theme
+
+// Where the disk currently being loaded is coming from. Only affects the
+// label on the loading screen; set right before drawThemedLoadingScreen.
+enum LoadSource { LOADSRC_SD = 0, LOADSRC_DAV = 1, LOADSRC_FTP = 2 };
+LoadSource g_loadSource = LOADSRC_SD;
 vector<String> theme_list;              // available theme names
 
 // RAM disk variables
@@ -2237,11 +2242,17 @@ void drawThemedLoadingScreen(const String &filename) {
   gfx_setCursor((gW - fnW) / 2, 80);
   gfx_print(filename);
 
-  // Reading indicator
+  // Reading indicator — names the SOURCE, because "reading disk" told the
+  // user nothing about why a load was instant or slow. A WebDAV pull can take
+  // half a minute where an SD read is immediate, and that difference is worth
+  // showing rather than leaving them wondering if it has hung.
   gfx_setTextColor(WB_ORANGE, TFT_BLACK);
   gfx_setTextSize(2);
-  gfx_setCursor((gW - gfx_textWidth("[ READING DISK ]")) / 2, 110);
-  gfx_print("[ READING DISK ]");
+  String srcLabel = "[ READING FROM SD ]";
+  if (g_loadSource == LOADSRC_DAV)      srcLabel = "[ LOADING FROM WEBDAV ]";
+  else if (g_loadSource == LOADSRC_FTP) srcLabel = "[ LOADING FROM FTP ]";
+  gfx_setCursor((gW - gfx_textWidth(srcLabel)) / 2, 110);
+  gfx_print(srcLabel);
 
   // Progress bar frame (Amiga 3D bevel)
   int barX = 40, barY = 160, barW = gW - 80, barH = 26;
@@ -3549,6 +3560,44 @@ void davSaveCachedDir(const String &davFolderPath, const DAVEntryList &entries) 
 // short look-ahead, and stops. Scrolling re-targets it automatically, so the
 // covers under your thumb are always the ones being fetched.
 
+// ── Cover fetch queue (requests deferred out of the HTTP handler) ──────
+//
+// The web UI renders one <img> per row, so opening a letter asks the device
+// for dozens of covers at once. Fetching those inside the request handler
+// meant a TLS handshake plus a download PER REQUEST on the loop task — and
+// the loop task is the touchscreen, the USB service and everything else. A
+// grid render could hold it for minutes, which is what "the touchscreen stops
+// responding" and "the ADF download times out half way" both were.
+//
+// The handler now answers from the SD cache or 404s immediately, and drops the
+// path here. The idle pump fetches it later, when nothing is waiting, and the
+// browser picks it up on the next render. Bounded and oldest-dropped: a
+// runaway grid must never grow this without limit.
+#define DAV_COVER_QUEUE 24
+static String g_coverQueue[DAV_COVER_QUEUE];
+static int    g_coverQHead = 0, g_coverQCount = 0;
+
+void davQueueCoverFetch(const String &davPath) {
+  if (davPath.length() == 0) return;
+  for (int i = 0; i < g_coverQCount; i++) {          // already waiting?
+    if (g_coverQueue[(g_coverQHead + i) % DAV_COVER_QUEUE] == davPath) return;
+  }
+  if (g_coverQCount == DAV_COVER_QUEUE) {            // full — drop the oldest
+    g_coverQHead = (g_coverQHead + 1) % DAV_COVER_QUEUE;
+    g_coverQCount--;
+  }
+  g_coverQueue[(g_coverQHead + g_coverQCount) % DAV_COVER_QUEUE] = davPath;
+  g_coverQCount++;
+}
+
+static bool davDequeueCoverFetch(String &out) {
+  if (g_coverQCount == 0) return false;
+  out = g_coverQueue[g_coverQHead];
+  g_coverQHead = (g_coverQHead + 1) % DAV_COVER_QUEUE;
+  g_coverQCount--;
+  return true;
+}
+
 int  dav_cover_precache_idx = -1;    // index being fetched, -1 = idle
 bool dav_cover_precache_active = false;
 int  dav_precache_anchor = -1;       // scroll offset the current window was built for
@@ -3566,6 +3615,29 @@ void davStartCoverPrecache() {
 
 // Call once per loop() iteration when idle (no touch, nothing else pending).
 void davPrecacheOneCover() {
+  // Serve queued web-UI requests first — someone is looking at those right
+  // now, whereas the viewport sweep below is speculative.
+  String queued;
+  if (davDequeueCoverFetch(queued)) {
+    size_t maxCover = 100 * 1024;
+    uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
+    if (buf) {
+      BacklightDip _dip;
+      long bytes = davClient.streamToBuffer(queued, buf, maxCover);
+      if (bytes > 0 && !davClient.lastTruncated()) {
+        davSaveCachedCover(queued, buf, bytes);
+      } else {
+        // Remember the failure, or the browser will ask again on every render.
+        String missPath = davCoverCachePath(queued) + ".miss";
+        if (!SD_MMC.exists(DAV_COVER_DIR)) SD_MMC.mkdir(DAV_COVER_DIR);
+        File m = SD_MMC.open(missPath.c_str(), "w");
+        if (m) m.close();
+      }
+      free(buf);
+    }
+    return;   // one network operation per idle tick, no more
+  }
+
   if (!dav_cover_precache_active) return;
   if (dav_entries.empty()) { dav_cover_precache_active = false; return; }
 
@@ -5065,6 +5137,7 @@ size_t loadFileToRam(int index) {
   String filepath = file_list[index];
 
   // Show themed loading UI
+  g_loadSource = LOADSRC_SD;
   drawThemedLoadingScreen(basenameNoExt(filenameOnly(file_list[index])));
 
   // Rebuild FAT volume (empty)
@@ -5440,6 +5513,7 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   BacklightDip _dip;
 
   // Show themed loading UI
+  g_loadSource = LOADSRC_DAV;
   drawThemedLoadingScreen(displayName);
 
   // Rebuild FAT volume (empty)

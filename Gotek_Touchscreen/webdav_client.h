@@ -209,7 +209,11 @@ public:
       tcp->setTimeout(15000);
     }
 
-    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
+    // Explicit connect timeout. setTimeout() only bounds READS — the TCP
+    // connect and TLS handshake had no limit at all, and a session log showed
+    // one of these blocking for 362 seconds with the whole loop task, and so
+    // the touchscreen, stuck behind it.
+    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port, 10000)) {
       _lastError = "TCP connect failed to " + cfg_dav_host + ":" + String(cfg_dav_port);
       _log("DAV: " + _lastError);
       delete tcp;
@@ -335,7 +339,11 @@ public:
       tcp->setTimeout(30000);
     }
 
-    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
+    // Explicit connect timeout. setTimeout() only bounds READS — the TCP
+    // connect and TLS handshake had no limit at all, and a session log showed
+    // one of these blocking for 362 seconds with the whole loop task, and so
+    // the touchscreen, stuck behind it.
+    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port, 10000)) {
       _lastError = "TCP connect failed for download";
       _log("DAV: " + _lastError);
       delete tcp;
@@ -428,7 +436,11 @@ public:
       tcp->setTimeout(30000);
     }
 
-    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port)) {
+    // Explicit connect timeout. setTimeout() only bounds READS — the TCP
+    // connect and TLS handshake had no limit at all, and a session log showed
+    // one of these blocking for 362 seconds with the whole loop task, and so
+    // the touchscreen, stuck behind it.
+    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port, 10000)) {
       _lastError = "TCP connect failed for stream";
       _log("DAV: " + _lastError);
       delete tcp;
