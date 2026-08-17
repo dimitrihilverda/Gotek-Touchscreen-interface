@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.19.0"
+#define FW_VERSION "v0.20.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.034"
+#define FW_INTERNAL "release.035"
 
 using std::vector;
 using std::sort;
@@ -607,6 +607,13 @@ String dav_detail_folder_path = "";     // full path of the folder being viewed
 int dav_detail_index = -1;              // index of folder in dav_entries for prev/next nav
 int dav_pending_detail_nav = -1;        // set by web API to navigate touchscreen to DAV detail
 bool dav_detail_needs_full_load = false; // true = detail page was opened lightweight, needs PROPFIND on next interaction
+// Folder index whose detail screen was painted from cache and still owes a real
+// PROPFIND. The old scheme set needs_full_load and promised a load "on next
+// interaction" that no code ever performed — nothing on this screen calls
+// davOpenFolderDetail for the folder you are already on, so a web-opened screen
+// stayed half-populated indefinitely. This finishes the job one loop iteration
+// later, by which time the HTTP response is long sent and blocking is free.
+int dav_detail_pending_full = -1;
 
 // ── Pending web-triggered loads (deferred to main loop) ────────────────
 int web_pending_sd_load = -1;       // file_list index to load from SD (set by HTTP handler)
@@ -2231,12 +2238,15 @@ void findRelatedDisks(int currentIndex) {
   }
 }
 
-String getOutputFilename() {
-  if (selected_index >= 0 && selected_index < (int)file_list.size()) {
-    return filenameOnly(file_list[selected_index]);
-  }
-  return (g_mode == MODE_ADF) ? "DEFAULT.ADF" : "DEFAULT.DSK";
-}
+// The 8.3 name the Amiga sees for the mounted image.
+//
+// This used to be derived inside build_root() from selected_index, an index
+// into the LOCAL SD file_list — so a WebDAV load, which never touches that
+// list, presented whatever the SD selection happened to be. On a stock card
+// that is AmiCrush, which is why every remotely-loaded game arrived as
+// AMICRUSH.ADF. The name is a property of the image being mounted, so callers
+// pass it rather than the volume builder guessing.
+String g_mountFilename = "";
 
 // ============================================================================
 // FAT12 FILESYSTEM EMULATION
@@ -2307,8 +2317,11 @@ void make_83_name(const char *src, uint8_t *dst) {
 
 void build_root(uint8_t *root) {
   memset(root, 0, 7168); // 14 sectors × 512 = 7168 bytes for 224 entries
+  // An ejected drive has no file at all. Writing a zero-length entry for the
+  // previous image left the Amiga looking at a 0 KB ghost of the last game.
+  if (g_mountFilename.length() == 0) return;
   uint8_t fname[11];
-  make_83_name(getOutputFilename().c_str(), fname);
+  make_83_name(g_mountFilename.c_str(), fname);
   memcpy(&root[0], fname, 11);
   root[11] = 0x20;             // Archive attribute
   *(uint16_t *)&root[26] = 0;  // Start cluster = 0 (no data yet)
@@ -3655,17 +3668,25 @@ void davSaveCachedNfo(const String &davPath, const String &text) {
   f.close();
 }
 
-// Sub-folder listing — line-based, tab-separated:
+// Sub-folder listing — a version line, then one tab-separated record per file:
+//   VER=2\n
 //   <name>\t<isDir 0|1>\t<size>\t<isCover 0|1>\t<isNfo 0|1>\n
-// Filenames rarely contain tabs so no escaping is needed. The last two
-// columns used to repeat the filename; they are flags now, and a stale
-// file from the old layout parses its "Turrican.jpg" column as not-"1",
-// i.e. false — a harmless loss of a badge that the next refresh restores.
+// Filenames rarely contain tabs so no escaping is needed.
+//
+// The last two columns used to repeat the filename rather than carry flags. A
+// stale file from that layout parses "Turrican.jpg" as not-"1" — false — and
+// because a stale file is still a cache HIT it suppressed the very PROPFIND
+// that would have repaired it, so the notes stayed missing on that card for
+// good. The stamp turns an old-layout file into a miss, which self-heals.
+#define DAV_DIR_CACHE_VER "VER=2"
 bool davReadCachedDir(const String &davFolderPath, DAVEntryList &out) {
   String cachePath = davMetaCachePath(davFolderPath, "dir");
   if (!SD_MMC.exists(cachePath.c_str())) return false;
   File f = SD_MMC.open(cachePath.c_str(), "r");
   if (!f) return false;
+  String ver = f.readStringUntil('\n');
+  ver.trim();
+  if (ver != DAV_DIR_CACHE_VER) { f.close(); return false; }
   out.clear();
   while (f.available()) {
     String line = f.readStringUntil('\n');
@@ -3693,6 +3714,7 @@ void davSaveCachedDir(const String &davFolderPath, const DAVEntryList &entries) 
   String cachePath = davMetaCachePath(davFolderPath, "dir");
   File f = SD_MMC.open(cachePath.c_str(), "w");
   if (!f) return;
+  f.print(DAV_DIR_CACHE_VER); f.print('\n');
   for (const auto &e : entries) {
     f.print(e.cname());            f.print('\t');
     f.print(e.isDir ? '1' : '0');  f.print('\t');
@@ -4306,6 +4328,10 @@ void drawDAVDetail() {
   if (dav_detail_nfo_text.length() > 0) {
     parseNFO(dav_detail_nfo_text, title, blurb);
   }
+  // The screen had no title of its own — the only source was line 1 of the NFO,
+  // so a game with no notes (or one whose notes were not cached yet) showed a
+  // bare cover with no name at all. The folder name is always known.
+  if (title.length() == 0) title = dav_detail_name;
   int textSpace = 0;
   if (title.length() > 0) textSpace += 18;
   if (blurb.length() > 0) textSpace += 14;
@@ -5344,7 +5370,8 @@ size_t loadFileToRam(int index) {
   g_loadSource = LOADSRC_SD;
   drawThemedLoadingScreen(basenameNoExt(filenameOnly(file_list[index])));
 
-  // Rebuild FAT volume (empty)
+  // Rebuild FAT volume (empty), named after the image about to go in.
+  g_mountFilename = filenameOnly(filepath);
   build_volume_with_file();
 
   // Read disk image from SD directly into RAM disk data area
@@ -5640,7 +5667,8 @@ void doUnload() {
   tud_disconnect();
   delay(50);
 
-  // Clear RAM disk and rebuild empty volume
+  // Clear RAM disk and rebuild empty volume — no file, so no root entry.
+  g_mountFilename = "";
   build_volume_with_file();
   bumpInquiryRevision();
   msc.mediaPresent(false);
@@ -5736,7 +5764,9 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   g_loadSource = LOADSRC_DAV;
   drawThemedLoadingScreen(displayName);
 
-  // Rebuild FAT volume (empty)
+  // Rebuild FAT volume (empty), named after the remote image. Deriving this
+  // from the SD selection is what produced AMICRUSH.ADF for every DAV game.
+  g_mountFilename = filenameOnly(remotePath);
   build_volume_with_file();
 
   // Disconnect USB before loading
@@ -5949,6 +5979,7 @@ void setup() {
     while (1);
   }
 
+  g_mountFilename = "";   // nothing mounted yet
   build_volume_with_file();
   sdLog("RAM disk initialized (" + String(RAM_DISK_SIZE / 1024) + " KB)");
   drawBootProgress("RAM disk ready", 70);
@@ -6158,12 +6189,24 @@ void loop() {
     web_pending_sd_load = -1;
 
     selected_index = targetIdx;
+    // Everything a touchscreen INSERT establishes before loading, which a web
+    // insert skipped: which GAME is selected (the detail screen's prev/next
+    // arrows and the list highlight behind it read this, and were left pointing
+    // at whatever was selected before), and the disk set (the loading screen's
+    // "Disk 2 of 3" confirmation reads disk_set, which was still empty).
+    game_selected = findGameIndex(targetIdx);
+    findRelatedDisks(targetIdx);
     doLoadSelected();
 
     if (loaded_disk_index == targetIdx) {
       detail_filename = file_list[targetIdx];
       current_screen = SCR_DETAILS;
       drawDetailsFromNFO(detail_filename);
+    } else {
+      // The load painted an error over whatever was on screen and returned.
+      // Without this the panel keeps the dead loader paint until the user
+      // touches something.
+      redrawCurrentScreen();
     }
   }
 
@@ -6207,7 +6250,6 @@ void loop() {
       dav_disk_loaded = true;
 
       nowPlaying.source = NP_DAV;
-      nowPlaying.name = displayName;
       nowPlaying.path = remotePath;
       nowPlaying.sdIndex = -1;
 
@@ -6217,6 +6259,13 @@ void loop() {
       if (ls > 0) folderName = folderName.substring(0, ls);
       ls = folderName.lastIndexOf('/');
       if (ls >= 0) folderName = folderName.substring(ls + 1);
+
+      // The GAME is the folder, the same as on the touchscreen. displayName
+      // comes from the disk file, so a web-started game read "Turrican II
+      // (Disk 1)" where a touchscreen-started one read "Turrican II" — part of
+      // why the two did not look like the same device. displayName stays the
+      // loading banner, where naming the actual disk is the useful thing.
+      nowPlaying.name = (folderName.length() > 0) ? folderName : displayName;
 
       nowPlaying.davFolderIndex = -1;
       for (int i = 0; i < (int)dav_entries.size(); i++) {
@@ -6309,10 +6358,29 @@ void loop() {
         dav_detail_path = dirPath + diskFile;
       }
 
-      // Switch screen and draw — NO network calls
+      // Switch screen and draw — NO network calls, so the panel follows the
+      // web UI immediately instead of waiting on a PROPFIND.
       current_screen = SCR_WEBDAV_DETAIL;
-      dav_detail_needs_full_load = true;  // flag: load cover/NFO/disks on next user interaction
+      dav_detail_needs_full_load = true;
       drawDAVDetail();
+      // Then finish the job properly on the next iteration.
+      dav_detail_pending_full = navIdx;
+    }
+  }
+
+  // ── Finish a cache-only DAV detail screen with the real thing ──
+  //
+  // Runs one iteration after the lightweight paint: the screen is already up,
+  // the HTTP response is sent, and davOpenFolderDetail is the same function the
+  // touchscreen uses — so both paths end in identical state instead of the web
+  // one being permanently degraded.
+  if (dav_detail_pending_full >= 0) {
+    const int fullIdx = dav_detail_pending_full;
+    dav_detail_pending_full = -1;
+    // Only if the user is still looking at that same screen.
+    if (current_screen == SCR_WEBDAV_DETAIL && dav_detail_index == fullIdx &&
+        dav_detail_needs_full_load && WiFi.status() == WL_CONNECTED) {
+      davOpenFolderDetail(fullIdx);   // clears the flag, fetches NFO + cover
     }
   }
 

@@ -39,14 +39,16 @@ textarea{min-height:80px;resize:vertical}
 .btn-sm{padding:4px 10px;font-size:12px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .game-list{display:grid;gap:10px}
-.game-item{display:flex;gap:12px;align-items:center;background:var(--light);border:1px solid var(--line);padding:10px;border-radius:2px;cursor:pointer;transition:all .1s}
-.game-item:hover{border-color:var(--blue);background:#d8d8e8}
-.game-item.selected{border-color:var(--orange);background:#e8dcc8;border-width:2px}
-.game-item.active{border-color:var(--green);background:#c8e8c8;border-width:2px}
-.game-item.active:hover{background:#b8e0b8}
+.game-item{display:flex;gap:12px;align-items:center;background:transparent;
+  border:1px solid var(--line);border-left:3px solid transparent;
+  padding:10px;border-radius:2px;cursor:pointer;transition:all .1s}
+.game-item:hover{border-color:var(--blue);border-left-color:var(--blue)}
+.game-item.selected{border-left-color:var(--orange)}
+.game-item.active{border-left-color:var(--green)}
+.game-item.active .game-name{color:var(--green)}
 .active-indicator{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.game-cover{width:48px;height:48px;object-fit:cover;border:1px solid var(--muted);background:#444;border-radius:2px}
+.game-cover{width:48px;height:48px;object-fit:cover;border:1px solid var(--muted);background:var(--field);border-radius:2px}
 .game-cover.empty{display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:10px}
 .game-info{flex:1}
 .game-name{font-weight:700;font-size:14px}
@@ -54,8 +56,16 @@ textarea{min-height:80px;resize:vertical}
 .game-actions{display:flex;gap:4px}
 /* Disk selector: one button per disk, like the touchscreen's row. */
 .disk-btn-row{display:flex;flex-wrap:wrap;gap:6px}
-.disk-btn{min-width:44px;padding:8px 10px;font-size:13px;font-weight:600;cursor:pointer;
-  background:var(--grey);border:2px outset var(--light);border-radius:2px;color:#000}
+/* --grey was never defined, so these buttons had no background at all and
+   black text: unreadable on any dark theme, and different in the modal only
+   because the modal panel behind them happens to be lighter. */
+/* Fixed height, not content height: the now-playing bar rarely knows the disk
+   sizes (that needs a PROPFIND the modal has already paid for), so without this
+   the same buttons came out shorter there than in the popup. */
+.disk-btn{min-width:56px;min-height:46px;padding:6px 10px;font-size:13px;font-weight:600;
+  cursor:pointer;display:inline-flex;flex-direction:column;align-items:center;
+  justify-content:center;line-height:1.25;
+  background:var(--panel);border:2px outset var(--light);border-radius:2px;color:var(--text)}
 .disk-btn:active{border-style:inset}
 .disk-btn.loaded{background:var(--green);color:#fff;border-color:#0a0}
 .disk-btn[disabled]{opacity:.5;cursor:default}
@@ -927,38 +937,153 @@ function filterGames() {
   renderGameList(filtered, lastGameData.mode);
 }
 
+// ══════════════ SHARED LIST ROW ══════════════
+//
+// One renderer for both sources. The panel already does this with a single
+// ListRow struct and drawListRow(); the web UI had two hand-written row bodies
+// that had drifted — the WebDAV one never grew the NFO badge, the disk count, or
+// any way to pick a disk, and only the WebDAV one had a row-count backstop.
+//
+// A row model, so a caller cannot forget a field:
+//   {source:'sd'|'dav', key, name, coverUrl, playing, sourceLabel,
+//    disks:      number, 0 = not known yet (WebDAV folder nobody has opened)
+//    hasNfo:     true | false | null = unknown
+//    hasCover:   bool
+//    loadedDisk: 1-based number of the mounted disk, 0 if none/unknown}
+const LIST_ROW_MAX = 200;
+
+// What was last rendered, so late-arriving metadata can patch the rows instead
+// of forcing a re-render (which would refire every cover request).
+let listRowState = { host: null, rows: [], onDisk: null };
+
+function listRowBadges(r) {
+  return (r.playing ? '<span class="badge" style="background:var(--green);color:#fff">PLAYING</span> ' : '') +
+    (r.disks > 1 ? `<span class="badge badge-disks">${r.disks} disks</span> ` : '') +
+    (r.hasNfo === true ? '<span class="badge badge-nfo">NFO</span> ' : '') +
+    (r.hasCover ? '<span class="badge badge-cover">Cover</span> ' : '') +
+    (r.sourceLabel ? `<span class="badge" style="background:var(--blue);color:#fff">${esc(r.sourceLabel)}</span>` : '');
+}
+
+function renderListRows(host, rows, onOpen, onDisk) {
+  // Every row emits an <img> at the device and now a few buttons as well, so
+  // rendering a whole library at once is a self-inflicted denial of service on a
+  // single-threaded server. Callers filter by letter first; this is the backstop
+  // for when one forgets, and it now covers both lists rather than just WebDAV's.
+  if (rows.length > LIST_ROW_MAX) {
+    host.innerHTML = '<p style="color:var(--orange);padding:20px;text-align:center">' +
+      'Too many games to show at once (' + rows.length + '). Pick a letter or search.</p>';
+    return;
+  }
+  if (rows.length === 0) {
+    host.innerHTML = '<p style="color:var(--muted);padding:20px;text-align:center">No games found.</p>';
+    return;
+  }
+
+  listRowState = { host: host, rows: rows, onDisk: onDisk };
+
+  host.innerHTML = rows.map((r, i) => {
+    const badges = listRowBadges(r);
+    return `<div class="game-item${r.playing ? ' active' : ''}" data-i="${i}">` +
+      (r.coverUrl
+        ? `<img class="game-cover" src="${r.coverUrl}" loading="lazy" data-fallback="1">`
+        : '<div class="game-cover empty">No Art</div>') +
+      '<div class="game-info">' +
+        `<div class="game-name">${r.playing ? '<span class="active-indicator"></span>' : ''}${esc(r.name)}</div>` +
+        `<div class="game-meta">${badges}</div>` +
+      '</div>' +
+      `<div class="disk-btn-row row-disks" data-i="${i}"></div>` +
+    '</div>';
+  }).join('');
+
+  // Buttons are built as elements, not markup: the click needs the row object,
+  // and interpolating a game name into an onclick is what made "Boppin'"
+  // unopenable before.
+  rows.forEach((r, i) => {
+    const cell = host.querySelector(`.row-disks[data-i="${i}"]`);
+    if (cell) buildDiskButtons(cell, r, onDisk);
+  });
+
+  host.querySelectorAll('.game-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.disk-btn')) return;   // a button is not the row
+      onOpen(rows[parseInt(el.dataset.i)]);
+    });
+  });
+}
+
+// The compact disk selector that sits in a row. Numbered buttons when the disk
+// count is known and greater than one; a bare Insert when it is a single-disk
+// game or the count is still unknown; Eject on the one that is mounted.
+function buildDiskButtons(host, r, onDisk) {
+  host.innerHTML = '';
+  const mk = (label, sub, loaded, diskNum) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'disk-btn' + (loaded ? ' loaded' : '');
+    b.innerHTML = esc(label) + (sub ? `<span class="disk-sub">${esc(sub)}</span>` : '');
+    b.addEventListener('click', (e) => { e.stopPropagation(); onDisk(r, diskNum, loaded, b); });
+    host.appendChild(b);
+  };
+
+  if (r.disks > 1) {
+    for (let n = 1; n <= r.disks; n++) {
+      const loaded = r.playing && r.loadedDisk === n;
+      mk(loaded ? 'Eject' : 'Disk ' + n, loaded ? 'disk ' + n : '', loaded, n);
+    }
+  } else if (r.playing) {
+    mk('Eject', '', true, 1);
+  } else {
+    mk('Insert', '', false, 1);
+  }
+}
+
 function renderGameList(games, mode) {
   document.getElementById('game-count').textContent = '(' + games.length + ' games)';
   const list = document.getElementById('game-list');
 
-  if (games.length === 0) {
-    list.innerHTML = '<p style="color:var(--muted);padding:20px;text-align:center">No games found.</p>';
-    return;
+  const rows = games.map(g => ({
+    source: 'sd',
+    key: g.name,
+    mode: mode,
+    name: g.name,
+    coverUrl: g.has_cover
+      ? `${API}/api/games/${mode.toLowerCase()}/${encodeURIComponent(g.name)}/cover` : '',
+    playing: !!g.loaded,
+    sourceLabel: '',              // the SD list needs no source badge; it is all SD
+    disks: g.disks || 1,
+    hasNfo: !!g.has_nfo,
+    hasCover: !!g.has_cover,
+    // Which disk of the set is in. npPoll already fetches this; it was being
+    // served and thrown away.
+    loadedDisk: g.loaded ? (npLoadedDisk || 0) : 0,
+  }));
+
+  renderListRows(list, rows,
+    r => openGameDetail(r.mode, r.name),
+    (r, diskNum, isLoaded, btn) => rowMountSD(r, diskNum, isLoaded, btn));
+}
+
+// Insert or eject straight from a list row. Shares the load contract with the
+// modal's buttons: /load takes a 1-based disk NUMBER, so a row needs no
+// filenames to act.
+async function rowMountSD(r, diskNum, isLoaded, btn) {
+  const host = btn.parentElement;
+  host.querySelectorAll('.disk-btn').forEach(b => b.disabled = true);
+  try {
+    if (isLoaded) {
+      await api('/api/disk/unload', { method: 'POST' });
+      toast('Ejected');
+    } else {
+      const params = new URLSearchParams({ disk: String(diskNum) });
+      const res = await api(`/api/games/${r.mode}/${encodeURIComponent(r.key)}/load`,
+                           { method: 'POST', body: params });
+      toast((r.disks > 1 ? 'Disk ' + diskNum + ' — ' : '') + (res.game || r.name) + ' loaded');
+    }
+    await npRefresh();
+    await loadGames();
+  } catch (e) {
+    host.querySelectorAll('.disk-btn').forEach(b => b.disabled = false);
   }
-
-  list.innerHTML = games.map(g => `
-    <div class="game-item ${g.loaded ? 'active' : ''}" data-mode="${mode}" data-name="${encodeURIComponent(g.name)}">
-      ${g.has_cover
-        ? `<img class="game-cover" src="${API}/api/games/${mode.toLowerCase()}/${encodeURIComponent(g.name)}/cover" loading="lazy">`
-        : `<div class="game-cover empty">No Art</div>`
-      }
-      <div class="game-info">
-        <div class="game-name">${g.loaded ? '<span class="active-indicator"></span>' : ''}${esc(g.name)}</div>
-        <div class="game-meta">
-          ${g.loaded ? '<span class="badge" style="background:var(--green);color:#fff">PLAYING</span> ' : ''}
-          ${g.disks > 1 ? `<span class="badge badge-disks">${g.disks} disks</span> ` : ''}
-          ${g.has_nfo ? '<span class="badge badge-nfo">NFO</span> ' : ''}
-          ${g.has_cover ? '<span class="badge badge-cover">Cover</span>' : ''}
-        </div>
-      </div>
-    </div>
-  `).join('');
-
-  list.querySelectorAll('.game-item').forEach(el => {
-    el.addEventListener('click', () => {
-      openGameDetail(el.dataset.mode, decodeURIComponent(el.dataset.name));
-    });
-  });
 }
 
 async function rescanGames() {
@@ -1404,6 +1529,9 @@ const TE_PRESETS = {
 // Themes read back off the SD card, so your own saved themes can be reopened
 // and edited. Keyed by name; the values are the same style objects as above.
 let teSaved = {};
+// Theme names present on the card, so a name that is BOTH a preset and a saved
+// theme resolves to the saved one.
+let teThemeNames = [];
 
 let teFont = null;      // Uint8Array, 95 glyphs x 6 columns
 let teGeom = null;      // [{n,w,h,label,glyph}]
@@ -1412,18 +1540,21 @@ function teHexToRgb(h) {
   return [parseInt(h.substr(1,2),16), parseInt(h.substr(3,2),16), parseInt(h.substr(5,2),16)];
 }
 
+// Always clamped through the same normaliser the load path uses: min/max on a
+// number input is not enforced when JS reads .value, and a hand-typed bevelW of
+// 99 paints every pixel of a 36px button in the highlight colour.
 function teStyle() {
-  return {
+  return teNormalizeStyle({
     fill:   document.getElementById('te-fill').value,
     light:  document.getElementById('te-light').value,
     dark:   document.getElementById('te-dark').value,
     text:   document.getElementById('te-text').value,
     accent: document.getElementById('te-accent').value,
     bevel:  document.getElementById('te-bevel').value,
-    bevelW: parseInt(document.getElementById('te-bevelw').value) || 0,
-    radius: parseInt(document.getElementById('te-radius').value) || 0,
-    scale:  parseInt(document.getElementById('te-scale').value) || 2,
-  };
+    bevelW: parseInt(document.getElementById('te-bevelw').value),
+    radius: parseInt(document.getElementById('te-radius').value),
+    scale:  parseInt(document.getElementById('te-scale').value),
+  });
 }
 
 // A style from any source — preset, saved theme, or the device's shipped
@@ -1432,9 +1563,13 @@ function teStyle() {
 function teNormalizeStyle(s) {
   const d = TE_PRESETS.AMIGA_WB2;
   const hex = (v, f) => (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)) ? v.toLowerCase() : f;
+  // Out of range clamps to the nearest bound rather than snapping back to the
+  // default: typing 99 in "edge width" means "as thick as it goes", and landing
+  // on 2 reads as the field having ignored you.
   const num = (v, f, lo, hi) => {
     const n = parseInt(v);
-    return Number.isFinite(n) && n >= lo && n <= hi ? n : f;
+    if (!Number.isFinite(n)) return f;
+    return Math.max(lo, Math.min(hi, n));
   };
   return {
     fill:   hex(s && s.fill,   d.fill),
@@ -1467,12 +1602,19 @@ function teApplyPreset(name) {
   teLoadStyle(TE_PRESETS[name] || TE_PRESETS.AMIGA_WB2);
 }
 
-// Opening whatever the "Start from" box points at: a built-in preset, or one of
-// your own themes fetched from the card. Picking your own theme also fills in
-// the name, so saving overwrites it instead of silently making a copy.
+// Opening whatever the "Start from" box points at: one of your own themes from
+// the card, or a built-in preset. Picking your own theme also fills in the name,
+// so saving overwrites it instead of silently making a copy.
+//
+// The card is asked FIRST, even for a name that matches a preset. Checking
+// TE_PRESETS first meant a theme called AMIGA_WB2 — the shipped one, which the
+// firmware writes a theme.json for precisely so it can be edited — always came
+// back as the hardcoded preset, and the next save then overwrote the colours the
+// user had put there. The preset is the fallback, not the authority.
 async function teStartFrom(name) {
   const nameEl = document.getElementById('te-name');
-  if (TE_PRESETS[name]) { teApplyPreset(name); return; }
+  const onCard = teThemeNames.includes(name);
+  if (!onCard && TE_PRESETS[name]) { teApplyPreset(name); return; }
 
   if (teSaved[name]) { teLoadStyle(teSaved[name]); nameEl.value = name; return; }
 
@@ -1648,14 +1790,18 @@ async function teBuildStartFrom() {
   let mine = [];
   try {
     const d = await api('/api/themes/list');
-    // The shipped theme is a preset by another name; don't list it twice.
-    mine = (d.themes || []).filter(t => !TE_PRESETS[t]);
+    mine = d.themes || [];
+    teThemeNames = mine.slice();
   } catch (e) { /* offline: presets alone still work */ }
 
+  // A preset is only offered separately when the card has no theme of that name.
+  // Filtering on-card themes OUT when a preset shares the name made the shipped
+  // AMIGA_WB2 — the one the firmware stores a style for — unreachable.
+  const presets = Object.keys(TE_PRESETS).filter(k => !mine.includes(k));
   const opt = t => `<option value="${esc(t)}">${esc(t)}</option>`;
   sel.innerHTML =
-    `<optgroup label="Presets">${Object.keys(TE_PRESETS).map(opt).join('')}</optgroup>` +
-    (mine.length ? `<optgroup label="On this card">${mine.map(opt).join('')}</optgroup>` : '');
+    (mine.length ? `<optgroup label="On this card">${mine.map(opt).join('')}</optgroup>` : '') +
+    (presets.length ? `<optgroup label="Presets">${presets.map(opt).join('')}</optgroup>` : '');
   if (keep) sel.value = keep;
 }
 
@@ -2163,59 +2309,68 @@ function davFilterGames() {
 
   davBuildAlphaFilter(davAllEntries);
   davRenderGameList(filtered);
+  // One cache-only request for the whole visible set, then patch the badges in
+  // place. Deliberately after the first paint so rows never wait on it — and a
+  // patch rather than a re-render, because rebuilding the rows would fire every
+  // cover request a second time.
+  if (filtered.length && filtered.length <= LIST_ROW_MAX) {
+    davLoadRowMeta(search ? '' : davActiveAlpha).then(davApplyRowMeta);
+  }
+}
+
+// Fill in the disk count, the NFO badge and the per-disk buttons once the
+// cache-only metadata lands, touching only the cells that change.
+function davApplyRowMeta() {
+  const host = document.getElementById('dav-list');
+  if (!host || !listRowState.rows.length || listRowState.host !== host) return;
+  listRowState.rows.forEach((r, i) => {
+    const meta = davRowMeta[r.name];
+    if (!meta) return;
+    if (r.disks === meta.disks && r.hasNfo === meta.nfo) return;
+    r.disks = meta.disks;
+    r.hasNfo = meta.nfo;
+    const row = host.querySelector(`.game-item[data-i="${i}"]`);
+    if (!row) return;
+    const metaCell = row.querySelector('.game-meta');
+    if (metaCell) metaCell.innerHTML = listRowBadges(r);
+    const btnCell = row.querySelector('.row-disks');
+    if (btnCell) buildDiskButtons(btnCell, r, listRowState.onDisk);
+  });
 }
 
 function davRenderGameList(folders) {
   document.getElementById('dav-game-count').textContent = '(' + folders.length + ' games)';
   const list = document.getElementById('dav-list');
 
-  // Backstop. Every row emits an <img> pointing at the device, so rendering a
-  // whole library at once is a self-inflicted denial of service on a
-  // single-threaded HTTP server that is also serving the page you are
-  // looking at. Callers are expected to filter first; fail loudly if one
-  // forgets rather than hanging the device.
-  if (folders.length > 200) {
-    console.warn('davRenderGameList called with ' + folders.length +
-                 ' rows — refusing; filter first');
-    list.innerHTML = '<p style="color:var(--orange);padding:20px;text-align:center">' +
-      'Too many games to show at once (' + folders.length + '). Pick a letter or search.</p>';
-    return;
-  }
+  const rows = folders.map(f => {
+    const fullPath = davCurrentPath.endsWith('/') ? davCurrentPath + f.name
+                                                  : davCurrentPath + '/' + f.name;
+    const meta = davRowMeta[f.name] || null;
+    return {
+      source: 'dav',
+      key: fullPath,
+      name: f.name,
+      coverUrl: API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + f.name + '.jpg'),
+      playing: !!(davLoadedFile && davLoadedFile.startsWith(fullPath + '/')),
+      sourceLabel: 'WebDAV',
+      // A folder nobody has opened yet has no cached listing, so the count and
+      // the notes flag are genuinely unknown. null/0 means "say nothing" rather
+      // than claiming there are no notes.
+      disks: meta ? meta.disks : 0,
+      hasNfo: meta ? meta.nfo : null,
+      hasCover: false,          // resolved by the <img>, not known up front
+      loadedDisk: davLoadedDiskNum(fullPath),
+    };
+  });
 
-  if (folders.length === 0) {
-    list.innerHTML = '<p style="color:var(--muted);padding:20px;text-align:center">No games found.</p>';
-    return;
-  }
+  renderListRows(list, rows,
+    r => davOpenFolder(r.key, r.name),
+    (r, diskNum, isLoaded, btn) => rowMountDAV(r, diskNum, isLoaded, btn));
 
-  // The folder name goes in a data- attribute, never interpolated into an
-  // inline onclick. It used to be, and any title containing an apostrophe —
-  // "Boppin'", "Pirates of Darkwater" — was unopenable: esc() turns ' into
-  // &#39;, the HTML parser turns that back into ' before the JS is parsed,
-  // and the string terminates early. The handler is delegated instead, so
-  // the name never passes through a JavaScript parser at all.
-  list.innerHTML = folders.map(f => {
-    const fullPath = davCurrentPath.endsWith('/') ? davCurrentPath + f.name : davCurrentPath + '/' + f.name;
-    const coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(fullPath + '/' + f.name + '.jpg');
-    const isPlaying = davLoadedFile && davLoadedFile.startsWith(fullPath + '/');
-    return '<div class="game-item' + (isPlaying ? ' active' : '') + '"' +
-      ' data-path="' + esc(fullPath) + '" data-name="' + esc(f.name) + '">' +
-      '<img class="game-cover" src="' + coverUrl + '" loading="lazy" data-fallback="1">' +
-      '<div class="game-info">' +
-        '<div class="game-name">' + (isPlaying ? '<span class="active-indicator"></span>' : '') + esc(f.name) + '</div>' +
-        '<div class="game-meta">' +
-          (isPlaying ? '<span class="badge" style="background:var(--green);color:#fff">PLAYING</span> ' : '') +
-          '<span class="badge" style="background:var(--blue);color:#fff">WebDAV</span>' +
-        '</div>' +
-      '</div>' +
-      '</div>';
-  }).join('');
-
-  // Cover fallback, also delegated: try .png once, then show a placeholder.
-  // The device answers 404 for a cover it has not fetched yet and queues it,
-  // so a later render picks it up.
-  // One request per cover, not two. The device resolves .jpg vs .png itself
-  // now — the browser retrying the other extension doubled both the requests
-  // and the queued fetches behind them, and the retry always failed.
+  // Cover fallback: the device answers 404 for a cover it has not fetched yet
+  // and queues it, so a later render picks it up. One request per cover — the
+  // browser retrying the other extension doubled both the requests and the
+  // queued fetches behind them, and the retry always failed.
   list.querySelectorAll('img.game-cover[data-fallback]').forEach(img => {
     img.addEventListener('error', function onErr() {
       this.removeEventListener('error', onErr);
@@ -2227,18 +2382,95 @@ function davRenderGameList(folders) {
   });
 }
 
-// One delegated listener for the whole DAV list, attached once. Row markup
-// carries data-path / data-name, so a title with quotes or apostrophes in it
-// is just attribute text and never reaches a JavaScript parser.
-document.addEventListener('DOMContentLoaded', () => {
-  const list = document.getElementById('dav-list');
-  if (!list) return;
-  list.addEventListener('click', (e) => {
-    const row = e.target.closest('.game-item[data-path]');
-    if (!row) return;
-    davOpenFolder(row.dataset.path, row.dataset.name);
-  });
-});
+// Disk filenames per folder path, filled whenever a listing is fetched (a row
+// button or the detail modal). Without it a playing WebDAV row knows it is
+// playing but not which of its disks is in, so it could not offer Eject.
+let davFolderFiles = {};
+
+function davDiskNames(entries) {
+  return (entries || []).filter(e => !e.dir && /\.(adf|adz|dsk|img)$/i.test(e.name))
+                        .map(e => e.name)
+                        .sort((a, b) => a.localeCompare(b));
+}
+
+// 1-based position of the mounted disk within its folder, or 0 if not known.
+function davLoadedDiskNum(folderPath) {
+  if (!davLoadedFile || !davLoadedFile.startsWith(folderPath + '/')) return 0;
+  const names = davFolderFiles[folderPath];
+  if (!names) return 0;
+  const file = davLoadedFile.slice(folderPath.length + 1);
+  const i = names.indexOf(file);
+  return i < 0 ? 0 : i + 1;
+}
+
+// Per-folder facts for the rows on screen, keyed by folder name. Filled by one
+// cache-only request per render rather than one per row.
+let davRowMeta = {};
+
+async function davLoadRowMeta(prefix) {
+  try {
+    const d = await apiQuiet('/api/dav/rowmeta?prefix=' + encodeURIComponent(prefix || ''));
+    davRowMeta = {};
+    (d.meta || []).forEach(m => { davRowMeta[m.name] = { disks: m.disks || 0, nfo: !!m.nfo }; });
+  } catch (e) { davRowMeta = {}; }
+}
+
+// Insert or eject a WebDAV disk from a list row. The load endpoint needs the
+// remote path of a specific file, which only the folder listing has — so the
+// listing is fetched on the click. The device serves it from its own folder
+// cache now, so a revisit costs no network.
+async function rowMountDAV(r, diskNum, isLoaded, btn) {
+  const host = btn.parentElement;
+  host.querySelectorAll('.disk-btn').forEach(b => b.disabled = true);
+  const reEnable = () => host.querySelectorAll('.disk-btn').forEach(b => b.disabled = false);
+  try {
+    if (isLoaded) {
+      await api('/api/disk/unload', { method: 'POST' });
+      davLoadedFile = '';
+      toast('Ejected');
+      davRenderNowPlaying();
+      davFilterGames();
+      return;
+    }
+
+    davShowBusy('Reading ' + r.name + '…');
+    let disks = [];
+    try {
+      const d = await api('/api/dav/list?path=' + encodeURIComponent(r.key));
+      disks = davDiskNames(d.entries).map(n => ({ name: n }));
+      davFolderFiles[r.key] = disks.map(x => x.name);
+    } finally { davHideBusy(); }
+
+    if (!disks.length) { toast('No disk images in ' + r.name, 'error'); reEnable(); return; }
+    const pick = disks[Math.min(diskNum, disks.length) - 1];
+    const remotePath = r.key + '/' + pick.name;
+
+    davShowBusy('Loading ' + pick.name + '…');
+    try {
+      const res = await fetch(API + '/api/dav/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'path=' + encodeURIComponent(remotePath),
+      });
+      const rdata = await res.json().catch(() => ({}));
+      davShowDebug(rdata);
+      if (!res.ok) throw new Error(rdata.error || 'HTTP ' + res.status);
+      davLoadedFile = remotePath;
+      toast((disks.length > 1 ? 'Disk ' + diskNum + '/' + disks.length + ' — ' : '') +
+            (rdata.name || pick.name) + ' loaded');
+    } finally { davHideBusy(); }
+
+    davRenderNowPlaying();
+    davFilterGames();
+  } catch (e) {
+    toast('Failed: ' + (e.message || 'Unknown'), 'error');
+    reEnable();
+  }
+}
+
+// Row clicks are wired by renderListRows, which hands the row object straight to
+// the handler — the game name never passes through a JavaScript parser, which is
+// what used to make a title like "Boppin'" unopenable.
 
 // Open a DAV folder as a game detail modal (like SD game detail)
 async function davEnsureConnected() {
@@ -2265,9 +2497,22 @@ async function davEnsureConnected() {
 let npPollTimer = null;
 let npLastSignature = '';
 
+// Which disk of the mounted set is in, so a row can show Eject on the right
+// button. The device has always served this; nothing read it until now.
+let npLoadedDisk = 0;
+
+async function npRefresh() {
+  try {
+    const s = await api('/api/disk/status');
+    npLoadedDisk = s.disk_num || 0;
+    return s;
+  } catch (e) { return null; }
+}
+
 async function npPoll() {
   try {
     const s = await api('/api/disk/status');
+    npLoadedDisk = s.disk_num || 0;
     const sig = (s.source || '') + '|' + (s.name || '') + '|' + (s.np_path || '');
     if (sig !== npLastSignature) {
       npLastSignature = sig;
@@ -2445,6 +2690,9 @@ async function davOpenFolder(folderPath, folderName) {
     const entries = data.entries || [];
     const diskExts = ['ADF','DSK','ADZ','IMG'];
     const disks = entries.filter(e => !e.dir && diskExts.includes(e.name.split('.').pop().toUpperCase()));
+    // Opening the detail also teaches the LIST which disk of this folder is in,
+    // so its row can offer Eject on the right button.
+    davFolderFiles[folderPath] = davDiskNames(entries);
     disks.sort((a, b) => a.name.localeCompare(b.name));
 
     // One button per disk, mirroring the touchscreen's selector. Numbered only

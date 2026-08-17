@@ -219,7 +219,13 @@ void handleDiskStatus(WiFiClient &client) {
     int gi = findGameIndex(loaded_disk_index);
     if (gi >= 0 && gi < (int)game_list.size()) {
       json += "\"game\":\"" + jsonEscape(game_list[gi].name) + "\",";
-      json += "\"disk_num\":" + String(loaded_disk_index - game_list[gi].first_file_index + 1) + ",";
+      // Position within the game's contiguous run in file_list. Clamped: the
+      // web UI now highlights a disk button with this, so a value outside the
+      // set would mark the wrong button rather than merely read oddly.
+      int diskNum = loaded_disk_index - game_list[gi].first_file_index + 1;
+      if (diskNum < 1) diskNum = 1;
+      if (diskNum > game_list[gi].disk_count) diskNum = game_list[gi].disk_count;
+      json += "\"disk_num\":" + String(diskNum) + ",";
       json += "\"disk_total\":" + String(game_list[gi].disk_count) + ",";
     } else {
       json += "\"game\":\"" + jsonEscape(basenameNoExt(filenameOnly(path))) + "\",";
@@ -1417,7 +1423,21 @@ void handleThemeDelete(WiFiClient &client, const String &name) {
     const String p = dir + "/" + kThemeAssets[i] + ".png";
     if (SD_MMC.exists(p.c_str())) SD_MMC.remove(p.c_str());
   }
-  SD_MMC.rmdir(dir.c_str());
+  // The style file has to go too, or rmdir fails on a non-empty directory and
+  // the theme survives a delete that answered 200 OK — reappearing in the list
+  // forever. Storing theme.json alongside the artwork introduced that; before,
+  // the directory only ever held the twelve PNGs.
+  const String stylePath = dir + "/" + THEME_STYLE_FILE;
+  if (SD_MMC.exists(stylePath.c_str())) SD_MMC.remove(stylePath.c_str());
+
+  if (!SD_MMC.rmdir(dir.c_str())) {
+    // Report it rather than claiming success: any future sidecar file should
+    // surface here as an error instead of as a phantom theme.
+    scanThemes();
+    sdLog("Theme delete FAILED (directory not empty): " + name);
+    sendJSON(client, 500, "{\"error\":\"Theme directory not empty\"}");
+    return;
+  }
   scanThemes();
   sdLog("Theme deleted: " + name);
   sendJSON(client, 200, "{\"status\":\"ok\"}");
@@ -1786,7 +1806,81 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
     buildDAVActiveLetters();
     // Start background cover pre-caching
     davStartCoverPrecache();
+  } else if (entries.size() > 0) {
+    // Warm the same per-folder cache the touchscreen writes.
+    //
+    // This PROPFIND was thrown away, which is why a game opened only in the
+    // browser had no notes on the panel: the deferred navigation reads
+    // /DAV_META/<folder>.dir, and davSaveCachedDir had exactly one caller —
+    // the touchscreen's own detail screen. Browsing in the web UI now warms
+    // the cache it will need, so the two paths stop disagreeing about what
+    // the device knows.
+    davSaveCachedDir(path, entries);
   }
+}
+
+// GET /api/dav/rowmeta?prefix=T
+//
+// Per-folder facts for the rows the browser is actually showing: how many disks
+// and whether there are notes. The root listing cannot carry these — a PROPFIND
+// with Depth:1 genuinely does not know what is inside each child — and asking
+// per row would double the request count on a single-threaded server that is
+// already serving one cover per row.
+//
+// So: one request per render, bounded by the letter the list is already filtered
+// by, answered from the on-SD folder cache only. Never touches the network. A
+// folder nobody has opened yet reports disks:0, which the UI reads as "unknown"
+// and shows no badge for, rather than claiming there are no notes.
+#define DAV_ROWMETA_MAX 200
+void handleDAVRowMeta(WiFiClient &client, const String &prefix) {
+  if (!cfg_dav_enabled) {
+    sendJSON(client, 400, "{\"error\":\"WebDAV not enabled\"}");
+    return;
+  }
+  char want = 0;
+  if (prefix.length() > 0) {
+    want = prefix[0];
+    if (want >= 'a' && want <= 'z') want -= 32;
+  }
+
+  String json = "{\"meta\":[";
+  int emitted = 0;
+  for (int i = 0; i < (int)dav_entries.size() && emitted < DAV_ROWMETA_MAX; i++) {
+    if (!dav_entries[i].isDir) continue;
+    const char *nm = dav_entries[i].cname();
+    if (want) {
+      char c0 = nm[0];
+      if (c0 >= 'a' && c0 <= 'z') c0 -= 32;
+      if (c0 != want) continue;
+    }
+
+    String folderPath = "/";
+    folderPath += nm;
+    DAVEntryList cached;
+    // A miss costs one exists() and no open, which is what makes doing this for
+    // a whole letter affordable.
+    if (!davReadCachedDir(folderPath, cached)) continue;
+
+    int disks = 0;
+    bool nfo = false;
+    for (const auto &f : cached) {
+      if (f.isDir) continue;
+      if (f.hasNfo) nfo = true;
+      String ln = f.name();
+      ln.toLowerCase();
+      if (ln.endsWith(".adf") || ln.endsWith(".dsk") ||
+          ln.endsWith(".adz") || ln.endsWith(".img")) disks++;
+    }
+
+    if (emitted) json += ",";
+    json += "{\"name\":\"" + jsonEscape(dav_entries[i].name()) + "\"";
+    json += ",\"disks\":" + String(disks);
+    json += ",\"nfo\":" + String(nfo ? "true" : "false") + "}";
+    emitted++;
+    yield();
+  }
+  json += "],\"capped\":" + String(emitted >= DAV_ROWMETA_MAX ? "true" : "false") + "}";
+  sendJSON(client, 200, json);
 }
 
 // POST /api/dav/download — Download file from WebDAV to SD card
@@ -2018,6 +2112,11 @@ void handleDAVNfo(WiFiClient &client, const String &queryPath) {
   buf[bytes] = 0;  // null-terminate
 
   String nfoText = String((char *)buf);
+  // Reading the notes in the browser warms the device's own cache, the same
+  // way fetching a cover does. Without this the NFO cache had no warmer on the
+  // web path at all: you could be reading a game's notes on the iPad and the
+  // panel still had nothing to show when you pressed play.
+  davSaveCachedNfo(queryPath, nfoText);
   sendJSON(client, 200, "{\"nfo\":\"" + jsonEscape(nfoText) + "\"}");
 }
 

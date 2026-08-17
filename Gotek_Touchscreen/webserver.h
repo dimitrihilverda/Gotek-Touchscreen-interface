@@ -875,6 +875,19 @@ void handleHttpRequest(WiFiClient &client) {
     handleDAVList(client, davPath, forceRefresh);
     return;
   }
+  // Cache-only per-folder facts for the rows currently on screen.
+  if (req.path == "/api/dav/rowmeta" && req.method == "GET") {
+    String prefix = "";
+    int pIdx = req.query.indexOf("prefix=");
+    if (pIdx >= 0) {
+      prefix = req.query.substring(pIdx + 7);
+      int ampIdx = prefix.indexOf("&");
+      if (ampIdx >= 0) prefix = prefix.substring(0, ampIdx);
+      prefix = urlDecode(prefix);
+    }
+    handleDAVRowMeta(client, prefix);
+    return;
+  }
   if (req.path == "/api/dav/download" && req.method == "POST") {
     handleDAVDownload(client, req.body);
     return;
