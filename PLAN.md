@@ -10,7 +10,7 @@ Before tagging, in this order:
    webui.html JS syntax, webui.h freshness.
 3. `arduino-cli compile` for **both** matrix FQBNs (JC3248 and Waveshare).
 4. Tag `vX.Y.Z` and push with `--follow-tags`. CI builds and attaches the bins.
-5. `cd <retro-shop>/public/tools/gotek-flasher && ./update-firmware.sh vX.Y.Z`,
+5. `cd ~/OneDrive/Documents/projecten/retro-shop/public/tools/gotek-flasher && ./update-firmware.sh vX.Y.Z`,
    then commit and `git push production main`.
 
 ---
