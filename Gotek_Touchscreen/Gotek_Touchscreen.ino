@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.18.0"
+#define FW_VERSION "v0.19.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.033"
+#define FW_INTERNAL "release.034"
 
 using std::vector;
 using std::sort;
@@ -1653,6 +1653,39 @@ static void _amicrushWriteStamp() {
   snprintf(buf, sizeof(buf), "%08lx", (unsigned long)amicrush_adf_id);
   f.println(buf);
   f.close();
+}
+
+// The shipped theme's style parameters, written next to its PNGs.
+//
+// Separate from firstBootScaffold (which early-returns on any card that already
+// has a CONFIG.TXT) so cards flashed before styles existed also get the file —
+// without it the editor cannot open the default theme, only copy a preset.
+void ensureDefaultThemeStyle() {
+  if (SD_MMC.cardType() == CARD_NONE) return;
+
+  char dir[64];
+  snprintf(dir, sizeof(dir), "/THEMES/%s", default_theme_name);
+  if (!SD_MMC.exists("/THEMES")) SD_MMC.mkdir("/THEMES");
+  if (!SD_MMC.exists(dir)) SD_MMC.mkdir(dir);
+
+  char path[80];
+  snprintf(path, sizeof(path), "%s/theme.json", dir);
+  if (SD_MMC.exists(path)) return;
+
+  File f = SD_MMC.open(path, "w");
+  if (!f) return;
+  // Small enough to stage on the stack; keeps memcpy_P off the heap.
+  char json[320];
+  strncpy_P(json, default_theme_style, sizeof(json) - 1);
+  json[sizeof(json) - 1] = 0;
+  const size_t want = strlen(json);
+  const size_t got  = f.print(json);
+  f.close();
+  if (got != want) {
+    SD_MMC.remove(path);  // a half-written style would break the editor
+    return;
+  }
+  Serial.println("  Wrote theme style: " + String(path));
 }
 
 void ensureAmiCrushInstalled() {
@@ -5820,6 +5853,7 @@ void setup() {
   Serial.println("SD card initialized");
   firstBootScaffold();
   ensureAmiCrushInstalled();  // idempotent — reaches pre-v0.11.2 SDs too
+  ensureDefaultThemeStyle();  // idempotent — makes the shipped theme editable
   loadConfig();
   Serial.println("Config loaded");
   sdLog(String("Last reset reason: ") + resetReasonName(g_resetReason));

@@ -32,3 +32,6 @@ tools/test/*.exe
 # Python bytecode from tools/
 __pycache__/
 *.pyc
+
+# Local Claude Code settings / launch configs
+.claude/

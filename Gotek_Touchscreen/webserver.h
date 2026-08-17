@@ -796,6 +796,13 @@ void handleHttpRequest(WiFiClient &client) {
     handleThemeActivateParsed(client, name);
     return;
   }
+  // Theme style parameters — what makes a saved theme re-editable.
+  if (req.path.startsWith("/api/themes/") && req.path.endsWith("/style")) {
+    String name = req.path.substring(12, req.path.length() - 6);
+    if (req.method == "GET")       { handleThemeStyleGet(client, name); return; }
+    else if (req.method == "POST") { handleThemeStylePost(client, req, name); return; }
+  }
+
   // Theme editor: one PNG per request, name in the path, asset in ?file=
   if (req.path.startsWith("/api/themes/") && req.path.endsWith("/asset") && req.method == "POST") {
     String name = req.path.substring(12, req.path.length() - 6);

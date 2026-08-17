@@ -307,3 +307,8 @@ static const DefaultThemeFile default_theme_files[] = {
   { "/THEMES/AMIGA_WB2/BTN_WIFI.png", btn_png_btn_wifi, btn_png_btn_wifi_len },
 };
 static const int default_theme_files_count = sizeof(default_theme_files) / sizeof(default_theme_files[0]);
+
+// Style parameters behind the artwork above — see handleThemeStyleGet().
+static const char default_theme_style[] PROGMEM =
+  "{\"preset\":\"AMIGA_WB2\",\"fill\":\"#a8a8a8\",\"light\":\"#ffffff\",\"dark\":\"#000000\",\"text\":\"#000000\",\"accent\":\"#5a6ea0\",\"bevel\":\"raised\",\"bevelW\":2,\"radius\":0,\"scale\":2}";
+static const char default_theme_name[] PROGMEM = "AMIGA_WB2";

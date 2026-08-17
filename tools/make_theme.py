@@ -306,6 +306,27 @@ def emit_header(theme_name: str, assets: dict[str, bytes]) -> None:
         "sizeof(default_theme_files) / sizeof(default_theme_files[0]);",
         "",
     ]
+    # The style parameters that produced the artwork above. The PNGs are output;
+    # this is the theme. firstBootScaffold writes it to SD next to them so the
+    # shipped theme can be reopened in the browser editor like a user-made one.
+    st = PRESETS[theme_name]
+    hexc = lambda rgb: "#%02x%02x%02x" % rgb
+    style = (
+        '{"preset":"%s","fill":"%s","light":"%s","dark":"%s","text":"%s",'
+        '"accent":"%s","bevel":"%s","bevelW":%d,"radius":%d,"scale":%d}'
+        % (theme_name, hexc(st["fill"]), hexc(st["light"]), hexc(st["dark"]),
+           hexc(st["text"]), hexc(st.get("accent", st["dark"])),
+           st.get("bevel", "raised"), st.get("bevel_w", 2),
+           st.get("radius", 0), st.get("scale", 2))
+    )
+    lines += [
+        "// Style parameters behind the artwork above — see handleThemeStyleGet().",
+        'static const char default_theme_style[] PROGMEM =',
+        '  "' + style.replace('"', '\\"') + '";',
+        f'static const char default_theme_name[] PROGMEM = "{theme_name}";',
+        "",
+    ]
+
     with open(HEADER, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines))
 

@@ -1231,6 +1231,92 @@ static int b64urlDecode(const String &in, uint8_t *out, size_t outCap) {
   return (int)n;
 }
 
+// A theme's style parameters, stored next to its artwork.
+//
+// The PNGs are OUTPUT; this is the theme. Without it a saved theme could not be
+// reopened in the editor (there was nothing to reopen — the parameters existed
+// only in the browser until the page was closed), and the web UI had no way to
+// match the colours the panel is using.
+#define THEME_STYLE_FILE "theme.json"
+
+// GET /api/themes/{name}/style
+void handleThemeStyleGet(WiFiClient &client, const String &name) {
+  if (!validThemeName(name)) {
+    sendJSON(client, 400, "{\"error\":\"Invalid theme name\"}");
+    return;
+  }
+  const String path = "/THEMES/" + name + "/" + THEME_STYLE_FILE;
+  File f = SD_MMC.open(path.c_str(), "r");
+  if (!f) {
+    // A theme written before styles were stored, or hand-assembled artwork.
+    // The editor falls back to a preset by name; say so rather than 500.
+    sendJSON(client, 404, "{\"error\":\"No style stored for this theme\"}");
+    return;
+  }
+  const size_t sz = f.size();
+  if (sz == 0 || sz > 4096) {
+    f.close();
+    sendJSON(client, 422, "{\"error\":\"Style file looks wrong\"}");
+    return;
+  }
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json");
+  client.println("Content-Length: " + String((uint32_t)sz));
+  client.println("Cache-Control: no-cache");
+  client.println("Connection: close");
+  client.println();
+  static uint8_t buf[512];
+  size_t sent = 0;
+  while (sent < sz) {
+    const size_t n = f.read(buf, sizeof(buf));
+    if (n == 0) break;
+    client.write(buf, n);
+    sent += n;
+    yield();
+  }
+  f.close();
+}
+
+// POST /api/themes/{name}/style
+// Body: the style JSON itself (small, so it arrives in req.body).
+void handleThemeStylePost(WiFiClient &client, const HttpRequest &req, const String &name) {
+  if (!validThemeName(name)) {
+    sendJSON(client, 400, "{\"error\":\"Invalid theme name\"}");
+    return;
+  }
+  const String body = req.body;
+  if (body.length() == 0 || body.length() > 4096) {
+    sendJSON(client, 413, "{\"error\":\"Missing or oversized style\"}");
+    return;
+  }
+  // Not a parser, just a sanity gate — the firmware never interprets this file,
+  // it only hands it back to the editor.
+  if (body[0] != '{') {
+    sendJSON(client, 400, "{\"error\":\"Style must be a JSON object\"}");
+    return;
+  }
+
+  if (!SD_MMC.exists("/THEMES")) SD_MMC.mkdir("/THEMES");
+  const String dir = "/THEMES/" + name;
+  if (!SD_MMC.exists(dir.c_str())) SD_MMC.mkdir(dir.c_str());
+
+  const String path = dir + "/" + THEME_STYLE_FILE;
+  File f = SD_MMC.open(path.c_str(), "w");
+  if (!f) {
+    sendJSON(client, 500, "{\"error\":\"Cannot write style\"}");
+    return;
+  }
+  const size_t written = f.print(body);
+  f.close();
+  if (written != body.length()) {
+    SD_MMC.remove(path.c_str());
+    sendJSON(client, 500, "{\"error\":\"Short write - card full?\"}");
+    return;
+  }
+  sdLog("Theme style written: " + path);
+  sendJSON(client, 200, "{\"status\":\"ok\"}");
+}
+
 // POST /api/themes/{name}/asset
 // Body: file=BTN_ADF&data=<base64url PNG>
 //
