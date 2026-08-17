@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.17.1"
+#define FW_VERSION "v0.18.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.031"
+#define FW_INTERNAL "release.033"
 
 using std::vector;
 using std::sort;
@@ -478,6 +478,21 @@ bool cfg_display_flip = false;
 // Forward declarations for symbols defined in headers included near the end of
 // this .ino but called from functions defined earlier (drawList, etc).
 bool drawThumb(int x, int y, const String &sourcePath);
+
+struct ListRow {
+  String   name;
+  String   thumbPath;    // local file to draw as the thumbnail; "" for none
+  bool     selected   = false;
+  bool     isFolder    = false;  // draw the folder-tab placeholder, not "?"
+  int      diskCount   = 0;      // > 1 renders "N disks"
+  bool     hasCover    = false;  // server says there is art we haven't fetched
+  bool     hasNfo      = false;
+  bool     dimmedName  = false;  // files inside a DAV folder, vs the folder
+};
+
+// Explicit prototype — without it Arduino generates one above this struct and
+// the build fails with "'ListRow' does not name a type".
+void drawListRow(int y, const ListRow &r);
 // Defined in button_cache.h, which is included further down (it needs the
 // gfx_* primitives); cycleTheme() above calls it before that point.
 void clearButtonCache();
@@ -3796,7 +3811,10 @@ void davPrecacheOneCover() {
   }
 
   // Window satisfied — go quiet until the user scrolls.
-  if (dav_cover_precache_idx >= windowEnd || dav_cover_precache_idx >= listEnd) return;
+  if (dav_cover_precache_idx >= windowEnd || dav_cover_precache_idx >= listEnd) {
+    if (g_coverQCount == 0) g_bgActivity = "";
+    return;
+  }
 
   const DAVFileEntry &folder = dav_entries[dav_cover_precache_idx];
   String basePath = dav_current_path;
@@ -3820,7 +3838,13 @@ void davPrecacheOneCover() {
     size_t maxCover = 100 * 1024;
     uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
     if (buf) {
+      // Chip rather than a banner, same reasoning as the queued path: this
+      // fires once per idle tick for as long as there are covers to fetch, so
+      // a banner would repaint the screen every couple of seconds. Without
+      // either, though, the panel just dimmed with no explanation — which is
+      // the one dip site that had nothing at all.
       BacklightDip _dip;
+      g_bgActivity = "COVER ART";
       long bytes = davClient.streamToBuffer(coverPath, buf, maxCover);
       if (bytes > 0) {
         davSaveCachedCover(coverPath, buf, bytes);
@@ -3997,6 +4021,94 @@ void davBrowsePath(const String &path) {
   drawDAVList();
 }
 
+String truncateToWidth(const String &text, int maxWidth);   // defined further down
+
+// ── Shared list row ────────────────────────────────────────────────────
+//
+// One renderer for both the SD and the WebDAV list. They had grown separate
+// copies that drifted: the SD row painted an opaque selection bar and opaque
+// text backgrounds, the DAV row did not, so with a wallpaper behind them the
+// two lists no longer looked like the same product.
+//
+// Everything here draws transparently. Selection is a left accent bar plus
+// brighter text rather than a filled rectangle — over artwork a filled bar
+// reads as a hole, and the accent carries the same information.
+
+void drawListRow(int y, const ListRow &r) {
+  const int thumbX = 6;
+  const int thumbY = y + (LIST_ITEM_H - LIST_THUMB_H) / 2;
+
+  // Selection: accent bar only, so whatever is behind stays visible.
+  if (r.selected) {
+    gfx_fillRect(0, y, 3, LIST_ITEM_H, TFT_CYAN);
+  }
+
+  bool thumbDrawn = false;
+  if (r.thumbPath.length() > 0) {
+    thumbDrawn = drawThumb(thumbX, thumbY, r.thumbPath);
+  }
+
+  const bool wasTransparent = text_transparent;
+  text_transparent = true;
+
+  if (!thumbDrawn) {
+    if (r.isFolder) {
+      // Folder tab outline + initial letter. Outline rather than a filled
+      // block, again so the backdrop shows through.
+      gfx_drawRect(thumbX, thumbY, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
+      gfx_fillRect(thumbX + 2, thumbY, LIST_THUMB_W / 2, 4, TFT_YELLOW);
+      gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+      gfx_setTextSize(3);
+      char initial = r.name.length() ? (char)toupper(r.name.charAt(0)) : '?';
+      char buf[2] = { initial, 0 };
+      gfx_setCursor(thumbX + (LIST_THUMB_W - 18) / 2, thumbY + 12);
+      gfx_print(buf);
+      if (r.hasCover) {
+        gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+        gfx_setTextSize(1);
+        gfx_setCursor(thumbX + 4, thumbY + LIST_THUMB_H - 10);
+        gfx_print("IMG");
+      }
+    } else {
+      gfx_drawRect(thumbX, thumbY, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
+      gfx_setTextColor(0x8410, TFT_BLACK);
+      gfx_setTextSize(1);
+      gfx_setCursor(thumbX + 12, thumbY + 18);
+      gfx_print("?");
+    }
+  }
+
+  const int textX = thumbX + LIST_THUMB_W + 8;
+  gfx_setTextColor(r.selected ? TFT_CYAN : (r.dimmedName ? TFT_GREY : TFT_WHITE), TFT_BLACK);
+  gfx_setTextSize(2);
+  gfx_setCursor(textX, y + 8);
+  gfx_print(truncateToWidth(r.name, gW - textX - 54));
+
+  // Meta line: disk count for a set, otherwise what metadata exists.
+  if (r.diskCount > 1) {
+    gfx_setTextSize(1);
+    gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+    gfx_setCursor(textX, y + 30);
+    gfx_print(String(r.diskCount) + " disks");
+  } else if (r.hasCover || r.hasNfo) {
+    gfx_setTextSize(1);
+    gfx_setCursor(textX, y + 30);
+    if (r.hasCover) {
+      gfx_setTextColor(TFT_GREEN, TFT_BLACK);
+      gfx_print("Cover ");
+    }
+    if (r.hasNfo) {
+      gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+      gfx_print("NFO");
+    }
+  }
+
+  text_transparent = wasTransparent;
+
+  // Separator
+  gfx_fillRect(6, y + LIST_ITEM_H - 1, gW - 12, 1, 0x2104);
+}
+
 void drawDAVList() {
   refreshWallpaper();
   drawScreenBackground();
@@ -4015,80 +4127,20 @@ void drawDAVList() {
     gfx_print("Empty folder");
   }
 
-  // Draw visible entries (same layout as SD game list)
+  // Same shared row renderer as the SD list, so the two cannot drift apart.
   for (int vi = 0; vi < perPage && (dav_scroll_offset + vi) < (int)dav_entries.size(); vi++) {
     int gi = dav_scroll_offset + vi;
     const DAVFileEntry &e = dav_entries[gi];
-    int y = LIST_START_Y + vi * LIST_ITEM_H;
 
-    // Thumbnail area
-    int thumbX = 6;
-    int thumbY2 = y + (LIST_ITEM_H - LIST_THUMB_H) / 2;
-
-    if (e.isDir) {
-      // Cover art, if the precache has already pulled this folder's image
-      // down. Covers land in /DAV_COVERS/ as ordinary JPEG/PNG files, so the
-      // same drawThumb() used by the SD list works unchanged — it adds its
-      // own 46x46 LRU on top, which is what keeps scrolling smooth once a
-      // screenful has been seen once.
-      bool thumbDrawn = false;
-      String cachedCover = davCachedCoverFileFor(dav_current_path, e.name());
-      if (cachedCover.length() > 0) {
-        thumbDrawn = drawThumb(thumbX, thumbY2, cachedCover);
-      }
-
-      if (!thumbDrawn) {
-        // Folder placeholder — initial letter on a folder-tab shape.
-        gfx_fillRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x1082);
-        gfx_drawRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
-        gfx_fillRect(thumbX + 2, thumbY2, LIST_THUMB_W / 2, 6, TFT_YELLOW);
-        if (e.hasCover) {
-          // Server says there IS a cover, we just haven't fetched it yet.
-          gfx_setTextColor(TFT_GREEN, 0x1082);
-          gfx_setTextSize(1);
-          gfx_setCursor(thumbX + 4, thumbY2 + LIST_THUMB_H - 12);
-          gfx_print("IMG");
-        }
-        gfx_setTextColor(TFT_YELLOW, 0x1082);
-        gfx_setTextSize(3);
-        char initial = toupper(e.cname()[0]);
-        gfx_setCursor(thumbX + (LIST_THUMB_W - 18) / 2, thumbY2 + 12);
-        char buf[2] = { initial, 0 };
-        gfx_print(buf);
-      }
-    } else {
-      // File — draw placeholder (shouldn't appear in game-folder view, but just in case)
-      gfx_drawRect(thumbX, thumbY2, LIST_THUMB_W, LIST_THUMB_H, 0x4208);
-      gfx_setTextColor(0x4208, TFT_BLACK);
-      gfx_setTextSize(1);
-      gfx_setCursor(thumbX + 12, thumbY2 + 18);
-      gfx_print("?");
-    }
-
-    // Game name
-    int textX = thumbX + LIST_THUMB_W + 8;
-    gfx_setTextColor(e.isDir ? TFT_WHITE : TFT_GREY, TFT_BLACK);
-    gfx_setTextSize(2);
-    String dispName = truncateToWidth(e.name(), gW - textX - 54);
-    gfx_setCursor(textX, y + 8);
-    gfx_print(dispName);
-
-    // Meta line: Cover/NFO indicators for folders
-    if (e.isDir && (e.hasCover || e.hasNfo)) {
-      gfx_setTextSize(1);
-      gfx_setCursor(textX, y + 30);
-      if (e.hasCover) {
-        gfx_setTextColor(TFT_GREEN, TFT_BLACK);
-        gfx_print("Cover ");
-      }
-      if (e.hasNfo) {
-        gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-        gfx_print("NFO");
-      }
-    }
-
-    // Separator line
-    gfx_fillRect(6, y + LIST_ITEM_H - 1, gW - 12, 1, 0x2104);
+    ListRow row;
+    row.name      = e.name();
+    row.selected  = (gi == dav_selected);
+    row.isFolder  = e.isDir;
+    row.hasCover  = e.hasCover;
+    row.hasNfo    = e.hasNfo;
+    row.dimmedName = !e.isDir;
+    if (e.isDir) row.thumbPath = davCachedCoverFileFor(dav_current_path, e.name());
+    drawListRow(LIST_START_Y + vi * LIST_ITEM_H, row);
   }
 
   // A-Z alphabet bar (right edge) — shared with SD game list
@@ -4859,55 +4911,17 @@ void drawList() {
     scroll_offset = (int)game_list.size() - perPage;
   if (scroll_offset < 0) scroll_offset = 0;
 
-  // Draw visible game entries
+  // Draw visible game entries through the shared row renderer.
   for (int vi = 0; vi < perPage && (scroll_offset + vi) < (int)game_list.size(); vi++) {
     int gi = scroll_offset + vi;
     const GameEntry &g = game_list[gi];
-    int y = LIST_START_Y + vi * LIST_ITEM_H;
-    bool isSel = (gi == game_selected);
 
-    // Selection highlight bar
-    if (isSel) {
-      gfx_fillRect(0, y, gW, LIST_ITEM_H, 0x1082);  // dark highlight
-    }
-
-    // Thumbnail (cover art) — uses two-layer cache:
-    //   1) PSRAM LRU of decoded 46×46 RGB565   → instant during scroll
-    //   2) /THUMB_CACHE/<hash>.bin on SD       → fast, no JPEG decode
-    //   3) Fallback decode + capture for next time
-    int thumbX = 6;
-    int thumbY = y + (LIST_ITEM_H - LIST_THUMB_H) / 2;
-    bool thumbDrawn = false;
-    if (g.jpg_path.length() > 0) {
-      thumbDrawn = drawThumb(thumbX, thumbY, g.jpg_path);
-    }
-    if (!thumbDrawn) {
-      // No cover art — draw a placeholder
-      gfx_drawRect(thumbX, thumbY, LIST_THUMB_W, LIST_THUMB_H, 0x4208);  // grey border
-      gfx_setTextColor(0x4208, TFT_BLACK);
-      gfx_setTextSize(1);
-      gfx_setCursor(thumbX + 12, thumbY + 18);
-      gfx_print("?");
-    }
-
-    // Game name
-    int textX = thumbX + LIST_THUMB_W + 8;
-    gfx_setTextColor(isSel ? TFT_CYAN : TFT_WHITE, isSel ? 0x1082 : TFT_BLACK);
-    gfx_setTextSize(2);
-    String dispName = truncateToWidth(g.name, gW - textX - 54);
-    gfx_setCursor(textX, y + 8);
-    gfx_print(dispName);
-
-    // Disk count indicator (if multi-disk)
-    if (g.disk_count > 1) {
-      gfx_setTextSize(1);
-      gfx_setTextColor(TFT_YELLOW, isSel ? 0x1082 : TFT_BLACK);
-      gfx_setCursor(textX, y + 30);
-      gfx_print(String(g.disk_count) + " disks");
-    }
-
-    // Separator line
-    gfx_fillRect(6, y + LIST_ITEM_H - 1, gW - 12, 1, 0x2104);
+    ListRow row;
+    row.name       = g.name;
+    row.thumbPath  = g.jpg_path;
+    row.selected   = (gi == game_selected);
+    row.diskCount  = g.disk_count;
+    drawListRow(LIST_START_Y + vi * LIST_ITEM_H, row);
   }
 
   // A-Z alphabet slider (right edge) — replaces old scroll buttons
@@ -6125,6 +6139,33 @@ void loop() {
     String displayName = web_pending_dav_name;
     web_pending_dav_path = "";
     web_pending_dav_name = "";
+
+    // Resolve the folder's disk list BEFORE loading, from the SD listing cache.
+    // loadFileFromDAV names which disk of the set it just mounted, and it reads
+    // dav_detail_disks to do that — which for a web-triggered load was still
+    // empty, because the deferred navigation that fills it runs afterwards. So
+    // the panel showed a load with no disk number precisely when the user was
+    // not standing in front of it to see which one they picked.
+    {
+      String folderOnly = remotePath;
+      int sl = folderOnly.lastIndexOf('/');
+      if (sl > 0) {
+        folderOnly = folderOnly.substring(0, sl);
+        DAVEntryList cachedDir;
+        if (davReadCachedDir(folderOnly, cachedDir)) {
+          dav_detail_disks.clear();
+          for (const auto &f : cachedDir) {
+            if (f.isDir) continue;
+            String lname = f.name();
+            lname.toLowerCase();
+            if (lname.endsWith(".adf") || lname.endsWith(".dsk") ||
+                lname.endsWith(".adz") || lname.endsWith(".img")) {
+              dav_detail_disks.push_back(f.name());
+            }
+          }
+        }
+      }
+    }
 
     size_t loaded = loadFileFromDAV(remotePath, displayName);
     if (loaded > 0) {

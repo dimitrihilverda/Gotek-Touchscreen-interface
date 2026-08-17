@@ -52,6 +52,14 @@ textarea{min-height:80px;resize:vertical}
 .game-name{font-weight:700;font-size:14px}
 .game-meta{font-size:12px;color:#555;margin-top:2px}
 .game-actions{display:flex;gap:4px}
+/* Disk selector: one button per disk, like the touchscreen's row. */
+.disk-btn-row{display:flex;flex-wrap:wrap;gap:6px}
+.disk-btn{min-width:44px;padding:8px 10px;font-size:13px;font-weight:600;cursor:pointer;
+  background:var(--grey);border:2px outset #ddd;border-radius:2px;color:#000}
+.disk-btn:active{border-style:inset}
+.disk-btn.loaded{background:var(--green);color:#fff;border-color:#0a0}
+.disk-btn[disabled]{opacity:.5;cursor:default}
+.disk-btn .disk-sub{display:block;font-size:10px;font-weight:400;opacity:.75}
 .badge{display:inline-block;padding:2px 6px;font-size:11px;border-radius:2px;font-weight:600}
 .badge-disks{background:var(--cyan);color:var(--white)}
 .badge-nfo{background:var(--green);color:var(--white)}
@@ -405,11 +413,12 @@ textarea{min-height:80px;resize:vertical}
       <img id="dav-modal-cover" class="game-cover" style="width:200px;height:auto;max-height:250px">
     </div>
     <div id="dav-modal-disk-loader" style="margin-bottom:12px;padding:10px;background:var(--light);border:1px inset #999;border-radius:2px">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span style="font-weight:600;font-size:13px">Load Disk:</span>
-        <select id="dav-modal-disk-select" style="width:auto;min-width:120px;padding:4px 8px"></select>
-        <button class="btn btn-success btn-sm" id="dav-modal-load-btn">Insert</button>
-        <button class="btn btn-sm" id="dav-modal-eject-btn" onclick="davEject();davCloseFolderModal();">Eject</button>
+      <!-- One button per disk, mirroring the disk selector on the touchscreen.
+           A dropdown hid how many disks a game had and took two taps to swap;
+           buttons show the whole set at a glance and swap in one. -->
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px">Insert disk</div>
+      <div id="dav-modal-disk-btns" class="disk-btn-row"></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px">
         <span id="dav-modal-load-status" style="font-size:12px;color:#555"></span>
       </div>
     </div>
@@ -506,11 +515,12 @@ textarea{min-height:80px;resize:vertical}
       <img id="modal-game-cover" class="game-cover" style="width:200px;height:auto;max-height:250px">
     </div>
     <div id="modal-disk-loader" style="margin-bottom:12px;padding:10px;background:var(--light);border:1px inset #999;border-radius:2px">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span style="font-weight:600;font-size:13px">Load Disk:</span>
-        <select id="modal-disk-select" style="width:auto;min-width:120px;padding:4px 8px"></select>
-        <button class="btn btn-success btn-sm" id="modal-load-btn">Insert</button>
-        <button class="btn btn-sm" id="modal-eject-btn">Eject</button>
+      <!-- Same disk-button row as the WebDAV modal and the touchscreen. The SD
+           side kept a dropdown plus separate Insert and Eject, which made the
+           two halves of this UI behave differently for the same task. -->
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px">Insert disk</div>
+      <div id="modal-disk-btns" class="disk-btn-row"></div>
+      <div style="margin-top:8px">
         <span id="modal-load-status" style="font-size:12px;color:#555"></span>
       </div>
     </div>
@@ -970,11 +980,25 @@ async function openGameDetail(mode, name) {
   document.getElementById('modal-cover-url').value = '';
   document.getElementById('cover-url-status').textContent = '';
 
-  // Disk selector for loading
-  const diskSel = document.getElementById('modal-disk-select');
-  diskSel.innerHTML = d.disks.map((dk, i) =>
-    `<option value="${i + 1}">${esc(dk.file)} (${Math.round(dk.size/1024)} KB)</option>`
-  ).join('');
+  // Disk buttons. The mounted disk offers to eject itself; the others replace
+  // it. Numbered only when there is more than one, since "Disk 1 of 1" is noise.
+  const multi = d.disks.length > 1;
+  const btnHost = document.getElementById('modal-disk-btns');
+  btnHost.innerHTML = '';
+  d.disks.forEach((dk, i) => {
+    const sizeStr = Math.round(dk.size / 1024) + ' KB';
+    const isLoaded = !!(lastGameData && lastGameData.loaded_file &&
+                        lastGameData.loaded_file.endsWith(dk.file));
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'disk-btn' + (isLoaded ? ' loaded' : '');
+    b.title = dk.file + ' (' + sizeStr + ')';
+    b.innerHTML = isLoaded
+      ? ('Eject<span class="disk-sub">' + (multi ? 'disk ' + (i + 1) : sizeStr) + '</span>')
+      : ((multi ? 'Disk ' + (i + 1) : 'Insert') + '<span class="disk-sub">' + sizeStr + '</span>');
+    b.addEventListener('click', () => sdToggleDisk(i + 1, dk, isLoaded, multi, d.disks.length));
+    btnHost.appendChild(b);
+  });
 
   // Show active status
   const loadStatus = document.getElementById('modal-load-status');
@@ -1022,30 +1046,38 @@ document.getElementById('modal-delete-btn').addEventListener('click', async () =
 });
 
 // Load disk
-document.getElementById('modal-load-btn').addEventListener('click', async () => {
+// Insert/eject toggle for an SD disk, matching the WebDAV modal.
+async function sdToggleDisk(diskNum, disk, isLoaded, multi, total) {
   if (!currentGame) return;
-  const diskNum = document.getElementById('modal-disk-select').value;
   const statusEl = document.getElementById('modal-load-status');
-  statusEl.innerHTML = '<span style="color:var(--orange)">Loading...</span>';
+  const host = document.getElementById('modal-disk-btns');
+  const btns = host ? host.querySelectorAll('.disk-btn') : [];
+  btns.forEach(b => b.disabled = true);
 
   try {
-    const params = new URLSearchParams({ disk: diskNum });
-    const res = await api(`/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/load`, {
-      method: 'POST', body: params
-    });
-    statusEl.innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>Active: ' + esc(res.file) + '</span>';
-    toast(res.game + ' loaded!');
-    loadGames();  // refresh list to update active indicator
+    if (isLoaded) {
+      statusEl.textContent = 'Ejecting…';
+      await api('/api/disk/unload', { method: 'POST' });
+      statusEl.textContent = '';
+      toast('Ejected');
+    } else {
+      const which = multi ? ('Disk ' + diskNum + '/' + total + ' — ') : '';
+      statusEl.innerHTML = '<span style="color:var(--orange)">' + which + 'loading…</span>';
+      const params = new URLSearchParams({ disk: String(diskNum) });
+      const res = await api(`/api/games/${currentGame.mode}/${encodeURIComponent(currentGame.name)}/load`, {
+        method: 'POST', body: params
+      });
+      statusEl.innerHTML = '<span style="color:var(--green)"><span class="active-indicator"></span>' +
+                           which + 'Playing ' + esc(res.file || disk.file) + '</span>';
+      toast(which + (res.game || currentGame.name) + ' loaded');
+    }
+    await loadGames();                 // refresh the list's active indicator
+    openGameDetail(currentGame.mode, currentGame.name);   // re-render the buttons
   } catch (e) {
-    statusEl.innerHTML = '<span style="color:var(--red)">Failed to load</span>';
+    statusEl.innerHTML = '<span style="color:var(--red)">Failed</span>';
+    btns.forEach(b => b.disabled = false);
   }
-});
-
-// Eject disk (from modal)
-document.getElementById('modal-eject-btn').addEventListener('click', async () => {
-  await ejectDisk();
-  document.getElementById('modal-load-status').textContent = 'Ejected';
-});
+}
 
 // Eject disk (global)
 async function ejectDisk() {
@@ -1821,11 +1853,7 @@ async function davBrowse(path, forceRefresh) {
     const npEl = document.getElementById('dav-now-playing');
     if (davLoadedFile) {
       npCard.style.display = 'block';
-      let displayName = davLoadedFile.split('/').filter(s => s).pop() || davLoadedFile;
-      npEl.innerHTML =
-        '<span class="active-indicator"></span>' +
-        '<strong>' + esc(displayName) + '</strong>' +
-        '<button class="btn btn-sm" onclick="davEject()">Eject</button>';
+      davRenderNowPlaying();
     } else {
       npCard.style.display = 'none';
     }
@@ -2036,6 +2064,108 @@ document.addEventListener('DOMContentLoaded', npStartPolling);
 // mounts the wrong disk.
 let davDetailToken = 0;
 
+// Insert/eject toggle for one disk of a set.
+//
+// The mounted disk ejects; any other replaces it. That removes the separate
+// Eject button, and more importantly removes the state where Insert and Eject
+// were both live and it was not obvious which applied to what.
+async function davToggleDisk(idx, disks, multi, folderPath) {
+  if (idx < 0 || idx >= disks.length) return;
+  const disk = disks[idx];
+  const remotePath = folderPath + '/' + disk.name;
+  const status = document.getElementById('dav-modal-load-status');
+  const host = document.getElementById('dav-modal-disk-btns');
+  const btns = host ? host.querySelectorAll('.disk-btn') : [];
+  btns.forEach(b => b.disabled = true);
+
+  try {
+    if (davLoadedFile === remotePath) {
+      if (status) status.textContent = 'Ejecting…';
+      await api('/api/disk/unload', { method: 'POST' });
+      davLoadedFile = '';
+      toast('Ejected');
+    } else {
+      const which = multi ? ('Disk ' + (idx + 1) + '/' + disks.length + ' — ') : '';
+      if (status) status.textContent = which + 'loading…';
+      const res = await fetch(API + '/api/dav/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'path=' + encodeURIComponent(remotePath)
+      });
+      const rdata = await res.json().catch(() => ({}));
+      davShowDebug(rdata);
+      if (!res.ok) throw new Error(rdata.error || 'HTTP ' + res.status);
+      davLoadedFile = remotePath;
+      toast(which + (rdata.name || disk.name) +
+            (rdata.bytes ? (' loaded (' + (rdata.bytes / 1024).toFixed(0) + ' KB)') : ' loading…'));
+    }
+    if (status) status.textContent = '';
+    davRenderNowPlaying();
+    davOpenFolder(folderPath, document.getElementById('dav-modal-title').textContent);
+  } catch (e) {
+    if (status) status.textContent = '';
+    toast('Failed: ' + (e.message || 'Unknown'), 'error');
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+// NOW PLAYING for WebDAV: clickable, and for a multi-disk set it carries the
+// disk buttons too, so swapping disk 2 for disk 3 does not mean navigating back
+// into the game first.
+async function davRenderNowPlaying() {
+  const npEl = document.getElementById('dav-now-playing');
+  const npCard = document.getElementById('dav-now-playing-card');
+  if (!npEl || !npCard) return;
+  if (!davLoadedFile) { npCard.style.display = 'none'; return; }
+  npCard.style.display = 'block';
+
+  const diskName = davLoadedFile.split('/').filter(x => x).pop() || davLoadedFile;
+  const folderPath = davLoadedFile.substring(0, davLoadedFile.lastIndexOf('/'));
+  const folderName = folderPath.split('/').filter(x => x).pop() || folderPath;
+
+  npEl.innerHTML = '';
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;cursor:pointer';
+  head.title = 'Open ' + folderName;
+  head.innerHTML = '<span class="active-indicator"></span>' +
+                   '<strong>' + esc(folderName) + '</strong>' +
+                   '<span style="color:#555;font-size:13px">' + esc(diskName) + '</span>';
+  head.addEventListener('click', () => davOpenFolder(folderPath, folderName));
+  npEl.appendChild(head);
+
+  // Sibling disks, from the cached listing. Best-effort: if the device cannot
+  // answer we simply show no buttons rather than blocking the bar.
+  try {
+    const data = await api('/api/dav/list?path=' + encodeURIComponent(folderPath));
+    const diskExts = ['ADF','DSK','ADZ','IMG'];
+    const disks = (data.entries || [])
+      .filter(e => !e.dir && diskExts.includes(e.name.split('.').pop().toUpperCase()))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (disks.length > 1) {
+      const row = document.createElement('div');
+      row.className = 'disk-btn-row';
+      row.style.marginTop = '8px';
+      disks.forEach((d, i) => {
+        const thisPath = folderPath + '/' + d.name;
+        const isLoaded = (davLoadedFile === thisPath);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'disk-btn' + (isLoaded ? ' loaded' : '');
+        b.title = d.name;
+        b.innerHTML = isLoaded
+          ? ('Eject<span class="disk-sub">disk ' + (i + 1) + '</span>')
+          : ('Disk ' + (i + 1));
+        b.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          davToggleDisk(i, disks, true, folderPath);
+        });
+        row.appendChild(b);
+      });
+      npEl.appendChild(row);
+    }
+  } catch (e) { /* leave the bar without disk buttons */ }
+}
+
 async function davOpenFolder(folderPath, folderName) {
   const myToken = ++davDetailToken;
 
@@ -2044,10 +2174,8 @@ async function davOpenFolder(folderPath, folderName) {
 
   // Wipe the previous game out before anything can be awaited. Leaving it up
   // as a "loading state" is what made stale disks look like real ones.
-  const diskSelEl = document.getElementById('dav-modal-disk-select');
-  diskSelEl.innerHTML = '<option value="-1">Loading…</option>';
-  diskSelEl.disabled = true;
-  document.getElementById('dav-modal-load-btn').disabled = true;
+  document.getElementById('dav-modal-disk-btns').innerHTML =
+    '<span style="font-size:13px;color:#888">Reading disks…</span>';
   document.getElementById('dav-modal-disks').innerHTML =
     '<p style="color:#888;font-size:13px">Reading folder…</p>';
   document.getElementById('dav-modal-nfo').innerHTML = '';
@@ -2087,21 +2215,36 @@ async function davOpenFolder(folderPath, folderName) {
     const disks = entries.filter(e => !e.dir && diskExts.includes(e.name.split('.').pop().toUpperCase()));
     disks.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Disk selector. Numbered only for a multi-disk set — on a single-disk
-    // game "Disk 1 of 1" is noise, but on a four-disk game knowing which one
-    // you are about to insert is the whole point.
+    // One button per disk, mirroring the touchscreen's selector. Numbered only
+    // for a multi-disk set — on a single-disk game "Disk 1 of 1" is noise.
     const multi = disks.length > 1;
-    const diskSel = document.getElementById('dav-modal-disk-select');
-    diskSel.innerHTML = disks.map((d, i) => {
-      const sizeStr = d.size > 1048576 ? (d.size/1048576).toFixed(1)+' MB' : (d.size/1024).toFixed(0)+' KB';
-      const prefix = multi ? ('Disk ' + (i + 1) + ' of ' + disks.length + ' — ') : '';
-      return '<option value="' + i + '">' + prefix + esc(d.name) + ' (' + sizeStr + ')</option>';
-    }).join('');
-    diskSel.disabled = (disks.length === 0);
-    document.getElementById('dav-modal-load-btn').disabled = (disks.length === 0);
+    const btnHost = document.getElementById('dav-modal-disk-btns');
+    btnHost.innerHTML = '';
     if (disks.length === 0) {
-      diskSel.innerHTML = '<option value="-1">No disk images in this folder</option>';
+      btnHost.innerHTML = '<span style="font-size:13px;color:var(--orange)">' +
+                          'No disk images in this folder</span>';
     }
+    disks.forEach((d, i) => {
+      const sizeStr = d.size > 1048576 ? (d.size/1048576).toFixed(1)+' MB'
+                                       : (d.size/1024).toFixed(0)+' KB';
+      const b = document.createElement('button');
+      b.className = 'disk-btn';
+      b.type = 'button';
+      b.title = d.name + ' (' + sizeStr + ')';
+      b.dataset.idx = String(i);
+      // Toggle, not a separate Eject: the disk that is mounted offers to
+      // eject itself, any other offers to replace it. One control, and its
+      // label always describes what pressing it does.
+      const thisPath = folderPath + '/' + d.name;
+      const isLoaded = (davLoadedFile === thisPath);
+      if (isLoaded) b.classList.add('loaded');
+      const face = multi ? ('Disk ' + (i + 1)) : 'Insert';
+      b.innerHTML = isLoaded
+        ? ('Eject<span class="disk-sub">' + (multi ? 'disk ' + (i + 1) : sizeStr) + '</span>')
+        : (esc(face) + '<span class="disk-sub">' + sizeStr + '</span>');
+      b.addEventListener('click', () => davToggleDisk(i, disks, multi, folderPath));
+      btnHost.appendChild(b);
+    });
 
     // Disk file list
     const disksEl = document.getElementById('dav-modal-disks');
@@ -2142,48 +2285,7 @@ async function davOpenFolder(folderPath, folderName) {
       document.getElementById('dav-modal-load-status').innerHTML =
         '<span style="color:var(--green)"><span class="active-indicator"></span>Playing ' +
         which + esc(loadedName) + '</span>';
-      if (at >= 0) diskSel.value = String(at);   // preselect what is mounted
     }
-
-    // Load button handler
-    document.getElementById('dav-modal-load-btn').onclick = async function() {
-      const idx = parseInt(diskSel.value);
-      if (idx < 0 || idx >= disks.length) return;
-      const disk = disks[idx];
-      const remotePath = folderPath + '/' + disk.name;
-      this.disabled = true;
-      this.textContent = 'Loading...';
-      document.getElementById('dav-modal-load-status').innerHTML = '<span style="color:var(--orange)">Loading...</span>';
-      try {
-        const res = await fetch(API + '/api/dav/load', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'path=' + encodeURIComponent(remotePath)
-        });
-        const rdata = await res.json().catch(() => ({}));
-        davShowDebug(rdata);
-        if (!res.ok) throw new Error(rdata.error || 'HTTP ' + res.status);
-        davLoadedFile = remotePath;
-        this.textContent = 'Insert';
-        this.disabled = false;
-        const which = multi ? ('Disk ' + (idx + 1) + ' of ' + disks.length + ': ') : '';
-        document.getElementById('dav-modal-load-status').innerHTML =
-          '<span style="color:var(--green)"><span class="active-indicator"></span>Playing ' +
-          which + esc(disk.name) + '</span>';
-        let loadMsg = (multi ? ('Disk ' + (idx + 1) + '/' + disks.length + ' — ') : '') +
-                      rdata.name + ' loading...';
-        if (rdata.bytes) {
-          loadMsg = (multi ? ('Disk ' + (idx + 1) + '/' + disks.length + ' — ') : '') +
-                    rdata.name + ' loaded! (' + (rdata.bytes / 1024).toFixed(0) + ' KB)';
-        }
-        toast(loadMsg);
-      } catch(e) {
-        this.textContent = 'Insert';
-        this.disabled = false;
-        document.getElementById('dav-modal-load-status').innerHTML = '';
-        toast('Load failed: ' + (e.message || 'Unknown'), 'error');
-      }
-    };
 
   } catch(e) {
     document.getElementById('dav-modal-disks').innerHTML = '<p style="color:var(--red)">Failed to load folder contents</p>';
