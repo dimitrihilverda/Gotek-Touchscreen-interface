@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.16.3"
+#define FW_VERSION "v0.17.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.029"
+#define FW_INTERNAL "release.030"
 
 using std::vector;
 using std::sort;
@@ -460,6 +460,11 @@ bool   cfg_log_enabled = false;
 // Wallpaper brightness for the active game's cover behind the list screens,
 // as a percentage. 0 disables it entirely.
 int    cfg_wallpaper_pct = 20;
+// WiFi transmit power in dBm. 15 is a deliberate middle: well above the old
+// hardcoded 8.5, still short of the ~19.5 maximum whose current peak is what
+// browned out an Amiga USB port in the first place. Lower it if your supply
+// is marginal; raise it if the link is weak.
+int    cfg_wifi_tx_dbm = 15;
 
 // Backlight (0..255). Lower default reduces current draw on USB-powered Amiga 5V rail.
 // Can be raised after boot in the settings UI once power has stabilised.
@@ -1288,6 +1293,10 @@ void loadConfig() {
       cfg_dav_path = val;
     } else if (key == "DAV_HTTPS") {
       cfg_dav_https = (val == "1" || val == "true");
+    } else if (key == "WIFI_TX_DBM") {
+      cfg_wifi_tx_dbm = val.toInt();
+      if (cfg_wifi_tx_dbm < 2)  cfg_wifi_tx_dbm = 2;
+      if (cfg_wifi_tx_dbm > 20) cfg_wifi_tx_dbm = 20;
     } else if (key == "WALLPAPER_PCT") {
       cfg_wallpaper_pct = val.toInt();
       if (cfg_wallpaper_pct < 0)   cfg_wallpaper_pct = 0;
@@ -1371,6 +1380,7 @@ void saveConfig() {
   // Logging. This was read from CONFIG.TXT but never written back, so any
   // save — changing a theme, connecting WiFi — silently reset it to off and
   // the setting looked like it had been ignored.
+  f.println("WIFI_TX_DBM=" + String(cfg_wifi_tx_dbm));
   f.println("WALLPAPER_PCT=" + String(cfg_wallpaper_pct));
   f.println("LOG_ENABLED=" + String(cfg_log_enabled ? "1" : "0"));
 
@@ -1751,6 +1761,10 @@ void firstBootScaffold() {
     cfg.println("FTP_USER=");
     cfg.println("FTP_PASS=");
     cfg.println("FTP_PATH=/");
+    cfg.println("");
+    cfg.println("# WiFi transmit power in dBm (2-20). Lower saves current on a");
+    cfg.println("# marginal supply; higher improves an unreliable link.");
+    cfg.println("WIFI_TX_DBM=15");
     cfg.println("");
     cfg.println("# Active game's cover as a dimmed full-screen backdrop (0 = off)");
     cfg.println("WALLPAPER_PCT=20");
@@ -4149,17 +4163,23 @@ void drawDAVDetail() {
   if (imgH < 60) imgH = 60;
 
   bool coverDrawn = false;
-  if (dav_detail_cover_path.length() > 0 && !dav_detail_needs_full_load) {
+  // The cached read is always allowed; only the network fallback is gated.
+  // Gating the whole block on needs_full_load left a bare screen after a
+  // web-triggered load even when the artwork was already sitting on the card.
+  if (dav_detail_cover_path.length() > 0) {
     size_t maxCover = 100 * 1024;
     uint8_t *coverBuf = (uint8_t *)ps_malloc(maxCover);
     if (coverBuf) {
-      // Try SD cache first (instant), then WebDAV (slow)
+      // SD cache first (instant), then WebDAV (slow, and only when this
+      // screen was opened by a real user interaction rather than deferred
+      // from a web request).
       long coverBytes = davReadCachedCover(dav_detail_cover_path, coverBuf, maxCover);
-      if (coverBytes <= 0) {
-        // Not cached — download from WebDAV and save to cache
+      if (coverBytes <= 0 && !dav_detail_needs_full_load) {
         coverBytes = davClient.streamToBuffer(dav_detail_cover_path, coverBuf, maxCover);
-        if (coverBytes > 0) {
+        if (coverBytes > 0 && !davClient.lastTruncated()) {
           davSaveCachedCover(dav_detail_cover_path, coverBuf, coverBytes);
+        } else if (davClient.lastTruncated()) {
+          coverBytes = 0;   // a half-decoded cover is worse than none
         }
       }
       if (coverBytes > 0) {
@@ -6076,18 +6096,58 @@ void loop() {
       folderPath += folder.name();
       dav_detail_folder_path = folderPath;
 
-      // We know the loaded file from nowPlaying — set it as the only disk
       dav_detail_disks.clear();
       dav_detail_cover_path = "";
       dav_detail_nfo_text = "";
       dav_detail_disk_sel = 0;
+
+      String dirPath = folderPath;
+      if (!dirPath.endsWith("/")) dirPath += "/";
+
+      // Fill in from the LOCAL caches. This used to leave the screen bare
+      // after a web-triggered load, because "don't touch the network" had been
+      // implemented as "don't show anything" — but the cover, the NFO and the
+      // folder listing are usually already on the card from browsing, and
+      // reading them is pure SD I/O. The needs_full_load flag still suppresses
+      // the network fallbacks further down.
+      DAVEntryList cachedDir;
+      if (davReadCachedDir(folderPath, cachedDir)) {
+        for (const auto &f : cachedDir) {
+          if (f.isDir) continue;
+          String lname = f.name();
+          lname.toLowerCase();
+          if (lname.endsWith(".adf") || lname.endsWith(".dsk") ||
+              lname.endsWith(".adz") || lname.endsWith(".img")) {
+            dav_detail_disks.push_back(f.name());
+          }
+          if (f.hasNfo && dav_detail_nfo_text.length() == 0) {
+            davReadCachedNfo(dirPath + f.name(), dav_detail_nfo_text);
+          }
+        }
+      }
+
+      // Cover: the conventional <Folder>/<Folder>.jpg|png. Setting the REMOTE
+      // path is right — drawDAVDetail resolves it through the cover cache.
+      if (davCachedCoverFileFor(dav_current_path, folder.name()).length() > 0) {
+        String probe = dirPath + folder.name() + ".jpg";
+        if (SD_MMC.exists(davCoverCachePath(probe).c_str())) dav_detail_cover_path = probe;
+        else dav_detail_cover_path = dirPath + folder.name() + ".png";
+      }
+
+      // The disk that is actually mounted goes first, and is what INSERT/EJECT
+      // acts on. Falls back to just that one if the listing wasn't cached.
       if (nowPlaying.path.length() > 0) {
         String diskFile = nowPlaying.path;
         int sl = diskFile.lastIndexOf('/');
         if (sl >= 0) diskFile = diskFile.substring(sl + 1);
-        dav_detail_disks.push_back(diskFile);
-        String dirPath = folderPath;
-        if (!dirPath.endsWith("/")) dirPath += "/";
+        bool known = false;
+        for (int i = 0; i < (int)dav_detail_disks.size(); i++) {
+          if (dav_detail_disks[i] == diskFile) { dav_detail_disk_sel = i; known = true; break; }
+        }
+        if (!known) {
+          dav_detail_disks.push_back(diskFile);
+          dav_detail_disk_sel = (int)dav_detail_disks.size() - 1;
+        }
         dav_detail_path = dirPath + diskFile;
       }
 

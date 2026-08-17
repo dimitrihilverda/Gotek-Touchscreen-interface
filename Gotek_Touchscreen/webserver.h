@@ -92,11 +92,37 @@ bool initWiFiAP() {
     Serial.println("WiFi mode: Station only (remote)");
   }
 
-  // Reduce TX power to prevent brownouts when powered from Gotek USB
-  // Default is 19.5 dBm (~80mA peak). Lowering to 8.5 dBm (~40mA) is safer.
-  // Still gives ~10m range which is plenty for a room.
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
-  Serial.println("WiFi TX power: 8.5 dBm (low power mode)");
+  // TX power, from CONFIG.TXT (WIFI_TX_DBM), default 15 dBm.
+  //
+  // This was pinned at 8.5 dBm as a brownout mitigation, back before
+  // modem-sleep and the backlight dip existed. 8.5 dBm is genuinely weak: it
+  // is ~11 dB down from the radio's maximum, which is roughly a tenfold
+  // reduction in transmitted power, and it shows up as slow transfers and
+  // retries rather than as an obvious failure. The other mitigations carry
+  // more of that load now, so the default moves up while staying below
+  // maximum, and it is adjustable for anyone whose supply really is marginal.
+  //
+  // NOTE: TX power does NOT affect the signal strengths shown in a network
+  // scan. Those are how strongly this device HEARS each access point, which is
+  // a property of its receiver and antenna. Raising TX power makes the router
+  // hear US better — which is what actually improves throughput — but the scan
+  // numbers will look the same.
+  {
+    wifi_power_t lvl;
+    const int d = cfg_wifi_tx_dbm;
+    if      (d <= 2)  lvl = WIFI_POWER_2dBm;
+    else if (d <= 5)  lvl = WIFI_POWER_5dBm;
+    else if (d <= 7)  lvl = WIFI_POWER_7dBm;
+    else if (d <= 9)  lvl = WIFI_POWER_8_5dBm;
+    else if (d <= 11) lvl = WIFI_POWER_11dBm;
+    else if (d <= 13) lvl = WIFI_POWER_13dBm;
+    else if (d <= 15) lvl = WIFI_POWER_15dBm;
+    else if (d <= 17) lvl = WIFI_POWER_17dBm;
+    else if (d <= 19) lvl = WIFI_POWER_19dBm;
+    else              lvl = WIFI_POWER_19_5dBm;
+    WiFi.setTxPower(lvl);
+    Serial.println("WiFi TX power: ~" + String(d) + " dBm (WIFI_TX_DBM)");
+  }
 
   // Modem-sleep: the radio powers down between DTIM beacons instead of
   // idling at full RX. Typical steady-state current drops from ~120 mA
