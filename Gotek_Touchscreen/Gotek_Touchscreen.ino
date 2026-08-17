@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.17.0"
+#define FW_VERSION "v0.17.1"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.030"
+#define FW_INTERNAL "release.031"
 
 using std::vector;
 using std::sort;
@@ -1126,14 +1126,77 @@ void rampBacklight(uint8_t target) {
 // send, etc.) so the 5V rail isn't asked to power the LCD at full brightness
 // while WiFi RX is drawing peak current — the exact stack that browns out
 // an Amiga USB port.
+// Repaint whatever screen is currently showing. Declared here, defined after
+// the draw functions — the dip helper below needs it to restore the display
+// after covering it with a status banner.
+void redrawCurrentScreen();
+
+// Centred "this is what I'm doing" banner, shown while a blocking operation
+// holds the loop task. Drawn directly rather than through the themed helpers
+// so it works from any screen and needs no theme assets.
+// Background activity, shown as a small chip by the list screens. Set while a
+// long-running background task is going, cleared when it stops.
+//
+// Deliberately NOT a BacklightDip banner: the cover fetcher runs for minutes on
+// a large library, and bannering it would repaint the whole screen every couple
+// of seconds. A chip rides along with repaints that were going to happen anyway.
+String g_bgActivity = "";
+
+void drawBgActivityChip() {
+  if (g_bgActivity.length() == 0) return;
+  gfx_setTextSize(1);
+  const int w = gfx_textWidth(g_bgActivity) + 10;
+  const int h = 14;
+  const int x = gW - w - 4, y = 2;
+  gfx_fillRect(x, y, w, h, 0x2104);
+  gfx_drawRect(x, y, w, h, TFT_ORANGE);
+  gfx_setTextColor(TFT_ORANGE, 0x2104);
+  gfx_setCursor(x + 5, y + 4);
+  gfx_print(g_bgActivity);
+}
+
+void drawStatusBanner(const char *label) {
+  if (!label || !label[0]) return;
+  const int bh = 56;
+  const int by = (gH - bh) / 2;
+  gfx_fillRect(0, by, gW, bh, 0x0000);
+  gfx_fillRect(0, by, gW, 2, TFT_ORANGE);
+  gfx_fillRect(0, by + bh - 2, gW, 2, TFT_ORANGE);
+  gfx_setTextSize(2);
+  gfx_setTextColor(TFT_ORANGE, TFT_BLACK);
+  String s(label);
+  int tw = gfx_textWidth(s);
+  if (tw > gW - 16) {           // fall back to the small font rather than clip
+    gfx_setTextSize(1);
+    tw = gfx_textWidth(s);
+  }
+  gfx_setCursor((gW - tw) / 2, by + (bh - gfx_fontHeight()) / 2);
+  gfx_print(s);
+  gfx_flush();
+}
+
 struct BacklightDip {
   uint8_t saved;
-  BacklightDip() : saved(cfg_backlight) {
+  bool    banner;
+
+  // Passing a label draws a status banner across the middle of the screen for
+  // the duration, and repaints the underlying screen afterwards.
+  //
+  // Dimming on its own reads as a fault: the panel goes dark, touch stops
+  // responding, and nothing says why. Naming the operation turns that into
+  // visible progress. Sites that already show their own progress screen (the
+  // DAV loading bar, the themed disk loader) pass no label and just dim.
+  explicit BacklightDip(const char *label = nullptr)
+      : saved(cfg_backlight), banner(label != nullptr) {
     uint8_t dipped = cfg_backlight / 3;
     if (dipped < 30) dipped = 30;
     setBacklight(dipped);
+    if (banner) drawStatusBanner(label);
   }
-  ~BacklightDip() { setBacklight(saved); }
+  ~BacklightDip() {
+    setBacklight(saved);
+    if (banner) redrawCurrentScreen();
+  }
 };
 
 // Small colored badge identifying where a game lives (SD / DAV / FTP).
@@ -3676,7 +3739,8 @@ void davPrecacheOneCover() {
     size_t maxCover = 100 * 1024;
     uint8_t *buf = (uint8_t *)ps_malloc(maxCover);
     if (buf) {
-      BacklightDip _dip;
+      BacklightDip _dip;   // no banner: see g_bgActivity chip below
+      g_bgActivity = "COVER ART " + String(g_coverQCount + 1) + " LEFT";
       // Try the requested extension, then the other one. Resolving this on
       // the device rather than letting the browser retry halves the number of
       // connections: the browser used to request .jpg, get a 404, and fire a
@@ -3703,6 +3767,7 @@ void davPrecacheOneCover() {
       }
       free(buf);
     }
+    if (g_coverQCount == 0) g_bgActivity = "";
     return;   // one network operation per idle tick, no more
   }
 
@@ -4053,6 +4118,7 @@ void drawDAVList() {
   // Info button
   drawThemedButton(gW - 44, gH - 42, btnSize, 36, "BTN_INFO", "i", TFT_YELLOW);
 
+  drawBgActivityChip();
   gfx_flush();
 }
 
@@ -4081,7 +4147,7 @@ void davOpenFolderDetail(int folderIndex) {
   // into a folder they've already visited.
   DAVEntryList folderContents;
   if (!davReadCachedDir(folderPath, folderContents)) {
-    BacklightDip _dip;  // same power-dip rationale as davBrowsePath()
+    BacklightDip _dip("READING FOLDER...");   // power dip + say why
     // Cache only a listing the client reports as complete — a partial one
     // would stick around and quietly hide half of a game's disks.
     if (davClient.listDir(folderPath, folderContents) && !folderContents.empty()) {
@@ -4875,6 +4941,7 @@ void drawList() {
   }
   drawThemedButton(gW - 44, gH - 42, 44, 36, "BTN_INFO", "i", TFT_YELLOW);
 
+  drawBgActivityChip();
   gfx_flush();
 }
 
@@ -4918,6 +4985,22 @@ void drawDiskSelector(int diskY) {
     int tw = gfx_textWidth(label);
     gfx_setCursor(bx + (btnW - tw) / 2, diskY + (btnH - 16) / 2);
     gfx_print(label);
+  }
+}
+
+// Repaint the active screen. Used to clear the status banner once a blocking
+// operation finishes; each branch is the same call the navigation code makes.
+void redrawCurrentScreen() {
+  switch (current_screen) {
+    case SCR_WEBDAV:        drawDAVList();   break;
+    case SCR_WEBDAV_DETAIL: drawDAVDetail(); break;
+    case SCR_INFO:          drawInfoScreen(); break;
+    case SCR_DETAILS:
+      if (detail_filename.length() > 0) drawDetailsFromNFO(detail_filename);
+      else                              drawList();
+      break;
+    case SCR_SELECTION:
+    default:                drawList();     break;
   }
 }
 

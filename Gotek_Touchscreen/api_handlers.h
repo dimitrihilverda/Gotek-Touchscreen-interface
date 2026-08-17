@@ -1648,7 +1648,9 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
     // Web-triggered PROPFIND is the exact same power stack as the
     // device-triggered one — dim the LCD for the WiFi RX burst so the
     // Amiga 5V rail doesn't dip while we hold TLS + SD state.
-    BacklightDip _dip;
+    // Web-triggered listing: the panel is showing whatever the user left it
+    // on, so say what is happening rather than just going dark.
+    BacklightDip _dip("INDEXING WEBDAV...");
     listOk = davClient.listDir(path, entries);
   }
   if (!listOk) {
