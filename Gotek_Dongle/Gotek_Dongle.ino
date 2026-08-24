@@ -75,6 +75,12 @@ static wifi_power_t txPowerLevel(int dbm) {
 static bool davConnected = false;
 static String g_davLoadedPath = "";   // what the page shows as playing
 
+// Set by the HTTP handler, done by loop(). Keeping the transfer out of the
+// request is what lets the device still answer /api/log and /api/disk/status
+// while a 1.76 MB image is coming in over TLS.
+static String g_pendingDavPath = "";
+static bool   g_davBusy = false;      // reported so the page can say "loading"
+
 // ── Cover and notes for the game that is in ──────────────────────────────
 //
 // The touchscreen keeps these on the card. There is no card here, so the one
@@ -271,8 +277,54 @@ void setup() {
   dlog("Ready");
 }
 
+// The queued WebDAV load, run outside any request.
+static void serviceDavLoad() {
+  if (g_pendingDavPath.length() == 0) return;
+  const String remote = g_pendingDavPath;
+  g_pendingDavPath = "";
+  g_davBusy = true;
+
+  Perf perf("DAV insert");
+  tud_disconnect();
+  delay(30);
+  g_mountBytes = 0;
+  svReset();
+  perf.mark("detach");
+
+  const long got = davClient.streamToBuffer(remote, &ram_disk[DATA_OFFSET],
+                                            MAX_IMAGE_BYTES);
+  perf.mark("fetch");
+
+  if (got <= 0) {
+    tud_connect();
+    dlog("DAV load failed: " + davClient.lastError());
+  } else if (davClient.lastTruncated()) {
+    tud_connect();
+    dlog("DAV load refused: image exceeds " + String((uint32_t)MAX_IMAGE_BYTES) +
+         " bytes");
+  } else {
+    String name = remote;
+    const int sl = name.lastIndexOf('/');
+    if (sl >= 0) name = name.substring(sl + 1);
+    build_boot_sector(&ram_disk[0]);
+    build_fat(&ram_disk[FAT1_OFFSET]);
+    build_fat(&ram_disk[FAT2_OFFSET]);
+    g_mountFilename = name;
+    build_root(&ram_disk[ROOTDIR_OFFSET]);
+    mountImage(name, (uint32_t)got);
+    perf.phase(g_lastEnumerateOk ? "host-read" : "host-silent", g_lastEnumerateMs);
+    cacheArtFor(remote, perf);
+    g_davLoadedPath = remote;
+    g_listCacheJson = "";        // state changed; do not serve a stale view
+    perf.bytes((uint32_t)got);
+    dlog(perf.summary());
+  }
+  g_davBusy = false;
+}
+
 void loop() {
   WiFiClient client = httpServer.available();
   if (client) handleClient(client);
+  serviceDavLoad();
   delay(2);
 }

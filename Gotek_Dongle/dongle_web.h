@@ -561,54 +561,26 @@ static void handleClient(WiFiClient &client) {
     }
   }
   else if (method == "POST" && path == "/api/dav/load") {
+    // Queue it; the load happens in loop(). Answering only when the transfer
+    // finished meant the device served nothing else for the whole seven
+    // seconds an HD image takes — including /api/log, so the one tool for
+    // finding out what went wrong was unreachable exactly when it was needed.
+    // The touchscreen has always deferred this, and the page is built for it.
     const String remote = formValue(body, "path");
     if (remote.length() == 0) {
       sendJson(client, 400, "{\"error\":\"No path given\"}");
     } else if (WiFi.status() != WL_CONNECTED) {
       sendJson(client, 503, "{\"error\":\"Not on a network\"}");
+    } else if (g_pendingDavPath.length() > 0) {
+      sendJson(client, 409, "{\"error\":\"Already loading something\"}");
     } else {
-      // Straight into the RAM disk, exactly as the touchscreen does it. USB is
-      // detached first so the Gotek never reads a half-written image.
-      Perf perf("DAV insert");
-      tud_disconnect();
-      delay(30);
-      g_mountBytes = 0;
-      svReset();
-      perf.mark("detach");
-      const long got = davClient.streamToBuffer(remote, &ram_disk[DATA_OFFSET],
-                                                MAX_IMAGE_BYTES);
-      perf.mark("fetch");
-      if (got <= 0) {
-        tud_connect();
-        dlog("DAV load failed: " + davClient.lastError());
-        sendJson(client, 502, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
-      } else if (davClient.lastTruncated()) {
-        tud_connect();
-        dlog("DAV load refused: image exceeds " + String((uint32_t)MAX_IMAGE_BYTES));
-        sendJson(client, 413, "{\"error\":\"Image is larger than this board's volume\"}");
-      } else {
-        String name = remote;
-        const int sl = name.lastIndexOf('/');
-        if (sl >= 0) name = name.substring(sl + 1);
-        build_boot_sector(&ram_disk[0]);
-        build_fat(&ram_disk[FAT1_OFFSET]);
-        build_fat(&ram_disk[FAT2_OFFSET]);
-        g_mountFilename = name;
-        build_root(&ram_disk[ROOTDIR_OFFSET]);
-        mountImage(name, (uint32_t)got);
-        g_davLoadedPath = remote;
-        g_listCacheJson = "";      // state changed; do not serve a stale view
-        perf.mark("mount");
-        // The host's own re-attach: the moment the drive is really there.
-        perf.phase(g_lastEnumerateOk ? "host-read" : "host-silent", g_lastEnumerateMs);
-        cacheArtFor(remote, perf);
-        perf.bytes((uint32_t)got);
-        const String timing = perf.summary();
-        dlog(timing);
-        sendJson(client, 200, "{\"name\":\"" + jsonEscape(name) +
-                              "\",\"bytes\":" + String(got) +
-                              ",\"debug\":\"" + jsonEscape(timing) + "\"}");
-      }
+      String name = remote;
+      const int sl = name.lastIndexOf('/');
+      if (sl >= 0) name = name.substring(sl + 1);
+      g_pendingDavPath = remote;
+      dlog("DAV load queued: " + name);
+      sendJson(client, 200, "{\"status\":\"ok\",\"name\":\"" + jsonEscape(name) +
+                            "\",\"file\":\"" + jsonEscape(remote) + "\"}");
     }
   }
   else {
