@@ -18,6 +18,41 @@
 
 // ── Tiny HTTP plumbing ───────────────────────────────────────────────────
 
+// ── Request bits ─────────────────────────────────────────────────────────
+
+static String urlDecode(const String &in) {
+  String out;
+  out.reserve(in.length());
+  for (unsigned int i = 0; i < in.length(); i++) {
+    const char c = in[i];
+    if (c == '+') out += ' ';
+    else if (c == '%' && i + 2 < in.length()) {
+      const char h[3] = { in[i + 1], in[i + 2], 0 };
+      out += (char)strtol(h, nullptr, 16);
+      i += 2;
+    } else out += c;
+  }
+  return out;
+}
+
+// One value out of "a=1&b=2". Matches whole keys only, so "path" does not also
+// match "np_path".
+static String pairValue(const String &blob, const String &key) {
+  const String needle = key + "=";
+  int at = -1;
+  if (blob.startsWith(needle)) at = 0;
+  else {
+    const int i = blob.indexOf("&" + needle);
+    if (i >= 0) at = i + 1;
+  }
+  if (at < 0) return "";
+  const int from = at + needle.length();
+  const int amp = blob.indexOf('&', from);
+  return urlDecode(amp < 0 ? blob.substring(from) : blob.substring(from, amp));
+}
+static String queryValue(const String &q, const String &key) { return pairValue(q, key); }
+static String formValue(const String &b, const String &key)  { return pairValue(b, key); }
+
 static String jsonEscape(const String &in) {
   String out;
   out.reserve(in.length() + 16);
@@ -121,7 +156,10 @@ static void handleClient(WiFiClient &client) {
   const int sp2 = reqLine.indexOf(' ', sp1 + 1);
   if (sp1 < 0 || sp2 < 0) { client.stop(); return; }
   const String method = reqLine.substring(0, sp1);
-  const String path   = reqLine.substring(sp1 + 1, sp2);
+  String path = reqLine.substring(sp1 + 1, sp2);
+  String query = "";
+  const int qm = path.indexOf('?');
+  if (qm >= 0) { query = path.substring(qm + 1); path = path.substring(0, qm); }
 
   String boundary = "";
   long contentLength = 0;
@@ -136,6 +174,19 @@ static void handleClient(WiFiClient &client) {
       const int b = lower.indexOf("boundary=");
       if (b >= 0) boundary = h.substring(b + 9);
       boundary.trim();
+    }
+  }
+
+  // A form body, for everything that is not a file upload. Small by nature —
+  // config fields and a remote path — so reading it here is safe. A multipart
+  // upload is left on the socket for receiveImage() to stream.
+  String body = "";
+  if (method == "POST" && boundary.length() == 0 && contentLength > 0 &&
+      contentLength < 4096) {
+    const unsigned long until = millis() + 3000;
+    while ((long)body.length() < contentLength && millis() < until) {
+      if (client.available()) body += (char)client.read();
+      else delay(1);
     }
   }
 
@@ -179,13 +230,47 @@ static void handleClient(WiFiClient &client) {
     j += "}";
     sendJson(client, 200, j);
   }
-  else if (method == "GET" && path == "/api/config") {
-    // No CONFIG.TXT without a card; these are the running values.
-    String j = "{\"THEME\":\"AMIGA_WB2\",\"DISPLAY\":\"" BOARD_NAME "\",";
-    j += "\"WIFI_AP_SSID\":\"" + String(AP_SSID) + "\",";
-    j += "\"WIFI_TX_DBM\":\"" + String(WIFI_TX_DBM) + "\",";
-    j += "\"LOG_ENABLED\":\"1\",\"SAVES\":\"OFF\"}";
-    sendJson(client, 200, j);
+  else if (path == "/api/config") {
+    if (method == "POST") {
+      // Only fields that actually arrived are touched, so the page can save one
+      // card without blanking the rest.
+      if (body.indexOf("DAV_HOST=")  >= 0) cfg_dav_host = formValue(body, "DAV_HOST");
+      if (body.indexOf("DAV_PORT=")  >= 0) cfg_dav_port = (uint16_t)formValue(body, "DAV_PORT").toInt();
+      if (body.indexOf("DAV_USER=")  >= 0) cfg_dav_user = formValue(body, "DAV_USER");
+      if (body.indexOf("DAV_PASS=")  >= 0) cfg_dav_pass = formValue(body, "DAV_PASS");
+      if (body.indexOf("DAV_PATH=")  >= 0) cfg_dav_path = formValue(body, "DAV_PATH");
+      if (body.indexOf("DAV_HTTPS=") >= 0) cfg_dav_https = (formValue(body, "DAV_HTTPS") == "1");
+      if (body.indexOf("DAV_ENABLED=") >= 0) cfg_dav_enabled = (formValue(body, "DAV_ENABLED") == "1");
+      if (body.indexOf("WIFI_AP_SSID=") >= 0) cfg_wifi_ssid = formValue(body, "WIFI_AP_SSID");
+      if (body.indexOf("WIFI_AP_PASS=") >= 0) cfg_wifi_pass = formValue(body, "WIFI_AP_PASS");
+      if (body.indexOf("WIFI_CLIENT_ENABLED=") >= 0)
+        cfg_wifi_client_enabled = (formValue(body, "WIFI_CLIENT_ENABLED") == "1");
+      if (body.indexOf("WIFI_CLIENT_SSID=") >= 0) cfg_wifi_client_ssid = formValue(body, "WIFI_CLIENT_SSID");
+      if (body.indexOf("WIFI_CLIENT_PASS=") >= 0) cfg_wifi_client_pass = formValue(body, "WIFI_CLIENT_PASS");
+      if (body.indexOf("WIFI_TX_DBM=") >= 0) {
+        int v = formValue(body, "WIFI_TX_DBM").toInt();
+        cfg_wifi_tx_dbm = (v < 2) ? 2 : (v > 20 ? 20 : v);
+      }
+      saveConfig();
+      sendJson(client, 200, "{\"status\":\"ok\"}");
+    } else {
+      String j = "{\"THEME\":\"AMIGA_WB2\",\"DISPLAY\":\"" BOARD_NAME "\",";
+      j += "\"WIFI_AP_SSID\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
+      j += "\"WIFI_AP_PASS\":\"" + jsonEscape(cfg_wifi_pass) + "\",";
+      j += "\"WIFI_CLIENT_ENABLED\":\"" + String(cfg_wifi_client_enabled ? "1" : "0") + "\",";
+      j += "\"WIFI_CLIENT_SSID\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\",";
+      j += "\"WIFI_CLIENT_PASS\":\"" + jsonEscape(cfg_wifi_client_pass) + "\",";
+      j += "\"WIFI_TX_DBM\":\"" + String(cfg_wifi_tx_dbm) + "\",";
+      j += "\"DAV_ENABLED\":\"" + String(cfg_dav_enabled ? "1" : "0") + "\",";
+      j += "\"DAV_HOST\":\"" + jsonEscape(cfg_dav_host) + "\",";
+      j += "\"DAV_PORT\":\"" + String(cfg_dav_port) + "\",";
+      j += "\"DAV_HTTPS\":\"" + String(cfg_dav_https ? "1" : "0") + "\",";
+      j += "\"DAV_USER\":\"" + jsonEscape(cfg_dav_user) + "\",";
+      j += "\"DAV_PASS\":\"" + jsonEscape(cfg_dav_pass) + "\",";
+      j += "\"DAV_PATH\":\"" + jsonEscape(cfg_dav_path) + "\",";
+      j += "\"LOG_ENABLED\":\"1\",\"SAVES\":\"OFF\"}";
+      sendJson(client, 200, j);
+    }
   }
   else if (method == "GET" && path == "/api/games/list") {
     // No card, so no library — but an empty list keeps the page's own logic
@@ -242,6 +327,120 @@ static void handleClient(WiFiClient &client) {
                     : "Upload failed";
         dlog(String("Upload failed: ") + why);
         sendJson(client, 400, String("{\"error\":\"") + why + "\"}");
+      }
+    }
+  }
+  // ── WebDAV ──────────────────────────────────────────────────────────
+  //
+  // The same client the touchscreen uses. What is missing here is the caching:
+  // with no card there is nowhere to keep listings, covers or notes, so every
+  // browse is a live PROPFIND and covers simply are not offered. The page
+  // handles both absences already — it shows "No Art" and moves on.
+  else if (method == "GET" && path == "/api/dav/status") {
+    String jj = "{\"connected\":" + String(davConnected ? "true" : "false");
+    jj += ",\"url\":\"" + (cfg_dav_host.length()
+            ? String(cfg_dav_https ? "https://" : "http://") + cfg_dav_host
+            : String("")) + "\"";
+    jj += ",\"loaded_file\":\"" + g_davLoadedPath + "\"}";
+    sendJson(client, 200, jj);
+  }
+  else if (method == "POST" && path == "/api/dav/connect") {
+    if (!cfg_dav_enabled || cfg_dav_host.length() == 0) {
+      sendJson(client, 400, "{\"error\":\"WebDAV is not configured yet\"}");
+    } else if (WiFi.status() != WL_CONNECTED) {
+      sendJson(client, 503, "{\"error\":\"Not on a network - set the WiFi client under Config\"}");
+    } else {
+      davConnected = davClient.connect();
+      if (davConnected) sendJson(client, 200, "{\"status\":\"ok\"}");
+      else sendJson(client, 502, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
+    }
+  }
+  else if (method == "POST" && path == "/api/dav/disconnect") {
+    davConnected = false;
+    sendJson(client, 200, "{\"status\":\"ok\"}");
+  }
+  else if (method == "GET" && path == "/api/dav/list") {
+    String want = queryValue(query, "path");
+    if (want.length() == 0) want = "/";
+    if (WiFi.status() != WL_CONNECTED) {
+      sendJson(client, 503, "{\"error\":\"Not on a network\"}");
+    } else {
+      DAVEntryList entries;
+      if (!davClient.listDir(want, entries)) {
+        sendJson(client, 502, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
+      } else {
+        String jj = "{\"path\":\"" + jsonEscape(want) + "\",\"entries\":[";
+        bool first = true;
+        for (size_t i = 0; i < entries.size(); i++) {
+          if (!entries[i].isDir && (entries[i].hasCover || entries[i].hasNfo)) continue;
+          if (!first) jj += ",";
+          first = false;
+          jj += "{\"name\":\"" + jsonEscape(entries[i].name()) + "\"";
+          jj += ",\"dir\":" + String(entries[i].isDir ? "true" : "false");
+          jj += ",\"size\":" + String(entries[i].size) + "}";
+          yield();
+        }
+        jj += "]}";
+        sendJson(client, 200, jj);
+      }
+    }
+  }
+  else if (method == "GET" && path == "/api/dav/rowmeta") {
+    // Per-folder facts come from the on-SD cache on a touchscreen. No card, no
+    // cache: an empty answer, which the page reads as "unknown" and shows
+    // nothing for, rather than guessing wrong.
+    sendJson(client, 200, "{\"meta\":[],\"capped\":false}");
+  }
+  else if (method == "GET" && path == "/api/dav/cover") {
+    sendJson(client, 404, "{\"error\":\"No cover cache without an SD card\"}");
+  }
+  else if (method == "GET" && path == "/api/dav/nfo") {
+    const String want = queryValue(query, "path");
+    static uint8_t nfoBuf[2048];
+    const long n = davClient.streamToBuffer(want, nfoBuf, sizeof(nfoBuf) - 1);
+    if (n <= 0) {
+      sendJson(client, 404, "{\"error\":\"No notes there\"}");
+    } else {
+      nfoBuf[n] = 0;
+      sendJson(client, 200, "{\"nfo\":\"" + jsonEscape(String((char *)nfoBuf)) + "\"}");
+    }
+  }
+  else if (method == "POST" && path == "/api/dav/load") {
+    const String remote = formValue(body, "path");
+    if (remote.length() == 0) {
+      sendJson(client, 400, "{\"error\":\"No path given\"}");
+    } else if (WiFi.status() != WL_CONNECTED) {
+      sendJson(client, 503, "{\"error\":\"Not on a network\"}");
+    } else {
+      // Straight into the RAM disk, exactly as the touchscreen does it. USB is
+      // detached first so the Gotek never reads a half-written image.
+      tud_disconnect();
+      delay(30);
+      g_mountBytes = 0;
+      svReset();
+      const long got = davClient.streamToBuffer(remote, &ram_disk[DATA_OFFSET],
+                                                MAX_IMAGE_BYTES);
+      if (got <= 0) {
+        tud_connect();
+        dlog("DAV load failed: " + davClient.lastError());
+        sendJson(client, 502, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
+      } else if (davClient.lastTruncated()) {
+        tud_connect();
+        dlog("DAV load refused: image exceeds " + String((uint32_t)MAX_IMAGE_BYTES));
+        sendJson(client, 413, "{\"error\":\"Image is larger than this board's volume\"}");
+      } else {
+        String name = remote;
+        const int sl = name.lastIndexOf('/');
+        if (sl >= 0) name = name.substring(sl + 1);
+        build_boot_sector(&ram_disk[0]);
+        build_fat(&ram_disk[FAT1_OFFSET]);
+        build_fat(&ram_disk[FAT2_OFFSET]);
+        g_mountFilename = name;
+        build_root(&ram_disk[ROOTDIR_OFFSET]);
+        mountImage(name, (uint32_t)got);
+        g_davLoadedPath = remote;
+        sendJson(client, 200, "{\"name\":\"" + jsonEscape(name) +
+                              "\",\"bytes\":" + String(got) + "}");
       }
     }
   }

@@ -300,8 +300,13 @@ public:
     return true;
   }
 
-  // Download a file via GET
-  // Returns bytes written, or -1 on error
+#if !defined(HAS_SD) || HAS_SD
+  // Download a file via GET, straight to a file on the card.
+  // Returns bytes written, or -1 on error.
+  //
+  // Guarded because this is the client's only tie to storage: a screenless
+  // dongle has no card, and streamToBuffer() below is what it uses instead.
+  // Boards that never define HAS_SD keep the method, so nothing existing moves.
   long downloadFile(const String &remotePath, const String &localPath) {
     _lastError = "";
 
@@ -404,6 +409,7 @@ public:
     _log("DAV: downloaded " + fullRemote + " -> " + localPath + " (" + String(totalBytes) + " bytes)");
     return totalBytes;
   }
+#endif  // HAS_SD
 
   // Stream a file directly into a memory buffer via GET
   // Returns bytes written, or -1 on error

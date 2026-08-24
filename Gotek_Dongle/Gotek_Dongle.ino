@@ -41,49 +41,38 @@
 // If these ever diverge, one of the two boards is quietly running different
 // disk code — which is exactly the trap the upstream project fell into with
 // seven near-identical sketches.
+#include "dongle_config.h"        // settings + log; must precede webdav_client.h
 #include "../Gotek_Touchscreen/board_profile.h"
 #include "../Gotek_Touchscreen/ram_disk.h"
 #include "../Gotek_Touchscreen/multipart_scan.h"
+#include "../Gotek_Touchscreen/webdav_client.h"
 
 #if HAS_DISPLAY
 #error "Gotek_Dongle is the screenless build - pick BOARD_XIAO or BOARD_SUPERMINI"
 #endif
 
-// ── Configuration ────────────────────────────────────────────────────────
-// No SD card, so nothing reads CONFIG.TXT. These are the defaults until the
-// settings move into NVS.
-static const char *AP_SSID = "Gotek-Dongle";
-static const char *AP_PASS = "retrogaming";
 static const uint8_t AP_CHANNEL = 6;
 
-// The radio is the biggest load on a port that is also feeding the Gotek, and
-// an Amiga's thirty-year-old 5V rail does not hold up under a full-power burst.
-// There is no backlight to dim here, so this is the only lever left.
-static const int WIFI_TX_DBM = 15;
+#define DONGLE_VERSION "v0.2.0"
 
-#define DONGLE_VERSION "v0.1.0"
+static wifi_power_t txPowerLevel(int dbm) {
+  if (dbm <= 2)  return WIFI_POWER_2dBm;
+  if (dbm <= 5)  return WIFI_POWER_5dBm;
+  if (dbm <= 7)  return WIFI_POWER_7dBm;
+  if (dbm <= 9)  return WIFI_POWER_8_5dBm;
+  if (dbm <= 11) return WIFI_POWER_11dBm;
+  if (dbm <= 13) return WIFI_POWER_13dBm;
+  if (dbm <= 15) return WIFI_POWER_15dBm;
+  if (dbm <= 17) return WIFI_POWER_17dBm;
+  if (dbm <= 19) return WIFI_POWER_19dBm;
+  return WIFI_POWER_19_5dBm;
+}
+
+// davClient itself is declared by webdav_client.h.
+static bool davConnected = false;
+static String g_davLoadedPath = "";   // what the page shows as playing
 
 WiFiServer httpServer(80);
-
-// ── A log you can read without a serial cable ────────────────────────────
-//
-// No screen and no SD means a dongle that misbehaves can tell you nothing at
-// all. A small ring buffer in RAM, served at /log, is the entire diagnostic
-// surface — so it is worth having from the first build rather than added after
-// the first mystery.
-#define LOG_LINES 40
-#define LOG_LINE_LEN 96
-static char     g_log[LOG_LINES][LOG_LINE_LEN];
-static uint8_t  g_logHead = 0;
-static uint8_t  g_logCount = 0;
-
-void dlog(const String &msg) {
-  Serial.println(msg);
-  strncpy(g_log[g_logHead], msg.c_str(), LOG_LINE_LEN - 1);
-  g_log[g_logHead][LOG_LINE_LEN - 1] = 0;
-  g_logHead = (g_logHead + 1) % LOG_LINES;
-  if (g_logCount < LOG_LINES) g_logCount++;
-}
 
 // ── State ────────────────────────────────────────────────────────────────
 static bool     g_mediaPresent = false;
@@ -152,11 +141,13 @@ void setup() {
   // happens afterwards, a phone within a few metres can read how much memory
   // the chip reported. It is renamed to the real SSID once the disk is up, so a
   // working device never shows the diagnostic name.
+  loadConfig();
+
   const size_t psram = ESP.getPsramSize();
   char bootSsid[32];
   snprintf(bootSsid, sizeof(bootSsid), "Gotek-BOOT-%uK", (unsigned)(psram / 1024));
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(bootSsid, AP_PASS, AP_CHANNEL);
+  WiFi.softAP(bootSsid, cfg_wifi_pass.c_str(), AP_CHANNEL);
   delay(200);
 
   dlog("Gotek Dongle " BOARD_NAME);
@@ -164,7 +155,7 @@ void setup() {
        String(RAM_DISK_SIZE / 1024) + " KB");
 
   if (psram < RAM_DISK_SIZE) {
-    WiFi.softAP("Gotek-FAIL-PSRAM", AP_PASS, AP_CHANNEL);
+    WiFi.softAP("Gotek-FAIL-PSRAM", cfg_wifi_pass.c_str(), AP_CHANNEL);
     for (;;) {
       Serial.println("FATAL: PSRAM too small. SuperMini needs PSRAM=QSPI, XIAO needs OPI.");
       delay(2000);
@@ -173,7 +164,7 @@ void setup() {
 
   ram_disk = (uint8_t *)ps_malloc(RAM_DISK_SIZE);
   if (!ram_disk) {
-    WiFi.softAP("Gotek-FAIL-ALLOC", AP_PASS, AP_CHANNEL);
+    WiFi.softAP("Gotek-FAIL-ALLOC", cfg_wifi_pass.c_str(), AP_CHANNEL);
     for (;;) {
       Serial.println("FATAL: RAM disk allocation failed despite PSRAM being present.");
       delay(2000);
@@ -195,11 +186,21 @@ void setup() {
   // The two are still sequenced rather than simultaneous, which is what the
   // brownout concern was really about: an Amiga's 5V rail does not like a radio
   // burst and USB enumeration landing together.
-  // Everything worked: drop the diagnostic name.
-  WiFi.setTxPower(WIFI_POWER_15dBm);
-  WiFi.softAP(AP_SSID, AP_PASS, AP_CHANNEL);
+  // Everything worked: drop the diagnostic name. AP+STA if a network is
+  // configured, because a WebDAV server lives out there, not on our own AP.
+  WiFi.mode(cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() ? WIFI_AP_STA
+                                                                    : WIFI_AP);
+  WiFi.setTxPower(txPowerLevel(cfg_wifi_tx_dbm));
+  WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), AP_CHANNEL);
   delay(200);
-  dlog("AP " + String(AP_SSID) + " at " + WiFi.softAPIP().toString());
+  dlog("AP " + cfg_wifi_ssid + " at " + WiFi.softAPIP().toString());
+
+  if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length()) {
+    // Non-blocking: the page is reachable on the AP whether or not the network
+    // ever answers, which matters when the password is what you came to fix.
+    WiFi.begin(cfg_wifi_client_ssid.c_str(), cfg_wifi_client_pass.c_str());
+    dlog("Joining " + cfg_wifi_client_ssid);
+  }
   delay(150);
 
   msc.vendorID("Gotek");
