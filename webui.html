@@ -346,7 +346,7 @@ textarea{min-height:80px;resize:vertical}
     <div id="now-playing" style="display:flex;align-items:center;gap:12px"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="games-library-card">
     <h2>Game Library <span id="game-count" style="font-weight:400;color:var(--muted)"></span></h2>
     <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <input type="text" id="game-search" placeholder="Search games..." style="flex:1;min-width:150px;max-width:300px" oninput="debouncedFilterGames()">
@@ -725,10 +725,14 @@ async function loadDashboard() {
   // firmware does not send has_sd; treat its absence as "yes", which is what
   // every device that predates the flag actually is.
   const hasSD = (d.has_sd === undefined) ? true : !!d.has_sd;
-  const gamesTab  = document.getElementById('tab-games');
-  const themesTab = document.getElementById('tab-themes');
-  if (gamesTab)  gamesTab.style.display  = hasSD ? '' : 'none';
-  if (themesTab) themesTab.style.display = hasSD ? '' : 'none';
+  // The Games tab stays: it holds Upload and Now Playing, which is the whole
+  // interface on a device with no card. Only the library — a list of files on a
+  // card that is not there — goes away, along with themes, whose artwork lives
+  // on that same card.
+  const libraryCard = document.getElementById('games-library-card');
+  const themesTab   = document.getElementById('tab-themes');
+  if (libraryCard) libraryCard.style.display = hasSD ? '' : 'none';
+  if (themesTab)   themesTab.style.display   = hasSD ? '' : 'none';
   document.body.classList.toggle('no-sd', !hasSD);
 
   const ipEl = document.getElementById('ip-display');

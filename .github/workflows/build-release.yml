@@ -36,7 +36,9 @@ jobs:
       matrix:
         include:
           - variant: jc3248
+            prefix: gotek-touchscreen
             label: "Guition JC3248W535C (ESP32-S3, 480x320 QSPI)"
+            sketch: Gotek_Touchscreen
             board: BOARD_JC3248
             fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
             extra_libs: ""
@@ -47,16 +49,36 @@ jobs:
           # is published but unverified on hardware — allow_failure stays true
           # until someone confirms a working flash.
           - variant: waveshare
+            prefix: gotek-touchscreen
             label: "Waveshare ESP32-S3-Touch-LCD-2.8 (ESP32-S3, 320x240 SPI)"
+            sketch: Gotek_Touchscreen
             board: BOARD_WAVESHARE
             fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
             extra_libs: "LovyanGFX"
             allow_failure: true
+          # Screenless, SD-less dongles: upload from a phone, straight into the
+          # RAM disk. Verified on a SuperMini — a game uploads, mounts and runs.
+          - variant: supermini
+            prefix: gotek-dongle
+            label: "ESP32-S3 SuperMini dongle (screenless, 1 MB volume, DD only)"
+            sketch: Gotek_Dongle
+            board: BOARD_SUPERMINI
+            fqbn: "esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=4M,PartitionScheme=min_spiffs,USBMode=default,CDCOnBoot=cdc"
+            extra_libs: ""
+            allow_failure: false
+          - variant: xiao
+            prefix: gotek-dongle
+            label: "Seeed XIAO ESP32S3 dongle (screenless, 2 MB volume, HD capable)"
+            sketch: Gotek_Dongle
+            board: BOARD_XIAO
+            fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=min_spiffs,USBMode=default,CDCOnBoot=cdc"
+            extra_libs: ""
+            allow_failure: false
 
     continue-on-error: ${{ matrix.allow_failure }}
 
     env:
-      SKETCH: "Gotek_Touchscreen"
+      SKETCH: ${{ matrix.sketch }}
 
     steps:
       - name: Resolve tag
@@ -126,9 +148,10 @@ jobs:
         run: |
           mkdir -p release
           V="${{ matrix.variant }}"
-          cp "build/${SKETCH}.ino.bootloader.bin" "release/gotek-touchscreen-${V}-bootloader.bin"
-          cp "build/${SKETCH}.ino.partitions.bin" "release/gotek-touchscreen-${V}-partitions.bin"
-          cp "build/${SKETCH}.ino.bin"            "release/gotek-touchscreen-${V}.bin"
+          P="${{ matrix.prefix }}"
+          cp "build/${SKETCH}.ino.bootloader.bin" "release/${P}-${V}-bootloader.bin"
+          cp "build/${SKETCH}.ino.partitions.bin" "release/${P}-${V}-partitions.bin"
+          cp "build/${SKETCH}.ino.bin"            "release/${P}-${V}.bin"
           cp "${{ steps.bootapp0.outputs.path }}" "release/boot_app0.bin"
           ls -lah release
 
@@ -140,9 +163,9 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            release/gotek-touchscreen-${{ matrix.variant }}-bootloader.bin
-            release/gotek-touchscreen-${{ matrix.variant }}-partitions.bin
-            release/gotek-touchscreen-${{ matrix.variant }}.bin
+            release/${{ matrix.prefix }}-${{ matrix.variant }}-bootloader.bin
+            release/${{ matrix.prefix }}-${{ matrix.variant }}-partitions.bin
+            release/${{ matrix.prefix }}-${{ matrix.variant }}.bin
             release/boot_app0.bin
 
       - name: Upload firmware as workflow artifact (${{ matrix.variant }})
@@ -152,9 +175,9 @@ jobs:
         with:
           name: firmware-${{ matrix.variant }}
           path: |
-            release/gotek-touchscreen-${{ matrix.variant }}-bootloader.bin
-            release/gotek-touchscreen-${{ matrix.variant }}-partitions.bin
-            release/gotek-touchscreen-${{ matrix.variant }}.bin
+            release/${{ matrix.prefix }}-${{ matrix.variant }}-bootloader.bin
+            release/${{ matrix.prefix }}-${{ matrix.variant }}-partitions.bin
+            release/${{ matrix.prefix }}-${{ matrix.variant }}.bin
             release/boot_app0.bin
           if-no-files-found: error
           retention-days: 7

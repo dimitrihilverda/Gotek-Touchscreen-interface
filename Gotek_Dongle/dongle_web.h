@@ -187,6 +187,13 @@ static void handleClient(WiFiClient &client) {
     j += "\"LOG_ENABLED\":\"1\",\"SAVES\":\"OFF\"}";
     sendJson(client, 200, j);
   }
+  else if (method == "GET" && path == "/api/games/list") {
+    // No card, so no library — but an empty list keeps the page's own logic
+    // identical to the touchscreen's instead of forking it around a 404.
+    sendJson(client, 200,
+             "{\"mode\":\"ADF\",\"loaded_game\":\"" + g_mountLabel +
+             "\",\"loaded_file\":\"" + g_mountLabel + "\",\"games\":[]}");
+  }
   else if (method == "GET" && path == "/api/disk/status") {
     String j = "{\"loaded\":" + String(g_mountBytes > 0 ? "true" : "false") + ",";
     j += "\"file\":\"" + g_mountLabel + "\",\"path\":\"\",";
