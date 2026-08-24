@@ -34,6 +34,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include "USB.h"
 #include "USBMSC.h"
 
@@ -191,7 +192,9 @@ void setup() {
   WiFi.mode(cfg_wifi_client_enabled && cfg_wifi_client_ssid.length() ? WIFI_AP_STA
                                                                     : WIFI_AP);
   WiFi.setTxPower(txPowerLevel(cfg_wifi_tx_dbm));
-  WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(), AP_CHANNEL);
+  WiFi.softAP(cfg_wifi_ssid.c_str(), cfg_wifi_pass.c_str(),
+              (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length()) ? 0
+                                                                        : AP_CHANNEL);
   delay(200);
   dlog("AP " + cfg_wifi_ssid + " at " + WiFi.softAPIP().toString());
 
@@ -212,6 +215,15 @@ void setup() {
   msc.begin(RAM_DISK_SIZE / 512, 512);
   USB.begin();
   dlog("USB mass storage up");
+
+  // gotek.local, the same name the touchscreen answers to. Worth more here
+  // than there: a dongle has no screen to show you its address.
+  if (MDNS.begin("gotek")) {
+    MDNS.addService("http", "tcp", 80);
+    dlog("Reachable at gotek.local");
+  } else {
+    dlog("mDNS failed; use the IP address");
+  }
 
   httpServer.begin();
   dlog("Ready");

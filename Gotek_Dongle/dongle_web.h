@@ -221,8 +221,13 @@ static void handleClient(WiFiClient &client) {
     j += "\"mode\":\"ADF\",\"theme\":\"AMIGA_WB2\",";
     j += "\"wifi_clients\":" + String(WiFi.softAPgetStationNum()) + ",";
     j += "\"wifi_ip\":\"" + WiFi.softAPIP().toString() + "\",";
-    j += "\"internet\":false,";
-    j += "\"ftp_enabled\":false,\"dav_enabled\":false,\"log_enabled\":true,";
+    // The real link state. Reporting a flat false made the dashboard say
+    // Offline while the WiFi check on the config page said connected.
+    const bool sta = (WiFi.status() == WL_CONNECTED);
+    j += "\"internet\":" + String(sta ? "true" : "false") + ",";
+    j += "\"internet_ip\":\"" + (sta ? WiFi.localIP().toString() : String("")) + "\",";
+    j += "\"internet_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\",";
+    j += "\"ftp_enabled\":false,\"dav_enabled\":true,\"log_enabled\":true,";
     // Board shape, so the page can adapt rather than guess.
     j += "\"has_sd\":false,\"has_display\":false,";
     j += "\"max_image_bytes\":" + String((uint32_t)MAX_IMAGE_BYTES) + ",";
