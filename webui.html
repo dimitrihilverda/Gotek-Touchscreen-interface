@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Gotek">
+<meta name="theme-color" content="#000000">
+<!-- Inline, because the device serves no other files and a missing manifest is
+     a failed request on a board that answers everything itself. -->
+<link rel="manifest" href='data:application/manifest+json,{"name":"Gotek","short_name":"Gotek","start_url":"/","display":"standalone","background_color":"#000000","theme_color":"#000000"}'>
 <title>Gotek Setup</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -152,6 +160,15 @@ textarea{min-height:80px;resize:vertical}
   <div class="card">
     <h2>System Status</h2>
     <div class="stat-grid" id="stats-grid"></div>
+  </div>
+
+  <div class="card" id="install-card" style="display:none">
+    <h2>Add to Home Screen</h2>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:10px" id="install-hint">
+      Opens without browser chrome, and the back button then closes dialogs
+      instead of leaving.
+    </p>
+    <button class="btn btn-primary" id="install-btn">Add to Home Screen</button>
   </div>
 </div>
 
@@ -2982,6 +2999,108 @@ async function updateTabVisibility() {
 // Init
 updateTabVisibility();
 loadDashboard();
+
+// ══════════════ MOBILE: BACK BUTTON AND INSTALLING ══════════════
+//
+// This is one page. On a phone the back button therefore leaves the whole
+// interface, which is jarring when all you wanted was to shut a dialog. So an
+// open dialog gets a history entry of its own: back closes it and stays put.
+//
+// Once added to the home screen there is no browser chrome to go back to at
+// all, so back never leaves — it closes a dialog, then returns to the
+// dashboard, then does nothing. In an ordinary browser tab the last back still
+// leaves, because trapping someone in a page they opened is rude.
+
+const isStandalone = () =>
+  window.matchMedia('(display-mode: standalone)').matches ||
+  window.navigator.standalone === true;
+
+let navPushed = false;      // we own one history entry
+let navClosing = false;     // suppress re-entry while popstate closes something
+
+function openModals() {
+  return [...document.querySelectorAll('.modal-overlay.show')];
+}
+
+function navSync() {
+  const anyOpen = openModals().length > 0;
+  if (anyOpen && !navPushed) {
+    navPushed = true;
+    history.pushState({ gotekModal: true }, '');
+  } else if (!anyOpen && navPushed && !navClosing) {
+    // Closed with a button rather than Back: consume our entry so the next
+    // Back does not have to be pressed twice.
+    navPushed = false;
+    history.back();
+  }
+}
+
+window.addEventListener('popstate', () => {
+  const open = openModals();
+  if (open.length) {
+    navPushed = false;
+    navClosing = true;
+    open.forEach(el => el.classList.remove('show'));
+    if (typeof davBusyDepth !== 'undefined') davBusyDepth = 0;
+    navClosing = false;
+    return;
+  }
+  if (isStandalone()) {
+    // Nowhere to go back to. Land on the dashboard rather than a blank frame.
+    const dash = document.querySelector('[data-view="dashboard"]');
+    if (dash) dash.click();
+    history.pushState({ gotekRoot: true }, '');
+  }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  // Watch the class rather than every open/close call site: there are seven of
+  // those and a new dialog would quietly miss the behaviour.
+  document.querySelectorAll('.modal-overlay').forEach(el => {
+    new MutationObserver(navSync).observe(el, {
+      attributes: true, attributeFilter: ['class'],
+    });
+  });
+  if (isStandalone()) history.pushState({ gotekRoot: true }, '');
+
+  // Installing. Chrome offers a real prompt; iOS has never exposed one, so
+  // there the honest thing is to say which menu item to use rather than show a
+  // button that does nothing.
+  const card = document.getElementById('install-card');
+  const btn  = document.getElementById('install-btn');
+  const hint = document.getElementById('install-hint');
+  if (!card || isStandalone()) return;
+
+  let deferred = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferred = e;
+    card.style.display = '';
+  });
+
+  const iOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  if (iOS) {
+    card.style.display = '';
+    btn.style.display = 'none';
+    hint.innerHTML = 'Tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>. ' +
+                     'It then opens without browser chrome, and the back button closes ' +
+                     'dialogs instead of leaving.';
+  }
+
+  btn.addEventListener('click', async () => {
+    if (deferred) {
+      deferred.prompt();
+      await deferred.userChoice;
+      deferred = null;
+      card.style.display = 'none';
+    } else {
+      hint.innerHTML = 'Open the browser menu and choose <strong>Add to Home screen</strong>. ' +
+                       'Chrome only offers its own button on secure origins, which a device ' +
+                       'on your own network is not.';
+    }
+  });
+});
+
 </script>
 </body>
 </html>
