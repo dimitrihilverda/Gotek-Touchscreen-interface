@@ -46,6 +46,7 @@
 #include "../Gotek_Touchscreen/board_profile.h"
 #include "../Gotek_Touchscreen/ram_disk.h"
 #include "../Gotek_Touchscreen/multipart_scan.h"
+#include "../Gotek_Touchscreen/perf.h"
 #include "../Gotek_Touchscreen/webdav_client.h"
 
 #if HAS_DISPLAY
@@ -72,6 +73,22 @@ static wifi_power_t txPowerLevel(int dbm) {
 // davClient itself is declared by webdav_client.h.
 static bool davConnected = false;
 static String g_davLoadedPath = "";   // what the page shows as playing
+
+// ── Cover and notes for the game that is in ──────────────────────────────
+//
+// The touchscreen keeps these on the card. There is no card here, so the one
+// that matters — the game currently mounted — lives in PSRAM instead. Browsing
+// still shows "No Art" for everything else, which is honest: fetching a cover
+// per row over TLS with no persistent store would cost more than it gives.
+//
+// Capped, because PSRAM is the same pool the RAM disk came out of: on a
+// SuperMini there is roughly a megabyte left once the volume is allocated.
+#define COVER_MAX_BYTES (128 * 1024)
+static uint8_t *g_coverBuf  = nullptr;
+static size_t   g_coverLen  = 0;
+static String   g_coverPath = "";      // remote path the bytes came from
+static String   g_nfoPath   = "";
+static String   g_nfoText   = "";
 
 WiFiServer httpServer(80);
 

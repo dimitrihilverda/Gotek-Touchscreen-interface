@@ -145,6 +145,48 @@ static long receiveImage(WiFiClient &client, const String &boundary,
   return (long)written;
 }
 
+
+// Pull the mounted game's cover and notes into PSRAM.
+//
+// One extra round trip each, on insert only. Timed separately so the cost shows
+// up in the summary rather than hiding inside "insert took a while".
+static void cacheArtFor(const String &remoteDiskPath, Perf &perf) {
+  String dir = remoteDiskPath;
+  const int sl = dir.lastIndexOf('/');
+  if (sl <= 0) return;
+  dir = dir.substring(0, sl);
+  String folder = dir;
+  const int sl2 = folder.lastIndexOf('/');
+  if (sl2 >= 0) folder = folder.substring(sl2 + 1);
+
+  g_coverLen = 0; g_coverPath = "";
+  g_nfoText  = ""; g_nfoPath   = "";
+  if (!g_coverBuf) g_coverBuf = (uint8_t *)ps_malloc(COVER_MAX_BYTES);
+
+  if (g_coverBuf) {
+    // The convention the rest of the project uses: <Folder>/<Folder>.jpg
+    for (int i = 0; i < 2 && g_coverLen == 0; i++) {
+      const String cp = dir + "/" + folder + (i == 0 ? ".jpg" : ".png");
+      const long n = davClient.streamToBuffer(cp, g_coverBuf, COVER_MAX_BYTES);
+      if (n > 0 && !davClient.lastTruncated()) {
+        g_coverLen = (size_t)n;
+        g_coverPath = cp;
+      }
+    }
+  }
+  perf.mark("cover");
+
+  static uint8_t nfoBuf[2048];
+  const String np = dir + "/" + folder + ".nfo";
+  const long nn = davClient.streamToBuffer(np, nfoBuf, sizeof(nfoBuf) - 1);
+  if (nn > 0) {
+    nfoBuf[nn] = 0;
+    g_nfoText = String((char *)nfoBuf);
+    g_nfoPath = np;
+  }
+  perf.mark("notes");
+}
+
 static void handleClient(WiFiClient &client) {
   const unsigned long deadline = millis() + 5000;
   while (!client.available() && millis() < deadline) delay(2);
@@ -313,7 +355,9 @@ static void handleClient(WiFiClient &client) {
       sendJson(client, 400, "{\"error\":\"Not a multipart upload\"}");
     } else {
       String name = "";
+      Perf perf("Upload");
       const long n = receiveImage(client, boundary, contentLength, name);
+      perf.mark("receive");
       if (n > 0) {
         // Rebuild the volume around the bytes already in place, then mount.
         build_boot_sector(&ram_disk[0]);
@@ -322,7 +366,11 @@ static void handleClient(WiFiClient &client) {
         g_mountFilename = name;
         build_root(&ram_disk[ROOTDIR_OFFSET]);
         mountImage(name, (uint32_t)n);
-        sendJson(client, 200, "{\"name\":\"" + name + "\",\"bytes\":" + String(n) + "}");
+        perf.mark("mount");
+        perf.bytes((uint32_t)n);
+        dlog(perf.summary());
+        sendJson(client, 200, "{\"name\":\"" + name + "\",\"bytes\":" + String(n) +
+                              ",\"debug\":\"" + jsonEscape(perf.summary()) + "\"}");
       } else {
         tud_connect();
         const char *why =
@@ -420,6 +468,7 @@ static void handleClient(WiFiClient &client) {
     if (WiFi.status() != WL_CONNECTED) {
       sendJson(client, 503, "{\"error\":\"Not on a network\"}");
     } else {
+      Perf perf("DAV list");
       DAVEntryList entries;
       if (!davClient.listDir(want, entries)) {
         sendJson(client, 502, "{\"error\":\"" + jsonEscape(davClient.lastError()) + "\"}");
@@ -435,7 +484,10 @@ static void handleClient(WiFiClient &client) {
           jj += ",\"size\":" + String(entries[i].size) + "}";
           yield();
         }
-        jj += "]}";
+        perf.mark("propfind+parse");
+        const String timing = perf.summary() + ", " + String(entries.size()) + " entries";
+        dlog(timing);
+        jj += "],\"debug\":\"" + jsonEscape(timing) + "\"}";
         sendJson(client, 200, jj);
       }
     }
@@ -447,10 +499,27 @@ static void handleClient(WiFiClient &client) {
     sendJson(client, 200, "{\"meta\":[],\"capped\":false}");
   }
   else if (method == "GET" && path == "/api/dav/cover") {
-    sendJson(client, 404, "{\"error\":\"No cover cache without an SD card\"}");
+    const String want = queryValue(query, "path");
+    if (g_coverLen > 0 && want == g_coverPath) {
+      sendHeader(client, 200, "image/jpeg", (int)g_coverLen);
+      for (size_t off = 0; off < g_coverLen; off += 512) {
+        const size_t n = (g_coverLen - off < 512) ? (g_coverLen - off) : 512;
+        client.write(g_coverBuf + off, n);
+        yield();
+      }
+    } else {
+      // Only the mounted game's art is kept; everything else would need a
+      // fetch per row over TLS, with nowhere to put the result.
+      sendJson(client, 404, "{\"error\":\"Only the mounted game cover is cached\"}");
+    }
   }
   else if (method == "GET" && path == "/api/dav/nfo") {
     const String want = queryValue(query, "path");
+    if (g_nfoText.length() > 0 && want == g_nfoPath) {
+      sendJson(client, 200, "{\"nfo\":\"" + jsonEscape(g_nfoText) + "\"}");
+      client.flush(); delay(2); client.stop();
+      return;
+    }
     static uint8_t nfoBuf[2048];
     const long n = davClient.streamToBuffer(want, nfoBuf, sizeof(nfoBuf) - 1);
     if (n <= 0) {
@@ -469,12 +538,15 @@ static void handleClient(WiFiClient &client) {
     } else {
       // Straight into the RAM disk, exactly as the touchscreen does it. USB is
       // detached first so the Gotek never reads a half-written image.
+      Perf perf("DAV insert");
       tud_disconnect();
       delay(30);
       g_mountBytes = 0;
       svReset();
+      perf.mark("detach");
       const long got = davClient.streamToBuffer(remote, &ram_disk[DATA_OFFSET],
                                                 MAX_IMAGE_BYTES);
+      perf.mark("fetch");
       if (got <= 0) {
         tud_connect();
         dlog("DAV load failed: " + davClient.lastError());
@@ -494,8 +566,14 @@ static void handleClient(WiFiClient &client) {
         build_root(&ram_disk[ROOTDIR_OFFSET]);
         mountImage(name, (uint32_t)got);
         g_davLoadedPath = remote;
+        perf.mark("mount");
+        cacheArtFor(remote, perf);
+        perf.bytes((uint32_t)got);
+        const String timing = perf.summary();
+        dlog(timing);
         sendJson(client, 200, "{\"name\":\"" + jsonEscape(name) +
-                              "\",\"bytes\":" + String(got) + "}");
+                              "\",\"bytes\":" + String(got) +
+                              ",\"debug\":\"" + jsonEscape(timing) + "\"}");
       }
     }
   }
