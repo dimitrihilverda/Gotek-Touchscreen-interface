@@ -139,10 +139,10 @@ textarea{min-height:80px;resize:vertical}
 <div class="tabs" id="tab-bar">
   <div class="tab active" data-view="dashboard">Dashboard</div>
   <div class="tab" data-view="config">Config</div>
-  <div class="tab" data-view="games">Games</div>
+  <div class="tab" data-view="games" id="tab-games">Games</div>
   <div class="tab" data-view="ftp" id="tab-ftp">FTP</div>
   <div class="tab" data-view="webdav" id="tab-webdav">WebDAV</div>
-  <div class="tab" data-view="themes">Themes</div>
+  <div class="tab" data-view="themes" id="tab-themes">Themes</div>
   <div class="tab" data-view="log" id="tab-log">Log</div>
 </div>
 
@@ -719,6 +719,17 @@ async function loadDashboard() {
   if (ftpTab) ftpTab.style.display = d.ftp_enabled ? '' : 'none';
   if (davTab) davTab.style.display = d.dav_enabled ? '' : 'none';
   if (logTab) logTab.style.display = d.log_enabled ? '' : 'none';
+
+  // A device with no card has no library to browse and no theme assets to
+  // store, so those tabs are not merely empty — they are meaningless. Older
+  // firmware does not send has_sd; treat its absence as "yes", which is what
+  // every device that predates the flag actually is.
+  const hasSD = (d.has_sd === undefined) ? true : !!d.has_sd;
+  const gamesTab  = document.getElementById('tab-games');
+  const themesTab = document.getElementById('tab-themes');
+  if (gamesTab)  gamesTab.style.display  = hasSD ? '' : 'none';
+  if (themesTab) themesTab.style.display = hasSD ? '' : 'none';
+  document.body.classList.toggle('no-sd', !hasSD);
 
   const ipEl = document.getElementById('ip-display');
   let ipText = d.wifi_ip || '?';
