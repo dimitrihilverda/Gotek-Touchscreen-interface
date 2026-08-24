@@ -53,6 +53,14 @@
 #error "Gotek_Dongle is the screenless build - pick BOARD_XIAO or BOARD_SUPERMINI"
 #endif
 
+// The loop task runs the HTTP server, the WebDAV client and the disk load, and
+// mbedTLS is not shy with stack — a TLS record plus _pumpBody's own 1 KB
+// scratch does not fit in Arduino's 8 KB default. The touchscreen has carried
+// this line since its own crashes; the dongle inherited the client but not the
+// stack it needs, which is why an insert panicked mid-transfer and why it was
+// intermittent: how deep TLS goes depends on the certificate chain.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
 static const uint8_t AP_CHANNEL = 6;
 
 // Tracks the repo tag: two products, one number to quote.
