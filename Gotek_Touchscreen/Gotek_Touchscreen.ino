@@ -106,12 +106,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.23.0"
+#define FW_VERSION "v0.24.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.039"
+#define FW_INTERNAL "release.040"
 
 using std::vector;
 using std::sort;

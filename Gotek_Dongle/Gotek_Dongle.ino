@@ -55,7 +55,8 @@
 
 static const uint8_t AP_CHANNEL = 6;
 
-#define DONGLE_VERSION "v0.2.0"
+// Tracks the repo tag: two products, one number to quote.
+#define DONGLE_VERSION "v0.24.0"
 
 static wifi_power_t txPowerLevel(int dbm) {
   if (dbm <= 2)  return WIFI_POWER_2dBm;
