@@ -14,17 +14,56 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <esp_system.h>
 
 // ── The log ──────────────────────────────────────────────────────────────
 //
 // A ring buffer in RAM, served at /api/log. On a board whose only connector is
 // the port it hands to the Gotek, and where the serial port does not exist
 // until USB.begin(), this is the entire diagnostic surface.
+// In RTC memory, and NOINIT specifically, so it survives a crash.
+//
+// A log that lives in ordinary RAM is wiped by the very reboot you are trying
+// to explain: you come back to nothing but the startup lines, which looks like
+// "logging is broken" and is actually "the device restarted". RTC_NOINIT is
+// kept across esp_restart() and a panic, and only lost on real power removal.
 #define LOG_LINES     40
 #define LOG_LINE_LEN  96
-static char    g_log[LOG_LINES][LOG_LINE_LEN];
-static uint8_t g_logHead  = 0;
-static uint8_t g_logCount = 0;
+#define LOG_MAGIC     0x60EC1067u
+
+RTC_NOINIT_ATTR static char     g_log[LOG_LINES][LOG_LINE_LEN];
+RTC_NOINIT_ATTR static uint8_t  g_logHead;
+RTC_NOINIT_ATTR static uint8_t  g_logCount;
+RTC_NOINIT_ATTR static uint32_t g_logMagic;
+
+// Call once at boot, before anything logs.
+void logBegin() {
+  if (g_logMagic != LOG_MAGIC) {      // cold start: the buffer is garbage
+    g_logMagic = LOG_MAGIC;
+    g_logHead = 0;
+    g_logCount = 0;
+    memset(g_log, 0, sizeof(g_log));
+  }
+  if (g_logHead >= LOG_LINES) g_logHead = 0;      // paranoia against garbage
+  if (g_logCount > LOG_LINES) g_logCount = LOG_LINES;
+}
+
+// Why we are running. A panic here is the difference between "the transfer is
+// slow" and "the device died and took the explanation with it".
+const char *resetReasonName() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:  return "power-on";
+    case ESP_RST_SW:       return "software restart";
+    case ESP_RST_PANIC:    return "PANIC (crash)";
+    case ESP_RST_INT_WDT:  return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "TASK WATCHDOG";
+    case ESP_RST_WDT:      return "watchdog";
+    case ESP_RST_BROWNOUT: return "BROWNOUT (power dipped)";
+    case ESP_RST_USB:      return "USB reset";
+    case ESP_RST_DEEPSLEEP:return "deep sleep";
+    default:               return "unknown";
+  }
+}
 
 void dlog(const String &msg) {
   Serial.println(msg);

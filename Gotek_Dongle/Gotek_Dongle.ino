@@ -190,6 +190,10 @@ void setup() {
   // happens afterwards, a phone within a few metres can read how much memory
   // the chip reported. It is renamed to the real SSID once the disk is up, so a
   // working device never shows the diagnostic name.
+  logBegin();
+  // First line after a restart says why, and the previous run's lines are still
+  // above it — which is the whole point of keeping the log in RTC memory.
+  dlog("--- boot: " + String(resetReasonName()) + " ---");
   loadConfig();
 
   const size_t psram = ESP.getPsramSize();
