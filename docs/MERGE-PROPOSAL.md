@@ -117,6 +117,25 @@ There's a host-side test suite for the parser — 304 assertions, gcc, no hardwa
 
 ---
 
+## What we have already pulled out
+
+Rather than propose modularisation and leave it as an exercise, three pieces are
+already standalone headers in our tree, each with host tests:
+
+| Header | What it is | Why it left the sketch |
+|---|---|---|
+| `board_profile.h` | Board attributes + the FAT12 geometry they imply | The selector used to be the *display*, which falls apart on a screenless board. Now `-DACTIVE_BOARD=…` picks display/touch/SD presence and the volume size together. |
+| `multipart_scan.h` | Streaming multipart body reader | It was binary-unsafe (`String::indexOf` → `strstr` stops at the first NUL, and an ADF is full of them) and blind to a delimiter split across TCP reads. |
+| `webdav_client.h` | The WebDAV client | Already standalone: seven config fields and a log callback. |
+
+`tools/test/check_board_profiles.py` validates every board's geometry at once —
+cluster count under the FAT12 limit, FAT large enough, volume able to hold a
+standard DD image, and no board claiming HD support its geometry cannot deliver.
+
+This matters for the merge in a practical way: the same board-profile mechanism
+is what a shared module needs in your tree, where seven targets differ in more
+than the panel.
+
 ## Step 2 — the web server and the API
 
 Bigger, and worth doing properly rather than quickly. The API layer touches 39

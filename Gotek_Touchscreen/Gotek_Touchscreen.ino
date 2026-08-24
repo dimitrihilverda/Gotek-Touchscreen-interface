@@ -44,20 +44,7 @@
 #include "amicrush_adf.h"
 #include "amicrush_cover.h"
 
-// ============================================================================
-// DISPLAY SELECTOR
-// ============================================================================
-
-#define DISPLAY_JC3248    1
-#define DISPLAY_WAVESHARE 2
-
-// SELECT YOUR DISPLAY HERE.
-// The CI workflow (.github/workflows/build-release.yml) overrides this via
-// --build-property to produce per-variant release binaries — leave the
-// #ifndef guard in place or those builds will all turn into JC3248.
-#ifndef ACTIVE_DISPLAY
-#define ACTIVE_DISPLAY DISPLAY_JC3248
-#endif
+#include "board_profile.h"
 
 // ============================================================================
 // CONDITIONAL INCLUDES
@@ -118,12 +105,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.21.1"
+#define FW_VERSION "v0.22.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.037"
+#define FW_INTERNAL "release.038"
 
 using std::vector;
 using std::sort;
@@ -343,7 +330,6 @@ esp_lcd_panel_handle_t panel_handle = NULL;
 class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_ST7789 _panel_instance;
   lgfx::Bus_SPI _bus_instance;
-  lgfx::Touch_CST328 _touch_instance;
   lgfx::Light_PWM _light_instance;
 public:
   LGFX(void) {
@@ -388,24 +374,68 @@ public:
     _light_instance.config(bl);
     _panel_instance.setLight(&_light_instance);
 
-    // Touch — CST816S on Waveshare 2.8"
-    auto tcfg = _touch_instance.config();
-    tcfg.i2c_port = 1;
-    tcfg.i2c_addr = 0x15;    // was 0x1A
-    tcfg.pin_sda = 48;       // was 1
-    tcfg.pin_scl = 47;       // was 3
-    tcfg.freq = 400000;
-    tcfg.x_min = 0;
-    tcfg.x_max = 240;
-    tcfg.y_min = 0;
-    tcfg.y_max = 320;
-    _touch_instance.config(tcfg);
-    _panel_instance.setTouch(&_touch_instance);
-
+    // Touch is NOT configured through LovyanGFX — see the CST328 driver below.
     setPanel(&_panel_instance);
   }
 };
 LGFX lcd;
+
+// ── CST328 capacitive touch, over raw I2C ────────────────────────────────
+//
+// Not through LovyanGFX: lgfx::Touch_CST328 was removed from the library, which
+// is what broke this build. The panel still works, so the fix is to talk to the
+// controller directly.
+//
+// Register map, sequence and pinout follow mesarim's Waveshare_28 firmware,
+// which runs on this hardware; the previous configuration here was internally
+// inconsistent (a CST328 class, a CST816S address, and pins matching neither).
+//
+// UNTESTED HERE: nobody on this side owns a Waveshare 2.8. It compiles and it
+// mirrors an implementation known to work; treat the first run as a test.
+#define CST328_SDA_PIN   1
+#define CST328_SCL_PIN   3
+#define CST328_INT_PIN   4
+#define CST328_RST_PIN   2
+#define CST328_ADDR      0x1A
+#define CST328_I2C_HZ    400000
+
+#define CST328_REG_NUM        0xD005
+#define CST328_REG_XY         0xD000
+#define CST328_REG_DBG_MODE   0xD101
+#define CST328_REG_NORM_MODE  0xD109
+#define CST328_REG_BOOT_TIME  0xD1FC
+#define CST328_MAX_POINTS     5
+
+static bool cst328Write(uint16_t reg, const uint8_t *data, uint32_t len) {
+  Wire1.beginTransmission(CST328_ADDR);
+  Wire1.write((uint8_t)(reg >> 8));
+  Wire1.write((uint8_t)reg);
+  for (uint32_t i = 0; i < len; i++) Wire1.write(data ? data[i] : 0);
+  return Wire1.endTransmission(true) == 0;
+}
+
+static bool cst328Read(uint16_t reg, uint8_t *data, uint32_t len) {
+  Wire1.beginTransmission(CST328_ADDR);
+  Wire1.write((uint8_t)(reg >> 8));
+  Wire1.write((uint8_t)reg);
+  if (Wire1.endTransmission(true) != 0) return false;
+  if (Wire1.requestFrom((int)CST328_ADDR, (int)len) != (int)len) return false;
+  for (uint32_t i = 0; i < len; i++) data[i] = Wire1.read();
+  return true;
+}
+
+static void cst328Begin() {
+  Wire1.begin(CST328_SDA_PIN, CST328_SCL_PIN, CST328_I2C_HZ);
+  pinMode(CST328_INT_PIN, INPUT_PULLUP);
+  pinMode(CST328_RST_PIN, OUTPUT);
+  digitalWrite(CST328_RST_PIN, HIGH); delay(50);
+  digitalWrite(CST328_RST_PIN, LOW);  delay(5);
+  digitalWrite(CST328_RST_PIN, HIGH); delay(50);
+  uint8_t d = 0;
+  cst328Write(CST328_REG_DBG_MODE, nullptr, 0);
+  cst328Read(CST328_REG_BOOT_TIME, &d, 1);
+  cst328Write(CST328_REG_NORM_MODE, nullptr, 0);
+}
 #endif
 
 JPEGDEC jpegdec;
@@ -531,53 +561,6 @@ LoadSource g_loadSource = LOADSRC_SD;
 vector<String> theme_list;              // available theme names
 
 // RAM disk variables
-// ── FAT12 volume geometry ───────────────────────────────────────────────
-//
-// Exactly one file ever lives on this volume, so the layout is chosen to
-// maximise data space rather than to imitate a real floppy. 4096 sectors = 2 MB,
-// which is what an Amiga HD image needs: 1760 KB (1,802,240 bytes), 22
-// sectors/track. The old 2880-sector 1.44 MB volume could not hold one, and the
-// loader silently truncated instead of saying so.
-//
-// Every offset below is derived, and the cluster count is checked against the
-// FAT12 limit at compile time — at 1 sector per cluster this layout lands at
-// 4057 clusters, comfortably under 4085 but close enough that a change to
-// ROOT_ENTRIES or SECTORS_PER_FAT could tip it into a corrupt FAT16 volume.
-#define SECTORS_TOTAL      4096
-#define SECTORS_RESERVED   1
-#define SECTORS_PER_CLUST  1
-#define NUM_FATS           2
-#define ROOT_ENTRIES       224
-#define ROOTDIR_SECTORS    (ROOT_ENTRIES * 32 / 512)
-#define SECTORS_PER_FAT    12
-#define MEDIA_DESCRIPTOR   0xF8            // fixed disk; 0xF0 would claim 1.44 MB floppy
-
-#define RAM_DISK_SIZE      (SECTORS_TOTAL * 512)
-// Volume layout, all derived from the geometry above (2 MB / 4096 sectors):
-//   sector 0        boot sector
-//   sectors 1-12    FAT1
-//   sectors 13-24   FAT2
-//   sectors 25-38   root directory (224 entries)
-//   sectors 39+     data — the mounted image, ~1.98 MB usable
-#define FAT1_OFFSET    (SECTORS_RESERVED * 512)
-#define FAT2_OFFSET    (FAT1_OFFSET + SECTORS_PER_FAT * 512)
-#define ROOTDIR_OFFSET (FAT2_OFFSET + SECTORS_PER_FAT * 512)
-#define DATA_OFFSET    (ROOTDIR_OFFSET + ROOTDIR_SECTORS * 512)
-#define DATA_LBA       (DATA_OFFSET / 512)
-#define MAX_IMAGE_BYTES (RAM_DISK_SIZE - DATA_OFFSET)
-
-// A FAT12 volume must stay under 4085 clusters; at 4085 or more a reader is
-// entitled to treat it as FAT16 and see garbage.
-static_assert((SECTORS_TOTAL - SECTORS_RESERVED - NUM_FATS * SECTORS_PER_FAT
-               - ROOTDIR_SECTORS) / SECTORS_PER_CLUST < 4085,
-              "FAT12 cluster limit exceeded - raise SECTORS_PER_CLUST");
-// ...and the FAT has to be big enough to describe them, 1.5 bytes per cluster.
-static_assert(((SECTORS_TOTAL - SECTORS_RESERVED - NUM_FATS * SECTORS_PER_FAT
-               - ROOTDIR_SECTORS) / SECTORS_PER_CLUST + 2) * 3 / 2
-              <= SECTORS_PER_FAT * 512,
-              "SECTORS_PER_FAT too small for the cluster count");
-static_assert(MAX_IMAGE_BYTES >= 1802240, "volume too small for an Amiga HD image");
-
 String g_mountFilename = "";
 
 // ── Disk saves ───────────────────────────────────────────────────────────
@@ -1212,6 +1195,7 @@ void displayInit() {
   lcd.init();
   lcd.setRotation(cfg_display_flip ? 3 : 1);   // 1 = landscape, 3 = landscape flipped
   lcd.setBrightness(0);       // start dark — rampBacklight() will fade in
+  cst328Begin();              // touch is driven directly, not through LovyanGFX
 }
 
 void setBacklight(uint8_t level) {
@@ -1367,13 +1351,30 @@ void touchInit() {
 }
 
 bool touchRead(uint16_t *x, uint16_t *y) {
-  lgfx::touch_point_t tp;
-  if (lcd.getTouch(&tp)) {
-    *x = tp.x;
-    *y = tp.y;
-    return true;
+  // The controller latches a count that has to be cleared, or it stops
+  // reporting. Every early return clears it too.
+  uint8_t cnt = 0;
+  if (!cst328Read(CST328_REG_NUM, &cnt, 1)) return false;
+  const uint8_t points = cnt & 0x0F;
+  uint8_t clr = 0;
+  if (points == 0 || points > CST328_MAX_POINTS) {
+    cst328Write(CST328_REG_NUM, &clr, 1);
+    return false;
   }
-  return false;
+
+  uint8_t buf[32] = {0};
+  if (!cst328Read(CST328_REG_XY, &buf[1], 27)) return false;
+  cst328Write(CST328_REG_NUM, &clr, 1);
+
+  // 12-bit coordinates, split across three bytes.
+  const uint16_t rawX = ((uint16_t)buf[2] << 4) | ((buf[4] & 0xF0) >> 4);
+  const uint16_t rawY = ((uint16_t)buf[3] << 4) |  (buf[4] & 0x0F);
+  if (rawX > 240 || rawY > 320) return false;
+
+  // The 240x320 panel is used in landscape, so the axes swap and Y inverts.
+  *x = rawY;
+  *y = (240 - 1) - (rawX > 239 ? 239 : rawX);
+  return true;
 }
 
 #endif

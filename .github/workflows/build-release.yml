@@ -37,18 +37,18 @@ jobs:
         include:
           - variant: jc3248
             label: "Guition JC3248W535C (ESP32-S3, 480x320 QSPI)"
-            display_define: DISPLAY_JC3248
+            board: BOARD_JC3248
             fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
             extra_libs: ""
             allow_failure: false
-          # Waveshare path currently references lgfx::Touch_CST328 which is
-          # absent from the LovyanGFX 1.2.21 release in the Arduino registry —
-          # the build fails until the dependency is pinned to a version (or
-          # fork) that has it. `continue-on-error` keeps the JC3248 release
-          # publishable while we figure that out.
+          # Touch is driven by a raw CST328 I2C driver rather than LovyanGFX:
+          # lgfx::Touch_CST328 was removed from the library and that is what
+          # used to break this build. Nobody here owns the panel, so the binary
+          # is published but unverified on hardware — allow_failure stays true
+          # until someone confirms a working flash.
           - variant: waveshare
             label: "Waveshare ESP32-S3-Touch-LCD-2.8 (ESP32-S3, 320x240 SPI)"
-            display_define: DISPLAY_WAVESHARE
+            board: BOARD_WAVESHARE
             fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=default_8MB,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=cdc"
             extra_libs: "LovyanGFX"
             allow_failure: true
@@ -103,7 +103,7 @@ jobs:
           mkdir -p build
           arduino-cli compile \
             --fqbn "${{ matrix.fqbn }}" \
-            --build-property "compiler.cpp.extra_flags=-DACTIVE_DISPLAY=${{ matrix.display_define }}" \
+            --build-property "compiler.cpp.extra_flags=-DACTIVE_BOARD=${{ matrix.board }}" \
             --output-dir build \
             --warnings none \
             "${SKETCH}"

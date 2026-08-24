@@ -49,6 +49,14 @@ io.open('webui_syntax_check.tmp.js', 'w', encoding='utf-8').write(m.group(1))
   echo
 fi
 
+# Every board profile must describe a legal FAT12 volume. The header carries
+# static_asserts, but those only fire for the board actually being compiled.
+if command -v python >/dev/null 2>&1; then
+  echo "=== board profiles ==="
+  python tools/test/check_board_profiles.py || fail=1
+  echo
+fi
+
 # webui.h is generated; a stale one means web fixes never reach the device.
 if command -v python >/dev/null 2>&1; then
   echo "=== webui.h freshness ==="
