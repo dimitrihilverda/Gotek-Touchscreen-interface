@@ -391,6 +391,9 @@ void handleConfigGet(WiFiClient &client) {
   json += "\"LASTMODE\":\"" + jsonEscape(cfg_lastmode) + "\",";
   json += "\"THEME\":\"" + jsonEscape(cfg_theme) + "\",";
   json += "\"WALLPAPER_PCT\":\"" + String(cfg_wallpaper_pct) + "\",";
+  json += "\"SAVES\":\"" + String(cfg_saves_mode == SAVES_OFF       ? "OFF"
+                                  : cfg_saves_mode == SAVES_OVERWRITE ? "OVERWRITE"
+                                                                      : "COPY") + "\",";
   json += "\"WIFI_TX_DBM\":\"" + String(cfg_wifi_tx_dbm) + "\",";
   json += "\"LOG_ENABLED\":\"" + String(cfg_log_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_ENABLED\":\"" + String(cfg_wifi_enabled ? "1" : "0") + "\",";
@@ -439,6 +442,14 @@ void handleConfigPost(WiFiClient &client, const String &body) {
     if (v < 0)   v = 0;
     if (v > 100) v = 100;
     cfg_wallpaper_pct = v;
+  }
+
+  if (body.indexOf("SAVES=") >= 0) {
+    String v = getFormValue(body, "SAVES");
+    v.toUpperCase();
+    cfg_saves_mode = (v == "OFF")       ? SAVES_OFF
+                   : (v == "OVERWRITE") ? SAVES_OVERWRITE
+                                        : SAVES_COPY;
   }
 
   if (body.indexOf("LOG_ENABLED=") >= 0) {

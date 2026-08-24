@@ -182,6 +182,17 @@ textarea{min-height:80px;resize:vertical}
                         this.value === '0' ? 'Off' : this.value + '%'">
         <span id="cfg-wallpaper-val" style="font-size:13px;color:var(--muted);min-width:40px">20%</span>
       </div>
+      <label title="What happens when the Amiga writes to the disk that is in">Disk saves</label>
+      <select name="SAVES" id="cfg-saves">
+        <option value="COPY">Copy — write &lt;game&gt;.sav.adf next to the original</option>
+        <option value="OVERWRITE">Overwrite — write back into the original image</option>
+        <option value="OFF">Off — discard writes (disk behaves read-only)</option>
+      </select>
+      <div style="font-size:12px;color:var(--muted);margin:4px 0 8px">
+        High scores and save games only survive if this is on. WebDAV disks always
+        save to <code>/SAVES</code>, never back to the server.
+      </div>
+
       <label>Diagnostic logging</label>
       <select name="LOG_ENABLED" id="cfg-log-enabled">
         <option value="0">Off</option>
@@ -774,6 +785,8 @@ async function loadConfig() {
   const tx = (cfg.WIFI_TX_DBM === undefined || cfg.WIFI_TX_DBM === '') ? 15 : parseInt(cfg.WIFI_TX_DBM);
   document.getElementById('cfg-wifi-tx').value = tx;
   document.getElementById('cfg-wifi-tx-val').textContent = tx + ' dBm';
+  document.getElementById('cfg-saves').value =
+    ['OFF','COPY','OVERWRITE'].includes(cfg.SAVES) ? cfg.SAVES : 'COPY';
   document.getElementById('cfg-log-enabled').value =
     (cfg.LOG_ENABLED === '1' || cfg.LOG_ENABLED === 1 || cfg.LOG_ENABLED === true) ? '1' : '0';
 

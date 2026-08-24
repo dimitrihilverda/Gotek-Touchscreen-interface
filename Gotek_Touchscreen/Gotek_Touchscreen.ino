@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.20.0"
+#define FW_VERSION "v0.21.0"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.035"
+#define FW_INTERNAL "release.036"
 
 using std::vector;
 using std::sort;
@@ -531,7 +531,95 @@ LoadSource g_loadSource = LOADSRC_SD;
 vector<String> theme_list;              // available theme names
 
 // RAM disk variables
-#define RAM_DISK_SIZE (2880 * 512)
+// ── FAT12 volume geometry ───────────────────────────────────────────────
+//
+// Exactly one file ever lives on this volume, so the layout is chosen to
+// maximise data space rather than to imitate a real floppy. 4096 sectors = 2 MB,
+// which is what an Amiga HD image needs: 1760 KB (1,802,240 bytes), 22
+// sectors/track. The old 2880-sector 1.44 MB volume could not hold one, and the
+// loader silently truncated instead of saying so.
+//
+// Every offset below is derived, and the cluster count is checked against the
+// FAT12 limit at compile time — at 1 sector per cluster this layout lands at
+// 4057 clusters, comfortably under 4085 but close enough that a change to
+// ROOT_ENTRIES or SECTORS_PER_FAT could tip it into a corrupt FAT16 volume.
+#define SECTORS_TOTAL      4096
+#define SECTORS_RESERVED   1
+#define SECTORS_PER_CLUST  1
+#define NUM_FATS           2
+#define ROOT_ENTRIES       224
+#define ROOTDIR_SECTORS    (ROOT_ENTRIES * 32 / 512)
+#define SECTORS_PER_FAT    12
+#define MEDIA_DESCRIPTOR   0xF8            // fixed disk; 0xF0 would claim 1.44 MB floppy
+
+#define RAM_DISK_SIZE      (SECTORS_TOTAL * 512)
+// Volume layout, all derived from the geometry above (2 MB / 4096 sectors):
+//   sector 0        boot sector
+//   sectors 1-12    FAT1
+//   sectors 13-24   FAT2
+//   sectors 25-38   root directory (224 entries)
+//   sectors 39+     data — the mounted image, ~1.98 MB usable
+#define FAT1_OFFSET    (SECTORS_RESERVED * 512)
+#define FAT2_OFFSET    (FAT1_OFFSET + SECTORS_PER_FAT * 512)
+#define ROOTDIR_OFFSET (FAT2_OFFSET + SECTORS_PER_FAT * 512)
+#define DATA_OFFSET    (ROOTDIR_OFFSET + ROOTDIR_SECTORS * 512)
+#define DATA_LBA       (DATA_OFFSET / 512)
+#define MAX_IMAGE_BYTES (RAM_DISK_SIZE - DATA_OFFSET)
+
+// A FAT12 volume must stay under 4085 clusters; at 4085 or more a reader is
+// entitled to treat it as FAT16 and see garbage.
+static_assert((SECTORS_TOTAL - SECTORS_RESERVED - NUM_FATS * SECTORS_PER_FAT
+               - ROOTDIR_SECTORS) / SECTORS_PER_CLUST < 4085,
+              "FAT12 cluster limit exceeded - raise SECTORS_PER_CLUST");
+// ...and the FAT has to be big enough to describe them, 1.5 bytes per cluster.
+static_assert(((SECTORS_TOTAL - SECTORS_RESERVED - NUM_FATS * SECTORS_PER_FAT
+               - ROOTDIR_SECTORS) / SECTORS_PER_CLUST + 2) * 3 / 2
+              <= SECTORS_PER_FAT * 512,
+              "SECTORS_PER_FAT too small for the cluster count");
+static_assert(MAX_IMAGE_BYTES >= 1802240, "volume too small for an Amiga HD image");
+
+String g_mountFilename = "";
+
+// ── Disk saves ───────────────────────────────────────────────────────────
+//
+// When the Amiga writes to the mounted disk — a high score, a save game, a
+// preferences file — the Gotek writes into the image FILE on this RAM volume.
+// Those writes used to live and die in RAM: onWrite copied them into the buffer
+// and nothing ever put them anywhere. The Amiga believed it had saved.
+//
+// So: mark which image sectors were touched, wait for the writes to stop, and
+// put them on the card. A settle timer rather than an immediate write, because
+// a single save is a burst of dozens of sector writes and flushing on each one
+// would hammer the card and stall USB.
+//
+// COPY is the default deliberately: it writes <name>.sav.adf beside the
+// original and leaves your collection untouched. OVERWRITE is opt-in.
+enum SavesMode { SAVES_OFF = 0, SAVES_COPY = 1, SAVES_OVERWRITE = 2 };
+int    cfg_saves_mode  = SAVES_COPY;
+
+#define SV_SETTLE_MS   3000
+#define SV_IMG_SECTORS (SECTORS_TOTAL - DATA_LBA)
+
+// The map has to cover every sector onWrite can possibly mark, or a save to the
+// tail of a full-size image would write past the end of the bitmap.
+static_assert((MAX_IMAGE_BYTES + 511) / 512 <= SV_IMG_SECTORS,
+              "dirty map too small for the largest image the volume accepts");
+static uint8_t  g_sv_dirty[(SV_IMG_SECTORS + 7) / 8];
+static volatile uint16_t g_sv_dirty_count = 0;
+static volatile uint32_t g_sv_last_write  = 0;
+String   g_mountPath  = "";     // SD path of the mounted image, "" if remote or none
+String   g_mountLabel = "";     // what to call it in a saves filename
+uint32_t g_mountBytes = 0;      // image size, so we never write past its end
+
+static inline bool svGet(uint32_t i) { return (g_sv_dirty[i >> 3] >> (i & 7)) & 1; }
+static inline void svSet(uint32_t i) { g_sv_dirty[i >> 3] |= (uint8_t)(1u << (i & 7)); }
+
+static void svReset() {
+  memset(g_sv_dirty, 0, sizeof(g_sv_dirty));
+  g_sv_dirty_count = 0;
+  g_sv_last_write  = 0;
+}
+
 uint8_t *ram_disk = NULL;
 const char *ram_mount_point = "/ramdisk";
 
@@ -1386,6 +1474,11 @@ void loadConfig() {
       cfg_wallpaper_pct = val.toInt();
       if (cfg_wallpaper_pct < 0)   cfg_wallpaper_pct = 0;
       if (cfg_wallpaper_pct > 100) cfg_wallpaper_pct = 100;
+    } else if (key == "SAVES") {
+      String v = val; v.toUpperCase();
+      cfg_saves_mode = (v == "OFF" || v == "0")       ? SAVES_OFF
+                     : (v == "OVERWRITE" || v == "2") ? SAVES_OVERWRITE
+                                                      : SAVES_COPY;
     } else if (key == "LOG_ENABLED") {
       cfg_log_enabled = (val == "1" || val == "true");
     } else if (key == "BACKLIGHT") {
@@ -1467,6 +1560,9 @@ void saveConfig() {
   // the setting looked like it had been ignored.
   f.println("WIFI_TX_DBM=" + String(cfg_wifi_tx_dbm));
   f.println("WALLPAPER_PCT=" + String(cfg_wallpaper_pct));
+  f.println("SAVES=" + String(cfg_saves_mode == SAVES_OFF       ? "OFF"
+                            : cfg_saves_mode == SAVES_OVERWRITE ? "OVERWRITE"
+                                                                 : "COPY"));
   f.println("LOG_ENABLED=" + String(cfg_log_enabled ? "1" : "0"));
 
   f.close();
@@ -1667,6 +1763,106 @@ static void _amicrushWriteStamp() {
 // Separate from firstBootScaffold (which early-returns on any card that already
 // has a CONFIG.TXT) so cards flashed before styles existed also get the file —
 // without it the editor cannot open the default theme, only copy a preset.
+// Arduino's auto-prototype generator skips functions with a default argument,
+// so this one has to be declared by hand before an earlier caller can see it.
+void showBusyIndicator(const String &msg);
+void hideBusyIndicator();
+
+// Where a save goes.
+//
+// COPY writes beside the original so the collection stays pristine; a disk
+// pulled off WebDAV has no original here, so its saves land in /SAVES and are
+// never a modification of somebody's server.
+static String svTargetPath() {
+  if (g_mountLabel.length() == 0) return "";
+  if (cfg_saves_mode == SAVES_OVERWRITE && g_mountPath.length() > 0) return g_mountPath;
+
+  String base = g_mountLabel;
+  const int dot = base.lastIndexOf('.');
+  if (dot > 0) base = base.substring(0, dot);
+
+  if (g_mountPath.length() > 0) {
+    String dir = g_mountPath;
+    const int sl = dir.lastIndexOf('/');
+    dir = (sl > 0) ? dir.substring(0, sl) : String("");
+    return dir + "/" + base + ".sav.adf";
+  }
+  if (!SD_MMC.exists("/SAVES")) SD_MMC.mkdir("/SAVES");
+  return "/SAVES/" + base + ".sav.adf";
+}
+
+// Put the changed sectors on the card. Returns true if anything was written.
+//
+// Patches in place when the target already holds a full-size image, so a save
+// costs a few hundred bytes of I/O rather than a megabyte. The first save to a
+// fresh .sav.adf has to lay down the whole image before it can be patched.
+static bool svFlush(const char *why) {
+  if (cfg_saves_mode == SAVES_OFF || g_sv_dirty_count == 0 || g_mountBytes == 0) return false;
+  if (SD_MMC.cardType() == CARD_NONE) return false;
+
+  const String target = svTargetPath();
+  if (target.length() == 0) return false;
+
+  const uint16_t dirty = g_sv_dirty_count;
+  const uint32_t startedAt = g_sv_last_write;   // to spot writes that land mid-flush
+  bool wholeImage = true;
+  File f = SD_MMC.open(target.c_str(), "r+");
+  if (f) {
+    wholeImage = (f.size() != g_mountBytes);   // wrong size: rewrite it entirely
+    if (wholeImage) { f.close(); f = SD_MMC.open(target.c_str(), "w"); }
+  } else {
+    f = SD_MMC.open(target.c_str(), "w");
+  }
+  if (!f) {
+    sdLog("SAVES: cannot open " + target);
+    return false;
+  }
+
+  size_t written = 0;
+  if (wholeImage) {
+    showBusyIndicator("SAVING...");
+    written = f.write(&ram_disk[DATA_OFFSET], g_mountBytes);
+    hideBusyIndicator();
+    if (written != g_mountBytes) {
+      f.close();
+      sdLog("SAVES: short write to " + target + " - card full?");
+      return false;
+    }
+  } else {
+    for (uint32_t i = 0; i < SV_IMG_SECTORS; i++) {
+      if (!svGet(i)) continue;
+      const uint32_t off = i * 512;
+      if (off >= g_mountBytes) break;
+      uint32_t n = 512;
+      if (off + n > g_mountBytes) n = g_mountBytes - off;   // last, partial sector
+      if (!f.seek(off)) { f.close(); sdLog("SAVES: seek failed"); return false; }
+      written += f.write(&ram_disk[DATA_OFFSET + off], n);
+      yield();
+    }
+  }
+  f.close();
+
+  // Only forget the dirty map if nothing arrived while we were writing. If the
+  // Amiga wrote mid-flush, keep the map and let the next settle pick it up —
+  // re-writing a few sectors is free, losing one is not.
+  if (g_sv_last_write == startedAt) svReset();
+  else sdLog("SAVES: writes arrived mid-flush, keeping the map for the next pass");
+
+  sdLog("SAVES: " + String(why) + " -> " + target + " (" + String(dirty) +
+        " sectors, " + String((uint32_t)written) + " bytes" +
+        (wholeImage ? ", full image)" : ")"));
+  return true;
+}
+
+// Called from the main loop. Waits for the writes to stop before touching the
+// card: one Amiga save is a burst of sector writes, and flushing per write
+// would stall USB and thrash the card.
+static void svTick() {
+  if (g_sv_dirty_count == 0) return;
+  if (millis() - g_sv_last_write < SV_SETTLE_MS) return;
+  svFlush("settled");
+}
+
 void ensureDefaultThemeStyle() {
   if (SD_MMC.cardType() == CARD_NONE) return;
 
@@ -1883,6 +2079,13 @@ void firstBootScaffold() {
     cfg.println("# WiFi transmit power in dBm (2-20). Lower saves current on a");
     cfg.println("# marginal supply; higher improves an unreliable link.");
     cfg.println("WIFI_TX_DBM=15");
+    cfg.println("");
+    cfg.println("# What happens when the Amiga writes to the mounted disk.");
+    cfg.println("#   COPY      = write <game>.sav.adf next to the original (default, safe)");
+    cfg.println("#   OVERWRITE = write straight back into the original image");
+    cfg.println("#   OFF       = discard; the disk behaves as read-only");
+    cfg.println("# WebDAV disks always save to /SAVES, never back to the server.");
+    cfg.println("SAVES=COPY");
     cfg.println("");
     cfg.println("# Active game's cover as a dimmed full-screen backdrop (0 = off)");
     cfg.println("WALLPAPER_PCT=20");
@@ -2246,7 +2449,6 @@ void findRelatedDisks(int currentIndex) {
 // that is AmiCrush, which is why every remotely-loaded game arrived as
 // AMICRUSH.ADF. The name is a property of the image being mounted, so callers
 // pass it rather than the volume builder guessing.
-String g_mountFilename = "";
 
 // ============================================================================
 // FAT12 FILESYSTEM EMULATION
@@ -2256,16 +2458,16 @@ void build_boot_sector(uint8_t *buf) {
   memset(buf, 0, 512);
   buf[0x00] = 0xEB; buf[0x01] = 0x3C; buf[0x02] = 0x90;
   memcpy(&buf[0x03], "MSDOS5.0", 8);
-  *(uint16_t *)&buf[0x0B] = 512;
-  buf[0x0D] = 1;
-  *(uint16_t *)&buf[0x0E] = 1;
-  buf[0x10] = 2;
-  *(uint16_t *)&buf[0x11] = 224;
-  *(uint16_t *)&buf[0x13] = 2880;
-  buf[0x15] = 0xF0;
-  *(uint16_t *)&buf[0x16] = 9;
-  *(uint16_t *)&buf[0x18] = 18;
-  *(uint16_t *)&buf[0x1A] = 2;
+  *(uint16_t *)&buf[0x0B] = 512;                    // bytes per sector
+  buf[0x0D] = SECTORS_PER_CLUST;
+  *(uint16_t *)&buf[0x0E] = SECTORS_RESERVED;
+  buf[0x10] = NUM_FATS;
+  *(uint16_t *)&buf[0x11] = ROOT_ENTRIES;
+  *(uint16_t *)&buf[0x13] = SECTORS_TOTAL;
+  buf[0x15] = MEDIA_DESCRIPTOR;
+  *(uint16_t *)&buf[0x16] = SECTORS_PER_FAT;
+  *(uint16_t *)&buf[0x18] = 18;                     // geometry hints, unused by
+  *(uint16_t *)&buf[0x1A] = 2;                      // anything that reads this
   *(uint32_t *)&buf[0x20] = 0;
   buf[0x24] = 0x00;  // BS_DrvNum: 0x00 = floppy
   buf[0x25] = 0x00;  // BS_Reserved1
@@ -2291,8 +2493,8 @@ void fat12_set(uint8_t *fat, int idx, uint16_t val) {
 }
 
 void build_fat(uint8_t *fat) {
-  memset(fat, 0, 4608);
-  fat12_set(fat, 0, 0xFF0);
+  memset(fat, 0, SECTORS_PER_FAT * 512);
+  fat12_set(fat, 0, 0xF00 | MEDIA_DESCRIPTOR);   // entry 0 mirrors the media byte
   fat12_set(fat, 1, 0xFFF);
   // Cluster 2+ left as 0x000 (free) until a file is loaded
 }
@@ -2316,7 +2518,7 @@ void make_83_name(const char *src, uint8_t *dst) {
 }
 
 void build_root(uint8_t *root) {
-  memset(root, 0, 7168); // 14 sectors × 512 = 7168 bytes for 224 entries
+  memset(root, 0, ROOTDIR_SECTORS * 512);
   // An ejected drive has no file at all. Writing a zero-length entry for the
   // previous image left the Amiga looking at a 0 KB ghost of the last game.
   if (g_mountFilename.length() == 0) return;
@@ -2328,16 +2530,6 @@ void build_root(uint8_t *root) {
   *(uint32_t *)&root[28] = 0;  // File size = 0
 }
 
-// FAT12 layout for 1.44MB floppy (2880 sectors):
-// Sector 0:      Boot sector          → offset 0
-// Sectors 1-9:   FAT1 (9 sectors)     → offset 512
-// Sectors 10-18: FAT2 (9 sectors)     → offset 5120
-// Sectors 19-32: Root dir (14 sectors) → offset 9728
-// Sectors 33+:   Data area            → offset 16896
-#define FAT1_OFFSET   512
-#define FAT2_OFFSET   5120
-#define ROOTDIR_OFFSET 9728
-#define DATA_OFFSET   16896
 
 void build_volume_with_file() {
   memset(ram_disk, 0, RAM_DISK_SIZE);
@@ -2364,11 +2556,30 @@ static int32_t onRead(uint32_t lba, uint32_t offset, void *buffer, uint32_t bufs
 
 static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t bufsize) {
   uint32_t addr = lba * 512 + offset;
-  if (ram_disk && addr + bufsize <= RAM_DISK_SIZE) {
-    memcpy(&ram_disk[addr], buffer, bufsize);
-    return bufsize;
+  if (!ram_disk || addr + bufsize > RAM_DISK_SIZE) return -1;
+  memcpy(&ram_disk[addr], buffer, bufsize);
+
+  // Note which sectors of the IMAGE this touched. Writes to the boot sector,
+  // the FATs or the directory are the Gotek keeping its own housekeeping up to
+  // date; they are not part of the .adf and must not be written back into it.
+  if (cfg_saves_mode != SAVES_OFF && g_mountBytes > 0) {
+    const uint32_t first = addr / 512;
+    const uint32_t last  = (addr + bufsize - 1) / 512;
+    const uint32_t imgEnd = DATA_LBA + (g_mountBytes + 511) / 512;
+    bool touchedImage = false;
+    for (uint32_t sec = first; sec <= last; sec++) {
+      if (sec < DATA_LBA || sec >= imgEnd) continue;
+      touchedImage = true;
+      const uint32_t i = sec - DATA_LBA;
+      // Assignment rather than ++: C++20 deprecates ++ on a volatile.
+      if (!svGet(i)) { svSet(i); g_sv_dirty_count = g_sv_dirty_count + 1; }
+    }
+    // Only image writes hold the settle window open. Letting housekeeping
+    // writes restart the timer would let a chatty Gotek postpone the save
+    // indefinitely, which is the one way this feature quietly does nothing.
+    if (touchedImage) g_sv_last_write = millis();
   }
-  return -1;
+  return bufsize;
 }
 
 // ============================================================================
@@ -5372,6 +5583,8 @@ size_t loadFileToRam(int index) {
 
   // Rebuild FAT volume (empty), named after the image about to go in.
   g_mountFilename = filenameOnly(filepath);
+  svReset();                      // a new disk starts with no unsaved changes
+  g_mountBytes = 0;               // ...and takes no writes until it is loaded
   build_volume_with_file();
 
   // Read disk image from SD directly into RAM disk data area
@@ -5388,8 +5601,25 @@ size_t loadFileToRam(int index) {
   }
 
   size_t fileSize = f.size();
-  size_t maxData = RAM_DISK_SIZE - DATA_OFFSET;
-  size_t toRead = (fileSize < maxData) ? fileSize : maxData;
+  // Refuse rather than truncate. A half-loaded image mounts, boots partway and
+  // fails in a way that looks like a bad dump; saying so is kinder. With the
+  // 2 MB volume this only triggers on something that is not a floppy image.
+  if (fileSize > MAX_IMAGE_BYTES) {
+    f.close();
+    gfx_setTextColor(TFT_RED, TFT_BLACK);
+    gfx_setTextSize(2);
+    String errMsg = "Image too big: " + String(fileSize / 1024) + " KB";
+    gfx_setCursor((gW - gfx_textWidth(errMsg)) / 2, 150);
+    gfx_print(errMsg);
+    gfx_setTextSize(1);
+    String lim = "Maximum is " + String(MAX_IMAGE_BYTES / 1024) + " KB";
+    gfx_setCursor((gW - gfx_textWidth(lim)) / 2, 176);
+    gfx_print(lim);
+    gfx_flush();
+    delay(1800);
+    return 0;
+  }
+  size_t toRead = fileSize;
   size_t totalRead = 0;
   int lastPctDrawn = -1;
 
@@ -5421,6 +5651,11 @@ size_t loadFileToRam(int index) {
   }
   *(uint16_t *)&ram_disk[ROOTDIR_OFFSET + 26] = 2;
   *(uint32_t *)&ram_disk[ROOTDIR_OFFSET + 28] = totalRead;
+
+  // Arm saves: from here a write from the Amiga belongs to this image.
+  g_mountPath  = filepath;
+  g_mountLabel = filenameOnly(filepath);
+  g_mountBytes = totalRead;
 
   // Show 100% filled progress bar (no extra bar outside frame)
   drawThemedProgressBar(100);
@@ -5664,11 +5899,19 @@ void doUnload() {
     return;
   }
 
+  // Last chance to keep whatever the Amiga wrote. Ejecting is exactly when a
+  // save is most likely to still be sitting inside the settle window.
+  svFlush("eject");
+
   tud_disconnect();
   delay(50);
 
   // Clear RAM disk and rebuild empty volume — no file, so no root entry.
   g_mountFilename = "";
+  g_mountPath  = "";
+  g_mountLabel = "";
+  g_mountBytes = 0;
+  svReset();
   build_volume_with_file();
   bumpInquiryRevision();
   msc.mediaPresent(false);
@@ -5767,6 +6010,8 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   // Rebuild FAT volume (empty), named after the remote image. Deriving this
   // from the SD selection is what produced AMICRUSH.ADF for every DAV game.
   g_mountFilename = filenameOnly(remotePath);
+  svReset();
+  g_mountBytes = 0;
   build_volume_with_file();
 
   // Disconnect USB before loading
@@ -5819,6 +6064,12 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   }
   *(uint16_t *)&ram_disk[ROOTDIR_OFFSET + 26] = 2;
   *(uint32_t *)&ram_disk[ROOTDIR_OFFSET + 28] = totalRead;
+
+  // Arm saves. No local original, so saves go to /SAVES rather than back to
+  // somebody's WebDAV server.
+  g_mountPath  = "";
+  g_mountLabel = filenameOnly(remotePath);
+  g_mountBytes = totalRead;
 
   // Show success
   drawThemedProgressBar(100);
@@ -6383,6 +6634,9 @@ void loop() {
       davOpenFolderDetail(fullIdx);   // clears the flag, fetches NFO + cover
     }
   }
+
+  // Persist anything the Amiga wrote, once the writes have stopped.
+  svTick();
 
   uint16_t px = 0, py = 0;
   bool haveTouch = touchRead(&px, &py);
