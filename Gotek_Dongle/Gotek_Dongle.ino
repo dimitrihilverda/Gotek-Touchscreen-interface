@@ -94,6 +94,8 @@ WiFiServer httpServer(80);
 
 // ── State ────────────────────────────────────────────────────────────────
 static bool     g_mediaPresent = false;
+static uint32_t g_lastEnumerateMs = 0;   // how long the host took to re-attach
+static bool     g_lastEnumerateOk = false;
 static uint32_t g_inquiryRev   = 1;
 
 // Changing the reported revision makes the Gotek notice that the medium
@@ -122,8 +124,23 @@ static void mountImage(const String &name, uint32_t bytes) {
   bumpInquiryRevision();
   msc.mediaPresent(true);
   g_mediaPresent = true;
+
+  // Re-attach, then wait for the host to actually take us back.
+  //
+  // Everything before this is our own work; this is the part the Gotek
+  // controls, and it is what "ready on the drive" really means. Without
+  // measuring it the timings stop one step short of the thing you care about.
+  //
+  // Bounded, because a Gotek that is switched off will never enumerate and the
+  // web request must still return.
+  const uint32_t t0 = millis();
   tud_connect();
-  dlog("Mounted " + name + " (" + String(bytes / 1024) + " KB)");
+  while (!tud_mounted() && millis() - t0 < 3000) delay(5);
+  g_lastEnumerateMs = millis() - t0;
+  g_lastEnumerateOk = tud_mounted();
+
+  dlog("Mounted " + name + " (" + String(bytes / 1024) + " KB), host took " +
+       String(g_lastEnumerateMs) + "ms" + (g_lastEnumerateOk ? "" : " (no host)"));
 }
 
 static void ejectImage() {

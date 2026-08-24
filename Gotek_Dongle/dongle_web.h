@@ -187,6 +187,28 @@ static void cacheArtFor(const String &remoteDiskPath, Perf &perf) {
   perf.mark("notes");
 }
 
+
+// ── Remembering the last folder ──────────────────────────────────────────
+//
+// The page asks for the same folder several times in a row — after a load it
+// re-renders the now-playing bar and the list, and each of those wants the
+// listing again. Measured on a real server that is 300-480 ms apiece, almost
+// all of it TCP and TLS setup rather than the four kilobytes of XML.
+//
+// So the answer is kept for a few seconds. Long enough to collapse one burst of
+// identical questions, short enough that a folder you changed on the server
+// looks stale for a moment at worst. There is no card to keep it on, so it
+// lives in the heap and holds exactly one folder.
+#define DAV_LIST_CACHE_MS 15000
+static String   g_listCachePath = "";
+static String   g_listCacheJson = "";
+static uint32_t g_listCacheAt   = 0;
+
+static bool listCacheHit(const String &path) {
+  return g_listCachePath == path && g_listCacheJson.length() > 0 &&
+         (millis() - g_listCacheAt) < DAV_LIST_CACHE_MS;
+}
+
 static void handleClient(WiFiClient &client) {
   const unsigned long deadline = millis() + 5000;
   while (!client.available() && millis() < deadline) delay(2);
@@ -468,6 +490,12 @@ static void handleClient(WiFiClient &client) {
     if (WiFi.status() != WL_CONNECTED) {
       sendJson(client, 503, "{\"error\":\"Not on a network\"}");
     } else {
+      if (listCacheHit(want)) {
+        dlog("DAV list: served from memory (" + want + ")");
+        sendJson(client, 200, g_listCacheJson);
+        client.flush(); delay(2); client.stop();
+        return;
+      }
       Perf perf("DAV list");
       DAVEntryList entries;
       if (!davClient.listDir(want, entries)) {
@@ -488,6 +516,9 @@ static void handleClient(WiFiClient &client) {
         const String timing = perf.summary() + ", " + String(entries.size()) + " entries";
         dlog(timing);
         jj += "],\"debug\":\"" + jsonEscape(timing) + "\"}";
+        g_listCachePath = want;
+        g_listCacheJson = jj;
+        g_listCacheAt   = millis();
         sendJson(client, 200, jj);
       }
     }
@@ -566,7 +597,10 @@ static void handleClient(WiFiClient &client) {
         build_root(&ram_disk[ROOTDIR_OFFSET]);
         mountImage(name, (uint32_t)got);
         g_davLoadedPath = remote;
+        g_listCacheJson = "";      // state changed; do not serve a stale view
         perf.mark("mount");
+        // The host's own re-attach: the moment the drive is really there.
+        perf.phase(g_lastEnumerateOk ? "usb-ready" : "usb-timeout", g_lastEnumerateMs);
         cacheArtFor(remote, perf);
         perf.bytes((uint32_t)got);
         const String timing = perf.summary();

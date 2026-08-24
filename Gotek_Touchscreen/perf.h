@@ -34,6 +34,14 @@ class Perf {
   // Record how many bytes moved, so the summary can carry a rate.
   void bytes(uint32_t n) { _bytes = n; }
 
+  // A phase somebody else measured — the USB host re-attaching, say, which is
+  // not ours to time from the inside but is the last step before the drive is
+  // genuinely usable.
+  void phase(const char *name, uint32_t ms) {
+    if (_n < PERF_MAX_PHASES) { _name[_n] = name; _ms[_n] = ms; _n++; }
+    _last = millis();
+  }
+
   uint32_t total() const { return millis() - _start; }
 
   // "DAV load: connect 412ms, headers 88ms, transfer 3214ms, mount 41ms
