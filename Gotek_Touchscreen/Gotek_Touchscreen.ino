@@ -118,12 +118,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.21.0"
+#define FW_VERSION "v0.21.1"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.036"
+#define FW_INTERNAL "release.037"
 
 using std::vector;
 using std::sort;
@@ -1861,6 +1861,35 @@ static void svTick() {
   if (g_sv_dirty_count == 0) return;
   if (millis() - g_sv_last_write < SV_SETTLE_MS) return;
   svFlush("settled");
+}
+
+// Stop, and say why.
+//
+// A bare `while (1)` looks identical to a hang, and on a board with no display
+// it is completely silent. This paints the reason, repeats it on serial for
+// anyone with a cable, and keeps feeding the watchdog so the device sits there
+// showing the message instead of rebooting into the same failure forever.
+void haltWithReason(const String &what, const String &detail, const String &hint) {
+  sdLog("FATAL: " + what + " - " + detail + " (" + hint + ")");
+  Serial.println("FATAL: " + what);
+  Serial.println("  " + detail);
+  Serial.println("  " + hint);
+
+  gfx_fillScreen(TFT_BLACK);
+  gfx_setTextColor(TFT_RED, TFT_BLACK);
+  gfx_setTextSize(2);
+  gfx_setCursor((gW - gfx_textWidth(what)) / 2, gH / 2 - 40);
+  gfx_print(what);
+  gfx_setTextSize(1);
+  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+  gfx_setCursor((gW - gfx_textWidth(detail)) / 2, gH / 2 - 6);
+  gfx_print(detail);
+  gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+  gfx_setCursor((gW - gfx_textWidth(hint)) / 2, gH / 2 + 14);
+  gfx_print(hint);
+  gfx_flush();
+
+  for (;;) { delay(1000); yield(); }
 }
 
 void ensureDefaultThemeStyle() {
@@ -6222,12 +6251,31 @@ void setup() {
   sdLog("Found " + String(file_list.size()) + " images (" + String(game_list.size()) + " games)");
   drawBootProgress("Found " + String(game_list.size()) + " games", 50);
 
+  // ── RAM disk ─────────────────────────────────────────────────────────
+  //
+  // The RAM disk IS the product: without it there is nothing to present to the
+  // Gotek. It needs a single contiguous 2 MB allocation in PSRAM, so say
+  // exactly what went wrong rather than dying with "RAM alloc failed".
+  //
+  // The likely cause is not a broken board. On several ESP32-S3 modules PSRAM
+  // is disabled in the Arduino board profile by default, and the setting has to
+  // match the part: OPI for an 8 MB octal module like this one, QSPI for the
+  // 2 MB quad parts. Pick the wrong one and the chip reports no PSRAM at all.
   drawBootProgress("Allocating RAM disk...", 60);
+  const size_t psramTotal = ESP.getPsramSize();
+  if (psramTotal < RAM_DISK_SIZE) {
+    haltWithReason("PSRAM too small",
+                   String(RAM_DISK_SIZE / 1024) + " KB needed, " +
+                   String((uint32_t)(psramTotal / 1024)) + " KB present",
+                   psramTotal == 0 ? "Set PSRAM=OPI in the board options"
+                                   : "This board cannot host the RAM disk");
+  }
   ram_disk = (uint8_t *)ps_malloc(RAM_DISK_SIZE);
   if (!ram_disk) {
-    sdLog("FATAL: Failed to allocate RAM disk!");
-    drawBootProgress("ERROR: RAM alloc failed!", 60);
-    while (1);
+    haltWithReason("RAM disk allocation failed",
+                   String(RAM_DISK_SIZE / 1024) + " KB contiguous, " +
+                   String((uint32_t)(ESP.getFreePsram() / 1024)) + " KB PSRAM free",
+                   "PSRAM is present but fragmented or reserved");
   }
 
   g_mountFilename = "";   // nothing mounted yet
@@ -6268,10 +6316,9 @@ void setup() {
   // WebDAV listing live there. Without it the firmware limps in ways that
   // look like unrelated bugs, so say so plainly rather than letting the user
   // chase ghosts.
-  if (!psramFound()) {
-    sdLog("WARNING: no PSRAM detected — RAM disk and WebDAV browsing will fail");
-    Serial.println("WARNING: PSRAM not found. This build requires PSRAM.");
-  }
+  // No PSRAM check here any more: boot halts with an explanation long before
+  // this point if there is not enough for the RAM disk, so a warning at this
+  // stage could never fire and only suggested the failure was survivable.
   sdLog("Heap: " + String(ESP.getFreeHeap()) + " free / " + String(ESP.getHeapSize()) +
         " total | PSRAM: " + String(ESP.getFreePsram()) + " free / " +
         String(ESP.getPsramSize()) + " total");

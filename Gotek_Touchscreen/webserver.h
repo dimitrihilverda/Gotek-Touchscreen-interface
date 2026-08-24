@@ -67,6 +67,7 @@ WiFiServer wifiHttpServer(80);
 
 // Include embedded web UI data
 #include "webui.h"
+#include "multipart_scan.h"
 
 // Forward declare — api_handlers.h included after helpers below
 
@@ -549,64 +550,49 @@ bool handleMultipartUpload(WiFiClient &client, const HttpRequest &req) {
         }
       }
     } else {
-      // Binary file data — read in chunks, watch for boundary.
-      // yield() each iteration so the WiFi stack + USB MSC + touch loop keep
-      // running and the watchdog stays fed during multi-second uploads.
-      uint8_t buf[1024];
+      // Binary file data. The scanning lives in MultipartBody so it can be
+      // tested on the host; see multipart_scan.h for why it is not a one-liner.
+      MultipartBody body;
+      if (!body.begin(delim.c_str(), (int)delim.length())) {
+        Serial.println("Upload: boundary too long");
+        if (outFile) outFile.close();
+        return false;
+      }
+
+      uint8_t rd[1024];
       unsigned long lastByteAt = millis();
-      const unsigned long STALL_MS = 8000;       // 8s without progress → abort
+      const unsigned long STALL_MS = 8000;    // 8s without progress -> abort
 
       while (client.connected() && !done) {
-        // Peek ahead for boundary
-        if (client.available() >= (int)delim.length() + 4) {
-          int avail = min((int)sizeof(buf), client.available());
-          int n = client.readBytes(buf, avail);
-          if (n > 0) lastByteAt = millis();
-
-          String chunk((char *)buf, n);
-          int bndIdx = chunk.indexOf(delim);
-
-          if (bndIdx >= 0) {
-            int writeLen = bndIdx;
-            if (writeLen >= 2) writeLen -= 2;  // strip \r\n before boundary
-            if (writeLen > 0 && outFile) {
-              outFile.write(buf, writeLen);
-              totalWritten += writeLen;
-            }
-            if (outFile) outFile.close();
-            inFileData = false;
-            Serial.println("Upload done: " + String(totalWritten) + " bytes");
-
-            if (chunk.indexOf(delimEnd) >= 0) done = true;
-            break;
-          } else {
-            int safe = n - (int)delim.length() - 4;
-            if (safe > 0 && outFile) {
-              outFile.write(buf, safe);
-              totalWritten += safe;
-              outFile.write(buf + safe, n - safe);
-              totalWritten += (n - safe);
-            } else if (outFile) {
-              outFile.write(buf, n);
-              totalWritten += n;
-            }
-          }
-        } else if (client.available() > 0) {
-          int n = client.readBytes(buf, client.available());
-          if (n > 0) {
-            lastByteAt = millis();
-            if (outFile) {
-              outFile.write(buf, n);
-              totalWritten += n;
-            }
-          }
-        } else {
+        const int avail = client.available();
+        if (avail <= 0) {
           if (millis() - lastByteAt > STALL_MS) {
-            Serial.println("Upload stalled — aborting");
+            Serial.println("Upload stalled - aborting");
             done = true;
             break;
           }
           delay(2);
+          yield();
+          continue;
+        }
+
+        const int n = client.readBytes(rd, min((int)sizeof(rd), avail));
+        if (n <= 0) continue;
+        lastByteAt = millis();
+
+        const bool hitBoundary = body.feed(rd, n, [&](const uint8_t *p, int len) {
+          if (outFile) {
+            outFile.write(p, len);
+            totalWritten += len;
+          }
+        });
+
+        if (hitBoundary) {
+          if (outFile) outFile.close();
+          inFileData = false;
+          Serial.println("Upload done: " + String(totalWritten) + " bytes");
+          if (body.sawFinalDelimiter()) done = true;
+          break;
         }
 
         // Feed the watchdog and let other tasks run between chunks
