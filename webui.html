@@ -71,14 +71,16 @@ textarea{min-height:80px;resize:vertical}
 /* Fixed height, not content height: the now-playing bar rarely knows the disk
    sizes (that needs a PROPFIND the modal has already paid for), so without this
    the same buttons came out shorter there than in the popup. */
-.disk-btn{min-width:56px;min-height:46px;padding:6px 10px;font-size:13px;font-weight:600;
+/* Fixed size, not content size: "Disk 1" and "Disk 11" and "Eject" all have to
+   line up, and a grid of buttons that each fit their own label looks broken. */
+.disk-btn{flex:0 0 76px;width:76px;height:46px;padding:4px 6px;font-size:13px;font-weight:600;
   cursor:pointer;display:inline-flex;flex-direction:column;align-items:center;
-  justify-content:center;line-height:1.25;
+  justify-content:center;line-height:1.2;overflow:hidden;white-space:nowrap;
   background:var(--panel);border:2px outset var(--light);border-radius:2px;color:var(--text)}
 .disk-btn:active{border-style:inset}
 .disk-btn.loaded{background:var(--green);color:#fff;border-color:#0a0}
 .disk-btn[disabled]{opacity:.5;cursor:default}
-.disk-btn .disk-sub{display:block;font-size:10px;font-weight:400;opacity:.75}
+.disk-btn .disk-sub{display:block;font-size:10px;font-weight:400;opacity:.75;line-height:1.1}
 .badge{display:inline-block;padding:2px 6px;font-size:11px;border-radius:2px;font-weight:600}
 .badge-disks{background:var(--cyan);color:var(--white)}
 .badge-nfo{background:var(--green);color:var(--white)}
@@ -2663,9 +2665,28 @@ async function davRenderNowPlaying() {
   const head = document.createElement('div');
   head.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;cursor:pointer';
   head.title = 'Open ' + folderName;
-  head.innerHTML = '<span class="active-indicator"></span>' +
-                   '<strong>' + esc(folderName) + '</strong>' +
-                   '<span style="color:var(--muted);font-size:13px">' + esc(diskName) + '</span>';
+  // The mounted game's art. On a dongle this is the one cover the device keeps,
+  // so here it costs nothing extra; a 404 just leaves the placeholder.
+  const coverUrl = API + '/api/dav/cover?path=' +
+                   encodeURIComponent(folderPath + '/' + folderName + '.jpg');
+  // Built rather than interpolated: an inline onerror needs quotes inside
+  // quotes, and that is exactly the kind of string that breaks silently.
+  const cover = document.createElement('img');
+  cover.className = 'game-cover';
+  cover.loading = 'lazy';
+  cover.src = API + '/api/dav/cover?path=' +
+              encodeURIComponent(folderPath + '/' + folderName + '.jpg');
+  // The device keeps only the mounted game's art; a miss just hides it.
+  cover.addEventListener('error', () => cover.remove());
+  head.appendChild(cover);
+
+  const label = document.createElement('div');
+  label.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap';
+  label.innerHTML = '<span class="active-indicator"></span>' +
+                    '<strong>' + esc(folderName) + '</strong>' +
+                    '<span style="color:var(--muted);font-size:13px">' +
+                    esc(diskName) + '</span>';
+  head.appendChild(label);
   head.addEventListener('click', () => davOpenFolder(folderPath, folderName));
   npEl.appendChild(head);
 
