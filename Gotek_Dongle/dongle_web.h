@@ -330,6 +330,38 @@ static void handleClient(WiFiClient &client) {
       }
     }
   }
+  // ── WiFi ────────────────────────────────────────────────────────────
+  //
+  // Scanning is not a luxury here. Without a screen or a card there is no other
+  // way to discover a network, and typing an SSID blind is how a wrong
+  // character becomes twenty minutes of confusion.
+  else if (method == "GET" && path == "/api/wifi/scan") {
+    // A scan briefly interrupts the AP link this request arrived on, so keep it
+    // short and let the page retry rather than holding the socket for seconds.
+    const int n = WiFi.scanNetworks(false, true, false, 200);
+    String jj = "{\"networks\":[";
+    for (int i = 0; i < n && i < 30; i++) {
+      if (i) jj += ",";
+      jj += "{\"ssid\":\"" + jsonEscape(WiFi.SSID(i)) + "\"";
+      jj += ",\"rssi\":" + String(WiFi.RSSI(i));
+      jj += ",\"encrypted\":" +
+            String(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "false" : "true") + "}";
+      yield();
+    }
+    jj += "]}";
+    WiFi.scanDelete();
+    sendJson(client, 200, jj);
+  }
+  else if (method == "GET" && path == "/api/wifi/status") {
+    String jj = "{\"ap_active\":true";
+    jj += ",\"ap_ip\":\"" + WiFi.softAPIP().toString() + "\"";
+    jj += ",\"ap_clients\":" + String(WiFi.softAPgetStationNum());
+    const bool sta = (WiFi.status() == WL_CONNECTED);
+    jj += ",\"sta_connected\":" + String(sta ? "true" : "false");
+    jj += ",\"sta_ip\":\"" + (sta ? WiFi.localIP().toString() : String("")) + "\"";
+    jj += ",\"sta_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\"}";
+    sendJson(client, 200, jj);
+  }
   // ── WebDAV ──────────────────────────────────────────────────────────
   //
   // The same client the touchscreen uses. What is missing here is the caching:

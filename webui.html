@@ -6,6 +6,7 @@
 <title>Gotek Setup</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+body.no-sd .needs-sd,body.no-display .needs-display{display:none}
 :root{--muted:#555;--line:#999;--strong:#333;--field:#fff;--bg:#a0a0a0;--panel:#c0c0c0;--dark:#606060;--light:#e0e0e0;--blue:#0055aa;--cyan:#00aaaa;--orange:#ff8800;--green:#00aa00;--red:#cc0000;--text:#000;--white:#fff}
 body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 .topbar{background:linear-gradient(180deg,#0055aa,#003377);color:var(--white);padding:10px 16px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 4px rgba(0,0,0,.3)}
@@ -159,38 +160,49 @@ textarea{min-height:80px;resize:vertical}
   <div class="card">
     <h2>Device Configuration</h2>
     <form id="config-form">
-      <label>Display Type</label>
-      <select name="DISPLAY" id="cfg-display">
-        <option value="JC3248">JC3248W535C</option>
-        <option value="WAVESHARE">Waveshare 2.8"</option>
-      </select>
-
-      <label>Default Mode</label>
-      <select name="LASTMODE" id="cfg-lastmode">
-        <option value="ADF">ADF (Amiga)</option>
-        <option value="DSK">DSK (ZX/CPC)</option>
-      </select>
-
-      <label>Active Theme</label>
-      <select name="THEME" id="cfg-theme"></select>
-
-      <label>Game artwork as backdrop</label>
-      <div style="display:flex;align-items:center;gap:10px">
-        <input type="range" name="WALLPAPER_PCT" id="cfg-wallpaper" min="0" max="60" step="5"
-               style="flex:1;max-width:260px"
-               oninput="document.getElementById('cfg-wallpaper-val').textContent =
-                        this.value === '0' ? 'Off' : this.value + '%'">
-        <span id="cfg-wallpaper-val" style="font-size:13px;color:var(--muted);min-width:40px">20%</span>
+      <div class="needs-display">
+        <label>Display Type</label>
+        <select name="DISPLAY" id="cfg-display">
+          <option value="JC3248">JC3248W535C</option>
+          <option value="WAVESHARE">Waveshare 2.8"</option>
+        </select>
       </div>
-      <label title="What happens when the Amiga writes to the disk that is in">Disk saves</label>
-      <select name="SAVES" id="cfg-saves">
-        <option value="COPY">Copy — write &lt;game&gt;.sav.adf next to the original</option>
-        <option value="OVERWRITE">Overwrite — write back into the original image</option>
-        <option value="OFF">Off — discard writes (disk behaves read-only)</option>
-      </select>
-      <div style="font-size:12px;color:var(--muted);margin:4px 0 8px">
-        High scores and save games only survive if this is on. WebDAV disks always
-        save to <code>/SAVES</code>, never back to the server.
+
+      <div class="needs-sd">
+        <label>Default Mode</label>
+        <select name="LASTMODE" id="cfg-lastmode">
+          <option value="ADF">ADF (Amiga)</option>
+          <option value="DSK">DSK (ZX/CPC)</option>
+        </select>
+      </div>
+
+      <div class="needs-sd">
+        <label>Active Theme</label>
+        <select name="THEME" id="cfg-theme"></select>
+      </div>
+
+      <div class="needs-display">
+        <label>Game artwork as backdrop</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input type="range" name="WALLPAPER_PCT" id="cfg-wallpaper" min="0" max="60" step="5"
+                 style="flex:1;max-width:260px"
+                 oninput="document.getElementById('cfg-wallpaper-val').textContent =
+                          this.value === '0' ? 'Off' : this.value + '%'">
+          <span id="cfg-wallpaper-val" style="font-size:13px;color:var(--muted);min-width:40px">20%</span>
+        </div>
+      </div>
+
+      <div class="needs-sd">
+        <label title="What happens when the Amiga writes to the disk that is in">Disk saves</label>
+        <select name="SAVES" id="cfg-saves">
+          <option value="COPY">Copy — write &lt;game&gt;.sav.adf next to the original</option>
+          <option value="OVERWRITE">Overwrite — write back into the original image</option>
+          <option value="OFF">Off — discard writes (disk behaves read-only)</option>
+        </select>
+        <div style="font-size:12px;color:var(--muted);margin:4px 0 8px">
+          High scores and save games only survive if this is on. WebDAV disks always
+          save to <code>/SAVES</code>, never back to the server.
+        </div>
       </div>
 
       <label>Diagnostic logging</label>
@@ -733,7 +745,9 @@ async function loadDashboard() {
   const themesTab   = document.getElementById('tab-themes');
   if (libraryCard) libraryCard.style.display = hasSD ? '' : 'none';
   if (themesTab)   themesTab.style.display   = hasSD ? '' : 'none';
+  const hasDisplay = (d.has_display === undefined) ? true : !!d.has_display;
   document.body.classList.toggle('no-sd', !hasSD);
+  document.body.classList.toggle('no-display', !hasDisplay);
 
   const ipEl = document.getElementById('ip-display');
   let ipText = d.wifi_ip || '?';
