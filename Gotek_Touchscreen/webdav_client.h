@@ -114,6 +114,10 @@ public:
 
   String lastError() { return _lastError; }
   String lastDebug() { return _debugLog; }
+
+  // Drop any pooled socket — after a settings change it may point at the old
+  // host, and after a disconnect it should simply not exist.
+  void closeIdle() { _dropPool(); }
   bool isConnected() { return _connected; }
 
   // True if the last streamToBuffer() filled its destination before the
@@ -191,35 +195,11 @@ public:
          String(ESP.getFreeHeap()) + " psram=" + String(ESP.getFreePsram()));
 
     // Create HTTPS or HTTP client on heap
-    WiFiClient *tcp = nullptr;
-    WiFiClientSecure *secure = nullptr;
-    if (cfg_dav_https) {
-      secure = new WiFiClientSecure();
-      if (!secure) { _lastError = "Out of memory"; return false; }
-      secure->setInsecure();  // Skip cert validation (ESP32 has no CA store)
-      // Arduino Client::setTimeout takes MILLISECONDS on ESP32-Arduino. The
-      // old value of 15 (= 15 ms) was effectively no timeout and let hung
-      // TLS/PROPFIND requests block the loop task indefinitely. 15 s is
-      // enough for a slow server to answer without freezing the UI forever.
-      secure->setTimeout(15000);
-      tcp = secure;
-    } else {
-      tcp = new WiFiClient();
-      if (!tcp) { _lastError = "Out of memory"; return false; }
-      tcp->setTimeout(15000);
-    }
-
-    // Explicit connect timeout. setTimeout() only bounds READS — the TCP
-    // connect and TLS handshake had no limit at all, and a session log showed
-    // one of these blocking for 362 seconds with the whole loop task, and so
-    // the touchscreen, stuck behind it.
-    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port, 10000)) {
-      _lastError = "TCP connect failed to " + cfg_dav_host + ":" + String(cfg_dav_port);
-      _log("DAV: " + _lastError);
-      delete tcp;
-      return false;
-    }
-    _log("DAV: TCP up heap=" + String(ESP.getFreeHeap()));
+    // One connection, kept between requests when the last body was fully
+    // read. attempt 1 forces a fresh one if a pooled socket turned out dead.
+    bool reused = false;
+    WiFiClient *tcp = _acquire(false, 15000, reused);
+    if (!tcp) return false;
 
     // Build PROPFIND request
     String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
@@ -230,22 +210,31 @@ public:
 
     _log("DAV: -> PROPFIND " + encodedPath + " Host: " + cfg_dav_host);
 
+    long contentLength = -1;
+    bool chunked = false;
+    for (int attempt = 0; ; attempt++) {
     tcp->println("PROPFIND " + encodedPath + " HTTP/1.1");
     tcp->println("Host: " + cfg_dav_host);
     tcp->println("Authorization: Basic " + auth);
     tcp->println("Depth: 1");
     tcp->println("Content-Type: application/xml");
     tcp->println("Content-Length: " + String(body.length()));
-    tcp->println("Connection: close");
+    tcp->println("Connection: keep-alive");
     tcp->println();
     tcp->print(body);
     _log("DAV: PROPFIND sent, awaiting headers...");
 
     // Read just the headers — the document itself is consumed by the
     // streaming parser below, which never materialises it in RAM.
-    long contentLength = -1;
-    bool chunked = false;
     _readHTTPHeaders(tcp, contentLength, chunked);
+    // A pooled socket the server had already closed answers nothing at all.
+    // That is the one failure worth retrying, and only once.
+    if (_httpStatus != 0 || attempt > 0 || !reused) break;
+    _log("DAV: pooled connection was stale, retrying on a fresh one");
+    _dropPool();
+    tcp = _acquire(true, 15000, reused);
+    if (!tcp) { _lastError = "Reconnect failed"; return false; }
+    }
     _log("DAV: hdrs HTTP " + String(_httpStatus) + " len=" + String(contentLength) +
          (chunked ? " chunked" : "") + " heap=" + String(ESP.getFreeHeap()));
 
@@ -265,8 +254,7 @@ public:
         if (errBuf[i] == '"')  errBuf[i] = '\'';
         if (errBuf[i] == '\n' || errBuf[i] == '\r') errBuf[i] = ' ';
       }
-      tcp->stop();
-      delete tcp;
+      _release(tcp, false);   // error path: never reuse
       _lastError = "HTTP " + String(_httpStatus) + ": " + String(errBuf);
       _log("DAV: " + _lastError);
       return false;
@@ -285,8 +273,9 @@ public:
     }
 
     const bool ok = _streamParsePropfind(tcp, contentLength, chunked, entries);
-    tcp->stop();
-    delete tcp;
+    // A parse that ran to the end leaves the socket at the document boundary,
+    // which is the one state in which it can safely serve the next request.
+    _release(tcp, ok);
 
     if (!ok) return false;
     if (entries.empty() && _httpStatus == 0) {
@@ -328,39 +317,18 @@ public:
     _log("DAV: GET " + encodedPath);
 
     // Create HTTPS or HTTP client on heap
-    WiFiClient *tcp = nullptr;
-    WiFiClientSecure *secure = nullptr;
-    if (cfg_dav_https) {
-      secure = new WiFiClientSecure();
-      if (!secure) { _lastError = "Out of memory"; return -1; }
-      secure->setInsecure();
-      // setTimeout is milliseconds; 30 was almost-instant. 30 s here (the
-      // GET/HEAD paths handle whole ADFs/covers and need a fair while).
-      secure->setTimeout(30000);
-      tcp = secure;
-    } else {
-      tcp = new WiFiClient();
-      if (!tcp) { _lastError = "Out of memory"; return -1; }
-      tcp->setTimeout(30000);
-    }
-
-    // Explicit connect timeout. setTimeout() only bounds READS — the TCP
-    // connect and TLS handshake had no limit at all, and a session log showed
-    // one of these blocking for 362 seconds with the whole loop task, and so
-    // the touchscreen, stuck behind it.
-    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port, 10000)) {
-      _lastError = "TCP connect failed for download";
-      _log("DAV: " + _lastError);
-      delete tcp;
-      return -1;
-    }
+    // One connection, kept between requests when the last body was fully
+    // read. attempt 1 forces a fresh one if a pooled socket turned out dead.
+    bool reused = false;
+    WiFiClient *tcp = _acquire(false, 30000, reused);
+    if (!tcp) return -1;
 
     String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
 
     tcp->println("GET " + encodedPath + " HTTP/1.1");
     tcp->println("Host: " + cfg_dav_host);
     tcp->println("Authorization: Basic " + auth);
-    tcp->println("Connection: close");
+    tcp->println("Connection: keep-alive");
     tcp->println();
 
     long contentLength = -1;
@@ -368,15 +336,13 @@ public:
     _readHTTPHeaders(tcp, contentLength, chunked);
     if (_httpStatus >= 400) {
       _lastError = "HTTP " + String(_httpStatus);
-      tcp->stop();
-      delete tcp;
+      _release(tcp, false);   // error path: never reuse
       return -1;
     }
 
     File outFile = SD_MMC.open(localPath.c_str(), "w");
     if (!outFile) {
-      tcp->stop();
-      delete tcp;
+      _release(tcp, false);   // error path: never reuse
       _lastError = "Cannot create local file";
       return -1;
     }
@@ -389,8 +355,7 @@ public:
         &complete, &truncated);
 
     outFile.close();
-    tcp->stop();
-    delete tcp;
+    _release(tcp, complete);
 
     // A short write means the card is full or failing. A partial download
     // that lands at a plausible size is worse than no download at all: it
@@ -426,48 +391,35 @@ public:
     _log("DAV: GET->RAM " + encodedPath + " bufSize=" + String(bufSize));
 
     // Create HTTPS or HTTP client on heap
-    WiFiClient *tcp = nullptr;
-    WiFiClientSecure *secure = nullptr;
-    if (cfg_dav_https) {
-      secure = new WiFiClientSecure();
-      if (!secure) { _lastError = "Out of memory"; return -1; }
-      secure->setInsecure();
-      // setTimeout is milliseconds; 30 was almost-instant. 30 s here (the
-      // GET/HEAD paths handle whole ADFs/covers and need a fair while).
-      secure->setTimeout(30000);
-      tcp = secure;
-    } else {
-      tcp = new WiFiClient();
-      if (!tcp) { _lastError = "Out of memory"; return -1; }
-      tcp->setTimeout(30000);
-    }
-
-    // Explicit connect timeout. setTimeout() only bounds READS — the TCP
-    // connect and TLS handshake had no limit at all, and a session log showed
-    // one of these blocking for 362 seconds with the whole loop task, and so
-    // the touchscreen, stuck behind it.
-    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port, 10000)) {
-      _lastError = "TCP connect failed for stream";
-      _log("DAV: " + _lastError);
-      delete tcp;
-      return -1;
-    }
+    // One connection, kept between requests when the last body was fully
+    // read. attempt 1 forces a fresh one if a pooled socket turned out dead.
+    bool reused = false;
+    WiFiClient *tcp = _acquire(false, 30000, reused);
+    if (!tcp) return -1;
 
     String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
 
+    long contentLength = -1;
+    bool chunked = false;
+    for (int attempt = 0; ; attempt++) {
     tcp->println("GET " + encodedPath + " HTTP/1.1");
     tcp->println("Host: " + cfg_dav_host);
     tcp->println("Authorization: Basic " + auth);
-    tcp->println("Connection: close");
+    tcp->println("Connection: keep-alive");
     tcp->println();
 
-    long contentLength = -1;
-    bool chunked = false;
     _readHTTPHeaders(tcp, contentLength, chunked);
+    // A pooled socket the server had already closed answers nothing at all.
+    // That is the one failure worth retrying, and only once.
+    if (_httpStatus != 0 || attempt > 0 || !reused) break;
+    _log("DAV: pooled connection was stale, retrying on a fresh one");
+    _dropPool();
+    tcp = _acquire(true, 30000, reused);
+    if (!tcp) { _lastError = "Reconnect failed"; return -1; }
+    }
     if (_httpStatus >= 400) {
       _lastError = "HTTP " + String(_httpStatus);
-      tcp->stop();
-      delete tcp;
+      _release(tcp, false);   // error path: never reuse
       return -1;
     }
     _log("DAV: stream contentLen=" + String(contentLength) + (chunked ? " chunked" : ""));
@@ -483,8 +435,9 @@ public:
         },
         &complete, &truncated);
 
-    tcp->stop();
-    delete tcp;
+    // Only pooled if the body was read to its end; anything else would leave
+    // the next request reading the tail of this one.
+    _release(tcp, complete);
 
     long totalBytes = (long)written;
     _lastTruncated = truncated;
@@ -511,6 +464,94 @@ public:
 private:
   bool   _connected;
   String _lastError;
+
+  // ── Connection pooling ─────────────────────────────────────────────────
+  //
+  // Every request used to open a fresh TCP connection and do a full TLS
+  // handshake, then send Connection: close. Measured against a real server that
+  // is about 300 ms of pure setup per request — enough that fetching a 104-byte
+  // NFO took 326 ms, and listing a five-entry folder took 300-480 ms of which
+  // the two kilobytes of XML were the cheap part.
+  //
+  // So one connection is kept between requests. The rule that makes this safe:
+  // a connection is only ever pooled if the previous response was read to its
+  // end. A half-drained body would leave the next request reading the tail of
+  // the last one, which on a disk image is silent corruption rather than an
+  // error — the worst kind of bug to trade for latency.
+  //
+  // And it always falls back: a pooled connection that turns out to be dead
+  // costs one wasted attempt, after which the request is retried on a fresh
+  // one. The worst case is exactly the old behaviour.
+  WiFiClient *_pool = nullptr;
+
+  WiFiClient *_newConnection() {
+    WiFiClient *tcp = nullptr;
+    if (cfg_dav_https) {
+      WiFiClientSecure *secure = new WiFiClientSecure();
+      if (!secure) { _lastError = "Out of memory"; return nullptr; }
+      secure->setInsecure();   // no CA store on an ESP32
+      // setTimeout is MILLISECONDS on ESP32-Arduino. It once read 15, which is
+      // 15 ms and therefore no timeout at all.
+      secure->setTimeout(15000);
+      tcp = secure;
+    } else {
+      tcp = new WiFiClient();
+      if (!tcp) { _lastError = "Out of memory"; return nullptr; }
+      tcp->setTimeout(15000);
+    }
+    // Explicit connect timeout: setTimeout() bounds reads only, and a session
+    // log once showed a handshake blocking the loop task for 362 seconds.
+    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port, 10000)) {
+      _lastError = "TCP connect failed to " + cfg_dav_host + ":" + String(cfg_dav_port);
+      _log("DAV: " + _lastError);
+      delete tcp;
+      return nullptr;
+    }
+    _log("DAV: TCP up heap=" + String(ESP.getFreeHeap()));
+    return tcp;
+  }
+
+  // reused says whether the caller got a pooled connection, so it knows a
+  // failure might just be a stale socket and is worth one retry.
+  WiFiClient *_acquire(bool forceFresh, uint32_t readTimeoutMs, bool &reused) {
+    reused = false;
+    WiFiClient *tcp = nullptr;
+    if (!forceFresh && _pool) {
+      if (_pool->connected()) {
+        reused = true;
+        tcp = _pool;
+        _log("DAV: reusing connection");
+      } else {
+        delete _pool;
+        _pool = nullptr;
+      }
+    }
+    if (!tcp) tcp = _newConnection();
+    // Set per use: a socket opened for a PROPFIND gets reused for a whole-ADF
+    // GET, which needs the longer one.
+    if (tcp) tcp->setTimeout(readTimeoutMs);
+    return tcp;
+  }
+
+  // Hand the connection back. Pooled only if the body was read to the end.
+  void _release(WiFiClient *tcp, bool bodyComplete) {
+    if (!tcp) return;
+    if (bodyComplete && tcp->connected()) {
+      if (_pool && _pool != tcp) { _pool->stop(); delete _pool; }
+      _pool = tcp;
+      return;
+    }
+    if (_pool == tcp) _pool = nullptr;
+    _release(tcp, false);
+  }
+
+  void _dropPool() {
+    if (!_pool) return;
+    _pool->stop();
+    delete _pool;
+    _pool = nullptr;
+  }
+
   String _debugLog;
   int    _httpStatus;
   bool   _resynced = false;      // parser had to drop data to recover
