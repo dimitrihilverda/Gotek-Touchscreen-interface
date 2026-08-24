@@ -374,11 +374,29 @@ static void handleClient(WiFiClient &client) {
   // browse is a live PROPFIND and covers simply are not offered. The page
   // handles both absences already — it shows "No Art" and moves on.
   else if (method == "GET" && path == "/api/dav/status") {
-    String jj = "{\"connected\":" + String(davConnected ? "true" : "false");
-    jj += ",\"url\":\"" + (cfg_dav_host.length()
-            ? String(cfg_dav_https ? "https://" : "http://") + cfg_dav_host
-            : String("")) + "\"";
-    jj += ",\"loaded_file\":\"" + g_davLoadedPath + "\"}";
+    // Field for field what the page reads. Guessing this shape is why the tab
+    // reported "not configured" no matter what was set: it looks at .enabled,
+    // .host, .wifi_connected and .now_playing, and got none of them.
+    String jj = "{\"enabled\":" + String(cfg_dav_enabled ? "true" : "false");
+    jj += ",\"host\":\"" + jsonEscape(cfg_dav_host) + "\"";
+    jj += ",\"port\":" + String(cfg_dav_port);
+    jj += ",\"user\":\"" + jsonEscape(cfg_dav_user) + "\"";
+    jj += ",\"path\":\"" + jsonEscape(cfg_dav_path) + "\"";
+    jj += ",\"https\":" + String(cfg_dav_https ? "true" : "false");
+    jj += ",\"connected\":" + String(davClient.isConnected() ? "true" : "false");
+    jj += ",\"wifi_connected\":" +
+          String((WiFi.status() == WL_CONNECTED) ? "true" : "false");
+    // No card, so no cached listing to browse before connecting.
+    jj += ",\"has_cache\":false";
+    const String err = davClient.lastError();
+    if (err.length() > 0) jj += ",\"error\":\"" + jsonEscape(err) + "\"";
+    if (g_mountLabel.length() > 0) {
+      jj += ",\"now_playing\":{\"source\":\"" +
+            String(g_davLoadedPath.length() ? "dav" : "sd") + "\"";
+      jj += ",\"name\":\"" + jsonEscape(g_mountLabel) + "\"";
+      jj += ",\"path\":\"" + jsonEscape(g_davLoadedPath) + "\"}";
+    }
+    jj += "}";
     sendJson(client, 200, jj);
   }
   else if (method == "POST" && path == "/api/dav/connect") {
