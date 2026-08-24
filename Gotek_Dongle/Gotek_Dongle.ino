@@ -133,14 +133,21 @@ static void mountImage(const String &name, uint32_t bytes) {
   //
   // Bounded, because a Gotek that is switched off will never enumerate and the
   // web request must still return.
+  // Wait for the host to actually READ us, not merely to claim it is attached.
+  //
+  // tud_mounted() was the obvious check and it was useless: right after
+  // tud_connect() it still reports the previous session, so the timer read zero
+  // every single time. A sector read is unambiguous — the Gotek is looking at
+  // the new disk.
   const uint32_t t0 = millis();
+  g_lastHostReadMs = 0;
   tud_connect();
-  while (!tud_mounted() && millis() - t0 < 3000) delay(5);
+  while (g_lastHostReadMs == 0 && millis() - t0 < 3000) delay(5);
+  g_lastEnumerateOk = (g_lastHostReadMs != 0);
   g_lastEnumerateMs = millis() - t0;
-  g_lastEnumerateOk = tud_mounted();
 
-  dlog("Mounted " + name + " (" + String(bytes / 1024) + " KB), host took " +
-       String(g_lastEnumerateMs) + "ms" + (g_lastEnumerateOk ? "" : " (no host)"));
+  dlog("Mounted " + name + " (" + String(bytes / 1024) + " KB), host read after " +
+       String(g_lastEnumerateMs) + "ms" + (g_lastEnumerateOk ? "" : " (no read yet)"));
 }
 
 static void ejectImage() {

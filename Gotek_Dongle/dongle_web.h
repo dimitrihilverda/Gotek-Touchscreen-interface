@@ -600,7 +600,7 @@ static void handleClient(WiFiClient &client) {
         g_listCacheJson = "";      // state changed; do not serve a stale view
         perf.mark("mount");
         // The host's own re-attach: the moment the drive is really there.
-        perf.phase(g_lastEnumerateOk ? "usb-ready" : "usb-timeout", g_lastEnumerateMs);
+        perf.phase(g_lastEnumerateOk ? "host-read" : "host-silent", g_lastEnumerateMs);
         cacheArtFor(remote, perf);
         perf.bytes((uint32_t)got);
         const String timing = perf.summary();

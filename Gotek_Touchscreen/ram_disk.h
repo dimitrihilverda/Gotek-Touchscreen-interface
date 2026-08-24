@@ -169,7 +169,14 @@ void build_volume_with_file() {
 // USB MSC CALLBACKS
 // ============================================================================
 
+// When the host last read a sector. The only honest signal that the drive is
+// genuinely in use again after a swap: tud_mounted() can still be reporting the
+// previous session at the moment we ask it, which made a "wait for the host"
+// timer read zero every time.
+volatile uint32_t g_lastHostReadMs = 0;
+
 static int32_t onRead(uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize) {
+  g_lastHostReadMs = millis();
   uint32_t addr = lba * 512 + offset;
   if (ram_disk && addr + bufsize <= RAM_DISK_SIZE) {
     memcpy(buffer, &ram_disk[addr], bufsize);
