@@ -303,6 +303,20 @@ static void serviceDavLoad() {
   g_listCacheJson = "";
   dlog("DAV insert: heap " + String(ESP.getFreeHeap()) + " before transfer");
 
+  // Breadcrumbs into the RTC log every 128 KB. The failure moved from PANIC to
+  // watchdog when the heap pressure went away, which means the earlier model was
+  // incomplete — and the backtrace goes to a serial port that a reset takes with
+  // it. How far the transfer got, and what the heap was doing, is the one thing
+  // that survives.
+  davClient.setProgressCallback([](size_t got, size_t total) {
+    static size_t nextMark = 0;
+    if (got == 0) nextMark = 0;
+    if (got < nextMark) return;
+    nextMark = got + 128 * 1024;
+    dlog("  ..." + String((uint32_t)(got / 1024)) + " KB, heap " +
+         String(ESP.getFreeHeap()) + ", psram " + String(ESP.getFreePsram()));
+  });
+
   Perf perf("DAV insert");
   tud_disconnect();
   delay(30);
