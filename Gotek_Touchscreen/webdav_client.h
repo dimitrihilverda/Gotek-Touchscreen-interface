@@ -378,7 +378,13 @@ public:
 
   // Stream a file directly into a memory buffer via GET
   // Returns bytes written, or -1 on error
-  long streamToBuffer(const String &remotePath, uint8_t *buf, size_t bufSize) {
+  // allowReuse=false forces a fresh connection. A pooled socket followed by a
+  // large body correlates exactly with a panic on the dongle: the small
+  // follow-ups (cover, notes) reuse happily, a 900 KB image does not. Until
+  // that is understood, the caller decides — and a disk image is the one
+  // transfer where a crash costs the user a re-flash rather than a retry.
+  long streamToBuffer(const String &remotePath, uint8_t *buf, size_t bufSize,
+                      bool allowReuse = true) {
     _lastError = "";
 
     // Build full remote path
@@ -394,7 +400,7 @@ public:
     // One connection, kept between requests when the last body was fully
     // read. attempt 1 forces a fresh one if a pooled socket turned out dead.
     bool reused = false;
-    WiFiClient *tcp = _acquire(false, 30000, reused);
+    WiFiClient *tcp = _acquire(!allowReuse, 30000, reused);
     if (!tcp) return -1;
 
     String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);

@@ -296,6 +296,13 @@ static void serviceDavLoad() {
   g_pendingDavPath = "";
   g_davBusy = true;
 
+  // Give the transfer every byte of heap we can. TLS wants ~46 KB and a failed
+  // allocation inside the stream is an uncaught bad_alloc, which on this core
+  // means abort() and a reboot rather than an error message.
+  g_listCachePath = "";
+  g_listCacheJson = "";
+  dlog("DAV insert: heap " + String(ESP.getFreeHeap()) + " before transfer");
+
   Perf perf("DAV insert");
   tud_disconnect();
   delay(30);
@@ -303,8 +310,11 @@ static void serviceDavLoad() {
   svReset();
   perf.mark("detach");
 
+  // Deliberately NOT on a pooled connection — see streamToBuffer. This is a
+  // bisect, not a diagnosis: if the panic stops, reuse plus a large body is the
+  // culprit and worth understanding properly.
   const long got = davClient.streamToBuffer(remote, &ram_disk[DATA_OFFSET],
-                                            MAX_IMAGE_BYTES);
+                                            MAX_IMAGE_BYTES, false);
   perf.mark("fetch");
 
   if (got <= 0) {

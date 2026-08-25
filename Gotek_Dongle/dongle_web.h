@@ -200,6 +200,12 @@ static void cacheArtFor(const String &remoteDiskPath, Perf &perf) {
 // looks stale for a moment at worst. There is no card to keep it on, so it
 // lives in the heap and holds exactly one folder.
 #define DAV_LIST_CACHE_MS 15000
+// Only small listings are worth keeping. A 1009-entry root serialises to about
+// 55 KB, and holding that in the internal heap is what made an insert panic:
+// TLS then wants ~46 KB on top and the transfer has nothing left to allocate
+// from. The repeated-request problem this cache solves is a folder view, which
+// is a handful of entries — so cap it and let big listings cost their PROPFIND.
+#define DAV_LIST_CACHE_MAX 8192
 static String   g_listCachePath = "";
 static String   g_listCacheJson = "";
 static uint32_t g_listCacheAt   = 0;
@@ -516,9 +522,15 @@ static void handleClient(WiFiClient &client) {
         const String timing = perf.summary() + ", " + String(entries.size()) + " entries";
         dlog(timing);
         jj += "],\"debug\":\"" + jsonEscape(timing) + "\"}";
-        g_listCachePath = want;
-        g_listCacheJson = jj;
-        g_listCacheAt   = millis();
+        if (jj.length() <= DAV_LIST_CACHE_MAX) {
+          g_listCachePath = want;
+          g_listCacheJson = jj;
+          g_listCacheAt   = millis();
+        } else {
+          g_listCachePath = "";
+          g_listCacheJson = "";
+          dlog("DAV list: " + String(jj.length()) + " B is too big to cache");
+        }
         sendJson(client, 200, jj);
       }
     }
