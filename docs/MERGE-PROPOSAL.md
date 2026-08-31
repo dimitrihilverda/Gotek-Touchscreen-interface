@@ -4,6 +4,28 @@
 **To:** Mez (`mesarim/Gotek-Touchscreen-interface`), and whoever is coding with you
 **Status:** proposal, nothing pushed
 
+> **Updated since the first draft (v0.25.0):** four things below were true when
+> written and are not anymore, kept visible rather than silently rewritten.
+>
+> - **OTA exists on my side now** — firmware upload over the web interface, on
+>   all four boards, streaming into the inactive slot with a magic-byte check.
+>   Verified with five over-the-air flashes on real JC3248 hardware in one
+>   evening. Your OTA-from-SD stays complementary for offline use.
+> - **The screenless dongle is real**, not a question: SuperMini and XIAO
+>   builds, no display, no SD, WebDAV + upload through the same web UI the
+>   touchscreen serves. That answers my own question 3 below — WebDAV in a
+>   dongle works, and the 5 V concern is handled (TX power cap, and it runs
+>   happily on Amiga power with a 470 uF cap on the rail).
+> - **HD images load now** — board profiles pick the volume geometry at compile
+>   time (2 MB on 8 MB-PSRAM boards), so "my RAM disk is fixed at 1.44 MB"
+>   below is stale.
+> - **The client you'd be taking just survived a real hunt.** `_release()` had
+>   an unbounded recursion that panicked at the end of any transfer whose
+>   connection the server closed; found via a crash-surviving RTC log and
+>   per-128 KB breadcrumbs, fixed, and verified with repeated inserts on two
+>   boards. The pooled connection also learned to release its ~50 KB of
+>   internal heap after 15 s idle. Tag `v0.25.0` carries all of it.
+
 ---
 
 ## The ask, in one paragraph
@@ -33,7 +55,7 @@ reproducible; the commands are at the bottom.
 | Function names shared between those two | **226 of 226** |
 | `Gotek_JC3248.ino` ↔ `Gotek_7B.ino` identical lines | 898 |
 | WebDAV/FTP/web-server hits in your JC3248 sketch | **0** |
-| ESP-NOW / OTA hits in my sketch | **0** |
+| ESP-NOW hits in my sketch | **0** (OTA: added since — see the update note) |
 
 Two things follow from that table.
 
@@ -210,8 +232,8 @@ take `tools/make_webui_header.py --check` in CI with it.
 Two things of yours are straight wins for me and I'd credit them clearly:
 
 - **HD floppy support** — `ADF_HD_SIZE=1802240`, 22 sectors/track, `>1.2 MB ⇒
-  HD`. My RAM disk is fixed at 1.44 MB and refuses anything larger, so HD images
-  simply don't load. You've solved it.
+  HD`. *(Since the first draft I've built this too, via compile-time board
+  profiles — but your geometry numbers were the reference, and credit stands.)*
 - **OTA self-flash from SD** — drop a tagged `.bin` on the card and flash the
   inactive slot. That makes the whole tag → CI → download → USB-cable ritual
   optional for ordinary users, which is worth a lot.
