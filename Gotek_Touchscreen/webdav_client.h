@@ -709,7 +709,11 @@ private:
   template <typename Sink>
   long _pumpBody(WiFiClient *tcp, long contentLength, bool chunked,
                  Sink sink, bool *outComplete, bool *outTruncated) {
-    uint8_t scratch[1024];
+    // 4 KB, not 1 KB: a TLS record carries up to 16 KB, and draining it in
+    // 1 KB sips pays the WiFiClientSecure call overhead sixteen times per
+    // record. Still on the stack — the loop task has 16 KB and its high-water
+    // mark shows ~11 KB never touched, measured during a transfer.
+    uint8_t scratch[4096];
     long delivered = 0;
     long consumed  = 0;          // body bytes taken off the socket
     bool truncated = false;

@@ -4057,6 +4057,14 @@ static void _davDownloadProgressToLoadingScreen(size_t rec, size_t total) {
   // the internal heap's largest contiguous block, which collapses long before
   // free heap does; stack is bytes of loop-task stack never used, which tells
   // an overflow apart from an OOM.
+  // Painting the themed bar goes over SPI to the panel and is not free.
+  // At the ~10 Hz the client fires this, the panel repaint competes with the
+  // WiFi stack for CPU mid-transfer; twice a second looks identical to a
+  // human and gives the radio the rest.
+  static uint32_t lastPaintMs = 0;
+  if (rec != 0 && millis() - lastPaintMs < 500) return;
+  lastPaintMs = millis();
+
   static size_t nextMark = 0;
   if (rec == 0) nextMark = 0;
   if (rec >= nextMark) {
@@ -5923,8 +5931,18 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   // for the whole download. Cleared afterwards so the callback never
   // runs against a stale caller.
   davClient.setProgressCallback(_davDownloadProgressToLoadingScreen);
+  const uint32_t tFetch = millis();
   long totalRead = davClient.streamToBuffer(remotePath, &ram_disk[DATA_OFFSET], maxData);
   davClient.setProgressCallback(nullptr);
+  // Dimmy remembers 5-second loads; today shows 27-55 s for the same file.
+  // One number per insert, in the crash-surviving text itself, so runs can be
+  // compared across reboots and boards.
+  {
+    const uint32_t dt = millis() - tFetch;
+    sdLog("DAV fetch: " + String((long)totalRead) + " B in " + String(dt) + "ms (" +
+          String(dt > 0 ? (uint32_t)((uint64_t)totalRead * 1000 / 1024 / dt) : 0) +
+          " KB/s)");
+  }
 
   // A disk image that filled the RAM disk without the response ending is
   // truncated, and a truncated image is worse than none: it mounts, the
