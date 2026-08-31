@@ -1448,10 +1448,8 @@ async function handleFirmwareFile(file) {
     toast('That is not a .bin firmware image', 'error');
     return;
   }
-  if (!confirm('Flash ' + file.name + ' (' + Math.round(file.size / 1024) + ' KB)?
-
-' +
-               'The device restarts when it finishes. Do not remove power.')) return;
+  if (!confirm('Flash ' + file.name + ' (' + Math.round(file.size / 1024) + ' KB)?' +
+               '\n\nThe device restarts when it finishes. Do not remove power.')) return;
 
   const bar  = document.getElementById('ota-progress');
   const fill = document.getElementById('ota-fill');
