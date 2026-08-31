@@ -103,6 +103,30 @@ struct PsramAlloc {
 // unchanged — only the declarations needed touching.
 using DAVEntryList = std::vector<DAVFileEntry, PsramAlloc<DAVFileEntry>>;
 
+// Full radio for the duration of one network operation.
+//
+// The firmware runs WIFI_PS_MAX_MODEM at rest, deliberately: the radio sleeps
+// between beacons and steady-state current drops from ~120 to ~15-30 mA, which
+// is what keeps an Amiga 5V rail alive. But every TCP round trip then waits
+// for the radio to wake, and a TLS transfer is thousands of round trips — that
+// one setting is the difference between the 5-second loads this project used
+// to have and 47 KB/s today.
+//
+// So: wake fully on entry, restore whatever was set on exit. Capture-restore
+// rather than hardcoding MAX_MODEM back, because the dongle shares this file
+// and never opted into modem sleep. A transfer is transient and the backlight
+// is already dipped during it; the steady-state saving stays.
+struct DavRadioWake {
+  wifi_ps_type_t prev;
+  DavRadioWake() {
+    prev = WiFi.getSleep();
+    if (prev != WIFI_PS_NONE) WiFi.setSleep(WIFI_PS_NONE);
+  }
+  ~DavRadioWake() {
+    if (prev != WIFI_PS_NONE) WiFi.setSleep(prev);
+  }
+};
+
 // ============================================================================
 // WebDAV Client Class
 // ============================================================================
@@ -176,6 +200,7 @@ public:
 
   // List directory contents via PROPFIND
   bool listDir(const String &path, DAVEntryList &entries) {
+    DavRadioWake _wake;
     entries.clear();
     _lastError = "";
 
@@ -297,6 +322,7 @@ public:
   // dongle has no card, and streamToBuffer() below is what it uses instead.
   // Boards that never define HAS_SD keep the method, so nothing existing moves.
   long downloadFile(const String &remotePath, const String &localPath) {
+    DavRadioWake _wake;
     _lastError = "";
 
     // Ensure parent directory exists on SD
@@ -385,6 +411,7 @@ public:
   // transfer where a crash costs the user a re-flash rather than a retry.
   long streamToBuffer(const String &remotePath, uint8_t *buf, size_t bufSize,
                       bool allowReuse = true) {
+    DavRadioWake _wake;
     _lastError = "";
 
     // Build full remote path

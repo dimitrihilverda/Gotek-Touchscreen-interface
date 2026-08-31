@@ -66,7 +66,14 @@ public:
   void setInsecure() {}
 };
 
+// Modem power-save levels, as the ESP32 core names them. The host cares only
+// that the guard in webdav_client.h compiles and balances.
+typedef enum { WIFI_PS_NONE, WIFI_PS_MIN_MODEM, WIFI_PS_MAX_MODEM } wifi_ps_type_t;
+
 struct _WiFiStub {
   int status() { return WL_CONNECTED; }
+  wifi_ps_type_t _ps = WIFI_PS_NONE;
+  wifi_ps_type_t getSleep() { return _ps; }
+  void setSleep(wifi_ps_type_t p) { _ps = p; }
 };
 static _WiFiStub WiFi;
