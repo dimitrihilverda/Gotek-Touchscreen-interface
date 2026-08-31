@@ -4329,8 +4329,13 @@ void davOpenFolderDetail(int folderIndex) {
     BacklightDip _dip("READING FOLDER...");   // power dip + say why
     // Cache only a listing the client reports as complete — a partial one
     // would stick around and quietly hide half of a game's disks.
-    if (davClient.listDir(folderPath, folderContents) && !folderContents.empty()) {
-      davSaveCachedDir(folderPath, folderContents);
+    try {
+      if (davClient.listDir(folderPath, folderContents) && !folderContents.empty()) {
+        davSaveCachedDir(folderPath, folderContents);
+      }
+    } catch (const std::bad_alloc &) {
+      folderContents.clear();
+      sdLog("DAV: out of memory reading folder " + folderPath);
     }
   }
 
@@ -5858,6 +5863,14 @@ void doLoadSelected() {
 // ============================================================================
 
 size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
+  // What memory looked like going in. On the dongle this one line separated
+  // "the transfer is slow" from "TLS had nothing left to allocate from", and
+  // an insert is the heaviest thing this firmware does: a listing already in
+  // PSRAM, the RAM disk, then TLS on top.
+  sdLog("DAV insert: heap " + String(ESP.getFreeHeap()) +
+        " psram " + String(ESP.getFreePsram()) +
+        " maxblk " + String(ESP.getMaxAllocPsram()));
+
   // Dip the backlight for the entire duration of the DAV load. The prior
   // sequence of tud_disconnect + memset(1.44 MB PSRAM) + full LCD paint +
   // TLS handshake + sustained WiFi RX + tud_connect was the exact stack

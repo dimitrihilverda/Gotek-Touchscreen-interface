@@ -1774,7 +1774,13 @@ void handleDAVList(WiFiClient &client, const String &queryPath, bool forceRefres
     // Web-triggered listing: the panel is showing whatever the user left it
     // on, so say what is happening rather than just going dark.
     BacklightDip _dip("INDEXING WEBDAV...");
-    listOk = davClient.listDir(path, entries);
+    try {
+      listOk = davClient.listDir(path, entries);
+    } catch (const std::bad_alloc &) {
+      entries.clear();
+      listOk = false;
+      sdLog("API: DAV out of memory building listing for " + path);
+    }
   }
   if (!listOk) {
     sdLog("API: DAV list FAILED: " + davClient.lastError());
