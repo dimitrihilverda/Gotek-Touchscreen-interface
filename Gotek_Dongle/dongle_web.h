@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <Update.h>
 #include "../Gotek_Touchscreen/webui.h"
 
 // ── Tiny HTTP plumbing ───────────────────────────────────────────────────
@@ -142,6 +143,80 @@ static long receiveImage(WiFiClient &client, const String &boundary,
 
   if (overflow) return -3;
   if (written == 0) return -4;
+  return (long)written;
+}
+
+
+// Stream an uploaded firmware straight into the spare OTA slot.
+//
+// Same shape as receiveImage() above — the multipart scanner does the framing,
+// we just change where the bytes land. There is no room to buffer 1.1 MB and
+// no reason to: Update writes it to flash as it arrives.
+//
+// The magic-byte check matters more here than anywhere else. This board has no
+// screen and no card; if it reboots into a slot holding something that is not
+// firmware, the only way back is the cable this feature exists to retire.
+static long receiveFirmware(WiFiClient &client, const String &boundary,
+                            String &nameOut) {
+  const String delim = "--" + boundary;
+  MultipartBody body;
+  if (!body.begin(delim.c_str(), (int)delim.length())) return -1;
+
+  bool inData = false;
+  unsigned long deadline = millis() + 10000;
+  while (client.connected() && !inData && millis() < deadline) {
+    if (!client.available()) { delay(2); continue; }
+    String line = client.readStringUntil('\n');
+    line.trim();
+    const int fn = line.indexOf("filename=\"");
+    if (fn >= 0) {
+      const int end = line.indexOf('"', fn + 10);
+      nameOut = line.substring(fn + 10, end);
+    }
+    if (line.length() == 0 && nameOut.length() > 0) inData = true;
+  }
+  if (!inData) return -2;
+
+  if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+    dlog("OTA: cannot start: " + String(Update.errorString()));
+    Update.abort();
+    return -3;
+  }
+
+  size_t written = 0;
+  bool failed = false, badMagic = false;
+  uint8_t rd[1024];
+  unsigned long lastByte = millis();
+
+  while (client.connected()) {
+    if (millis() - lastByte > 15000) { failed = true; break; }
+    const int avail = client.available();
+    if (avail <= 0) { delay(2); continue; }
+    const int n = client.readBytes(rd, min((int)sizeof(rd), avail));
+    if (n <= 0) continue;
+    lastByte = millis();
+
+    const bool done = body.feed(rd, n, [&](const uint8_t *p, int len) {
+      if (failed || badMagic) return;
+      if (written == 0 && len > 0 && p[0] != 0xE9) { badMagic = true; return; }
+      if (Update.write((uint8_t *)p, len) != (size_t)len) { failed = true; return; }
+      written += len;
+    });
+    if (done || failed || badMagic) break;
+    yield();
+  }
+
+  if (badMagic) { Update.abort(); dlog("OTA: refused, not a firmware image"); return -4; }
+  if (failed || written == 0) {
+    Update.abort();
+    dlog("OTA: FAILED after " + String((uint32_t)written) + " bytes");
+    return -5;
+  }
+  if (!Update.end(true) || !Update.isFinished()) {
+    dlog("OTA: could not finalise: " + String(Update.errorString()));
+    return -6;
+  }
+  dlog("OTA: wrote " + String((uint32_t)written) + " bytes");
   return (long)written;
 }
 
@@ -299,7 +374,7 @@ static void handleClient(WiFiClient &client) {
     j += "\"internet_ssid\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\",";
     j += "\"ftp_enabled\":false,\"dav_enabled\":true,\"log_enabled\":true,";
     // Board shape, so the page can adapt rather than guess.
-    j += "\"has_sd\":false,\"has_display\":false,";
+    j += "\"has_sd\":false,\"has_display\":false,\"has_ota\":true,";
     j += "\"max_image_bytes\":" + String((uint32_t)MAX_IMAGE_BYTES) + ",";
     j += "\"supports_hd\":" + String(SUPPORTS_HD ? "true" : "false");
     j += "}";
@@ -377,6 +452,26 @@ static void handleClient(WiFiClient &client) {
   else if (method == "POST" && path == "/api/disk/unload") {
     ejectImage();
     sendJson(client, 200, "{\"status\":\"ok\"}");
+  }
+  else if (method == "POST" && path == "/api/system/ota") {
+    if (boundary.length() == 0) {
+      sendJson(client, 400, "{\"error\":\"Not a multipart upload\"}");
+    } else {
+      String name = "";
+      const long n = receiveFirmware(client, boundary, name);
+      if (n > 0) {
+        sendJson(client, 200, "{\"status\":\"ok\",\"bytes\":" + String(n) + "}");
+        client.flush();
+        delay(250);
+        client.stop();
+        delay(250);
+        ESP.restart();
+      } else if (n == -4) {
+        sendJson(client, 400, "{\"error\":\"that is not an ESP32 firmware image\"}");
+      } else {
+        sendJson(client, 500, "{\"error\":\"firmware update failed\"}");
+      }
+    }
   }
   else if (method == "POST" && path == "/api/games/upload") {
     if (boundary.length() == 0) {

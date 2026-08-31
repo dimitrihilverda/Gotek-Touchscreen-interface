@@ -356,6 +356,23 @@ textarea{min-height:80px;resize:vertical}
       </div>
     </form>
   </div>
+
+  <div class="card" id="ota-card" style="display:none">
+    <h2>Firmware</h2>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+      Update over WiFi, no cable. The image is written to the spare slot and the
+      device restarts into it; if anything goes wrong it keeps running what it
+      is running now.
+    </p>
+    <div class="upload-zone" id="ota-zone">
+      <strong>Drop a .bin firmware here</strong>
+      <p>or click to browse &mdash; takes about a minute, do not remove power</p>
+      <input type="file" id="ota-input" accept=".bin" style="display:none">
+    </div>
+    <div class="progress-bar" id="ota-progress">
+      <div class="progress-fill" id="ota-fill">0%</div>
+    </div>
+  </div>
 </div>
 
 <!-- GAMES -->
@@ -764,6 +781,11 @@ async function loadDashboard() {
   const themesTab   = document.getElementById('tab-themes');
   if (libraryCard) libraryCard.style.display = hasSD ? '' : 'none';
   if (themesTab)   themesTab.style.display   = hasSD ? '' : 'none';
+  // Absent means no, unlike has_sd: a device that never advertised OTA does
+  // not have the endpoint, and offering the button would only produce a 404.
+  const otaCard = document.getElementById('ota-card');
+  if (otaCard) otaCard.style.display = d.has_ota ? '' : 'none';
+
   const hasDisplay = (d.has_display === undefined) ? true : !!d.has_display;
   document.body.classList.toggle('no-sd', !hasSD);
   document.body.classList.toggle('no-display', !hasDisplay);
@@ -1404,6 +1426,95 @@ uploadZone.addEventListener('drop', e => {
   handleUploadFiles(e.dataTransfer.files);
 });
 uploadInput.addEventListener('change', e => handleUploadFiles(e.target.files));
+
+// ── Firmware over the air ────────────────────────────────────────────────
+const otaZone  = document.getElementById('ota-zone');
+const otaInput = document.getElementById('ota-input');
+if (otaZone && otaInput) {
+  otaZone.addEventListener('click', () => otaInput.click());
+  otaZone.addEventListener('dragover', e => { e.preventDefault(); otaZone.classList.add('dragover'); });
+  otaZone.addEventListener('dragleave', () => otaZone.classList.remove('dragover'));
+  otaZone.addEventListener('drop', e => {
+    e.preventDefault();
+    otaZone.classList.remove('dragover');
+    handleFirmwareFile(e.dataTransfer.files[0]);
+  });
+  otaInput.addEventListener('change', e => handleFirmwareFile(e.target.files[0]));
+}
+
+async function handleFirmwareFile(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.bin')) {
+    toast('That is not a .bin firmware image', 'error');
+    return;
+  }
+  if (!confirm('Flash ' + file.name + ' (' + Math.round(file.size / 1024) + ' KB)?
+
+' +
+               'The device restarts when it finishes. Do not remove power.')) return;
+
+  const bar  = document.getElementById('ota-progress');
+  const fill = document.getElementById('ota-fill');
+  bar.style.display = 'block';
+
+  const form = new FormData();
+  form.append('firmware', file, file.name);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', API + '/api/system/ota');
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round(e.loaded / e.total * 100);
+    fill.style.width = pct + '%';
+    fill.textContent = pct + '%';
+  };
+
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      xhr.onload  = () => resolve(xhr);
+      xhr.onerror = () => reject(new Error('connection lost during upload'));
+      xhr.send(form);
+    });
+    if (reply.status !== 200) {
+      let msg = 'firmware update failed';
+      try { msg = JSON.parse(reply.responseText).error || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+    fill.style.width = '100%';
+    fill.textContent = 'Restarting…';
+    toast('Firmware written — the device is restarting');
+    waitForReboot();
+  } catch (e) {
+    fill.style.width = '0%';
+    fill.textContent = '0%';
+    toast(e.message, 'error');
+  }
+}
+
+// The device drops off the network while it reboots. Poll until it answers
+// again rather than leaving the page looking like the update hung.
+function waitForReboot() {
+  const fill = document.getElementById('ota-fill');
+  let tries = 0;
+  const tick = setInterval(async () => {
+    tries++;
+    try {
+      const r = await fetch(API + '/api/system/info', { cache: 'no-store' });
+      if (r.ok) {
+        clearInterval(tick);
+        fill.textContent = 'Done';
+        toast('Back up on the new firmware');
+        setTimeout(() => location.reload(), 1200);
+        return;
+      }
+    } catch (_) { /* still down, expected */ }
+    if (tries > 40) {
+      clearInterval(tick);
+      fill.textContent = 'No answer';
+      toast('It has not come back yet — reload once it does', 'error');
+    }
+  }, 2000);
+}
 
 async function handleUploadFiles(files) {
   if (!files.length) return;

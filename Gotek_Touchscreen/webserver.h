@@ -476,6 +476,8 @@ void sendFileResponse(WiFiClient &client, const String &path, const String &cont
 
 // Simple multipart parser: extracts first file from multipart/form-data
 // Writes directly to SD card (streaming, no full buffering needed)
+#include "ota.h"   // needs HttpRequest, sendJSON and MultipartBody, all above
+
 bool handleMultipartUpload(WiFiClient &client, const HttpRequest &req) {
   if (req.boundary.length() == 0 || req.contentLength <= 0) return false;
 
@@ -678,6 +680,13 @@ void handleHttpRequest(WiFiClient &client) {
 
   if (req.path == "/api/games/upload" && req.method == "POST") {
     handleMultipartUpload(client, req);
+    return;
+  }
+
+  // Flash a new firmware into the spare OTA slot and reboot into it. Never
+  // returns on success.
+  if (req.path == "/api/system/ota" && req.method == "POST") {
+    handleOTAUpload(client, req);
     return;
   }
 

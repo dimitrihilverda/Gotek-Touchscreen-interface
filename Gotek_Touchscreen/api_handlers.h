@@ -374,6 +374,7 @@ void handleSystemInfo(WiFiClient &client) {
   json += "\"ftp_enabled\":" + String(cfg_ftp_enabled ? "true" : "false") + ",";
   json += "\"dav_enabled\":" + String(cfg_dav_enabled ? "true" : "false") + ",";
   json += "\"remote_enabled\":" + String(cfg_remote_enabled ? "true" : "false") + ",";
+  json += "\"has_ota\":true,";
   json += "\"log_enabled\":" + String(cfg_log_enabled ? "true" : "false");
   json += "}";
 
