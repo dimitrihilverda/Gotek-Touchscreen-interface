@@ -6355,6 +6355,9 @@ void loop() {
   // Process incoming HTTP requests (non-blocking)
   handleWebServer();
 
+  // Let a quiet DAV pool give its ~50 KB of internal heap back; see dropIdle().
+  davClient.dropIdle();
+
   // ── Periodic heap / PSRAM trace ──
   // Random reboots are usually caused by either a watchdog (loop blocked) or
   // an OOM crash from a slow leak. Logging the free heap + PSRAM once a

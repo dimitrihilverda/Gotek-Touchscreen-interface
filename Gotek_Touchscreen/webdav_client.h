@@ -142,6 +142,19 @@ public:
   // Drop any pooled socket — after a settings change it may point at the old
   // host, and after a disconnect it should simply not exist.
   void closeIdle() { _dropPool(); }
+
+  // A parked TLS connection pins ~50 KB of mbedTLS context in INTERNAL heap
+  // for as long as it lives. That is a fine price during a burst of listings
+  // (each reuse saves a 300-900 ms handshake) and a terrible one at rest:
+  // with the pool warm plus a wallpaper decode, the heap-minimum log line
+  // read min=0K. Call this from loop(); after a quiet spell the pool lets go
+  // and the ~50 KB comes back. The next operation pays one handshake.
+  void dropIdle(uint32_t idleMs = 15000) {
+    if (_pool && millis() - _poolLastUseMs > idleMs) {
+      sdLog("DAV: pooled connection idle, releasing its ~50 KB");
+      _dropPool();
+    }
+  }
   bool isConnected() { return _connected; }
 
   // True if the last streamToBuffer() filled its destination before the
@@ -516,6 +529,7 @@ private:
   // costs one wasted attempt, after which the request is retried on a fresh
   // one. The worst case is exactly the old behaviour.
   WiFiClient *_pool = nullptr;
+  uint32_t _poolLastUseMs = 0;   // for dropIdle(): when the pool last earned its keep
   bool _connSecure = false;   // what _newConnection() actually allocated
 
   WiFiClient *_newConnection() {
@@ -591,6 +605,7 @@ private:
     if (bodyComplete && tcp->connected()) {
       if (_pool && _pool != tcp) _destroy(_pool);
       _pool = tcp;
+      _poolLastUseMs = millis();
       return;
     }
 

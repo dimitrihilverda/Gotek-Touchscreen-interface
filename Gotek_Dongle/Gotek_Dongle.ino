@@ -362,5 +362,6 @@ void loop() {
   WiFiClient client = httpServer.available();
   if (client) handleClient(client);
   serviceDavLoad();
+  davClient.dropIdle();
   delay(2);
 }
