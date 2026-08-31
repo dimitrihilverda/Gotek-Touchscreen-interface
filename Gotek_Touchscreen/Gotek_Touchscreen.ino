@@ -63,6 +63,7 @@
 #endif
 
 #include <esp_system.h>     // esp_reset_reason()
+#include "rtc_log.h"       // a log that survives a panic
 
 extern "C" {
   extern bool tud_mounted(void);
@@ -1605,6 +1606,10 @@ void init_sd_card() {
 
 void sdLog(const String &msg) {
   Serial.println(msg);  // always echo to serial
+  // Into RTC memory as well, where a panic cannot reach it. Deliberately
+  // before the cfg_log_enabled gate: the crash trail is the one thing worth
+  // keeping even when the user has SD logging switched off.
+  rtcLogAdd(msg);
   if (!cfg_log_enabled) return;
 
   File f = SD_MMC.open("/LOG.TXT", "a");
@@ -5995,6 +6000,7 @@ void setup() {
   // a global so the splash can flash a warning when it was abnormal, and the
   // SD log records it once mounted.
   g_resetReason = esp_reset_reason();
+  rtcLogBegin();   // survivors stay readable until the replay below
 
   Serial.begin(115200);
   delay(500);
@@ -6073,6 +6079,22 @@ void setup() {
 
   // Initialize log (after loadConfig so we know if LOG_ENABLED is set)
   sdLogClear();
+
+  // Replay whatever survived the last reboot. sdLogClear() has just emptied
+  // LOG.TXT, which is why a crash used to leave nothing behind: the reboot
+  // wiped the very lines that explained it.
+  if (cfg_log_enabled && rtcLogCount() > 0) {
+    File lf = SD_MMC.open("/LOG.TXT", "a");
+    if (lf) {
+      lf.println("--- carried over from before the reboot (" +
+                 String(resetReasonName(g_resetReason)) + ") ---");
+      for (uint8_t i = 0; i < rtcLogCount(); i++) lf.println(rtcLogLine(i));
+      lf.println("--- end of carry-over ---");
+      lf.close();
+    }
+  }
+  rtcLogReset();   // survivors are safe on the card; start a new trail
+
   sdLog("Gotek Touchscreen Interface starting...");
   sdLog("Display initialized, touch initialized");
   sdLog("SD card initialized");
