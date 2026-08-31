@@ -395,6 +395,7 @@ void handleConfigGet(WiFiClient &client) {
                                   : cfg_saves_mode == SAVES_OVERWRITE ? "OVERWRITE"
                                                                       : "COPY") + "\",";
   json += "\"WIFI_TX_DBM\":\"" + String(cfg_wifi_tx_dbm) + "\",";
+  json += "\"POWER_SAVE\":\"" + String(cfg_power_save ? "1" : "0") + "\",";
   json += "\"LOG_ENABLED\":\"" + String(cfg_log_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_ENABLED\":\"" + String(cfg_wifi_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_SSID\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
@@ -435,6 +436,11 @@ void handleConfigPost(WiFiClient &client, const String &body) {
     if (v < 2)  v = 2;
     if (v > 20) v = 20;
     cfg_wifi_tx_dbm = v;
+  }
+
+  if (body.indexOf("POWER_SAVE=") >= 0) {
+    String v = getFormValue(body, "POWER_SAVE");
+    cfg_power_save = (v == "1" || v == "true") ? 1 : 0;
   }
 
   if (body.indexOf("WALLPAPER_PCT=") >= 0) {

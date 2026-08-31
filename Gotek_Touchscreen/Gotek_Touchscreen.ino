@@ -501,6 +501,14 @@ int    cfg_wifi_tx_dbm = 15;
 // Can be raised after boot in the settings UI once power has stabilised.
 uint8_t cfg_backlight = 140;
 
+// Shut down when no USB host is there. Only meaningful with a battery fitted;
+// see power_save.h. Off unless asked for, because the detection is unverified.
+uint8_t cfg_power_save = 0;
+
+// Last time the web server served anything. Power save reads it so browsing
+// from a phone does not get the radio switched off underneath it.
+uint32_t g_lastWebActivityMs = 0;
+
 // Hardware panel orientation differs between Gotek board revisions / displays.
 // If the picture is upside-down, set DISPLAY_FLIP=1 in CONFIG.TXT or toggle from
 // the System Info screen. The flip applies to both rendering and touch.
@@ -1441,6 +1449,8 @@ void loadConfig() {
       cfg_backlight = (uint8_t)v;
     } else if (key == "DISPLAY_FLIP") {
       cfg_display_flip = (val == "1" || val == "true");
+    } else if (key == "POWER_SAVE") {
+      cfg_power_save = (val == "1" || val == "true") ? 1 : 0;
     }
   }
   f.close();
@@ -1466,6 +1476,7 @@ void saveConfig() {
   f.println("THEME=" + cfg_theme);
   f.println("BACKLIGHT=" + String(cfg_backlight));
   f.println("DISPLAY_FLIP=" + String(cfg_display_flip ? "1" : "0"));
+  f.println("POWER_SAVE=" + String(cfg_power_save ? "1" : "0"));
 
   // WiFi settings
   f.println("WIFI_ENABLED=" + String(cfg_wifi_enabled ? "1" : "0"));
@@ -5963,6 +5974,7 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
 #include "thumb_cache.h"
 #include "wifi_setup.h"
 #include "webserver.h"
+#include "power_save.h"
 
 void setup() {
   // Capture the cause of the LAST reboot before anything else runs — useful
@@ -6192,6 +6204,8 @@ void setup() {
     current_screen = SCR_SELECTION;
     drawList();
   }
+
+  powerSaveInit();
 
   Serial.println("Setup complete!");
 }
@@ -6508,6 +6522,8 @@ void loop() {
 
   uint16_t px = 0, py = 0;
   bool haveTouch = touchRead(&px, &py);
+
+  powerSaveService(haveTouch);
 
   if (ui_busy) {
     delay(10);

@@ -625,6 +625,7 @@ bool handleMultipartUpload(WiFiClient &client, const HttpRequest &req) {
 
 void handleHttpRequest(WiFiClient &client) {
   client.setTimeout(5);
+  g_lastWebActivityMs = millis();
 
   HttpRequest req;
   if (!parseHttpRequest(client, req)) {
