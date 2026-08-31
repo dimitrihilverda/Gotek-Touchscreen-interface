@@ -4048,6 +4048,24 @@ static void _davDownloadProgressToLoadingScreen(size_t rec, size_t total) {
   size_t denom = (total > 0) ? total : FALLBACK;
   int pct = (int)((uint64_t)rec * 100 / denom);
   if (pct > 99) pct = 99;
+
+  // A breadcrumb every 128 KB, into the log that survives a panic.
+  //
+  // The crash lands between "stream contentLen" and the end of the transfer,
+  // and nothing logs in between, so four seconds of it are invisible. These
+  // lines say how far it got and what memory was doing on the way. maxblk is
+  // the internal heap's largest contiguous block, which collapses long before
+  // free heap does; stack is bytes of loop-task stack never used, which tells
+  // an overflow apart from an OOM.
+  static size_t nextMark = 0;
+  if (rec == 0) nextMark = 0;
+  if (rec >= nextMark) {
+    nextMark = rec + 128 * 1024;
+    sdLog("  ..." + String((uint32_t)(rec / 1024)) + " KB, heap " +
+          String(ESP.getFreeHeap()) + ", maxblk " + String(ESP.getMaxAllocHeap()) +
+          ", stack " + String((uint32_t)uxTaskGetStackHighWaterMark(NULL)));
+  }
+
   drawThemedProgressBar(pct);
 }
 

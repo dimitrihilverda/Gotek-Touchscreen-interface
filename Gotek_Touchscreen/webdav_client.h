@@ -489,9 +489,11 @@ private:
   // costs one wasted attempt, after which the request is retried on a fresh
   // one. The worst case is exactly the old behaviour.
   WiFiClient *_pool = nullptr;
+  bool _connSecure = false;   // what _newConnection() actually allocated
 
   WiFiClient *_newConnection() {
     WiFiClient *tcp = nullptr;
+    _connSecure = cfg_dav_https;
     if (cfg_dav_https) {
       WiFiClientSecure *secure = new WiFiClientSecure();
       if (!secure) { _lastError = "Out of memory"; return nullptr; }
@@ -540,21 +542,45 @@ private:
   }
 
   // Hand the connection back. Pooled only if the body was read to the end.
+  // Close a connection and free it properly.
+  //
+  // Client has no virtual destructor, so deleting a WiFiClientSecure through a
+  // WiFiClient* never runs ~NetworkClientSecure() and quietly leaks the mbedTLS
+  // context it owns. Delete through the type we actually allocated.
+  //
+  // One flag covers it: every connection is made by _newConnection() from the
+  // same cfg_dav_https, and changing that setting drops the pool.
+  void _destroy(WiFiClient *tcp) {
+    if (!tcp) return;
+    tcp->stop();
+    if (_connSecure) delete static_cast<WiFiClientSecure *>(tcp);
+    else             delete tcp;
+  }
+
   void _release(WiFiClient *tcp, bool bodyComplete) {
     if (!tcp) return;
+
+    // Reusable: park it, replacing whatever was parked before.
     if (bodyComplete && tcp->connected()) {
-      if (_pool && _pool != tcp) { _pool->stop(); delete _pool; }
+      if (_pool && _pool != tcp) _destroy(_pool);
       _pool = tcp;
       return;
     }
+
+    // Not reusable: close it and let it go.
+    //
+    // This line used to read _release(tcp, false), which re-entered with the
+    // same arguments, failed the same test, and called itself again until the
+    // stack canary fired. Every transfer the server closed instead of keeping
+    // alive ended in a PANIC at the very last moment, with the heap and the
+    // stack both looking perfectly healthy right up to it.
     if (_pool == tcp) _pool = nullptr;
-    _release(tcp, false);
+    _destroy(tcp);
   }
 
   void _dropPool() {
     if (!_pool) return;
-    _pool->stop();
-    delete _pool;
+    _destroy(_pool);
     _pool = nullptr;
   }
 
