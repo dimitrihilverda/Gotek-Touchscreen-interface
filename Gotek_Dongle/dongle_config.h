@@ -107,6 +107,20 @@ static Preferences prefs;
 #define CFG_NS "gotek"
 
 void loadConfig() {
+  // Factory-unique defaults, derived before NVS is even opened — a truly
+  // fresh chip takes the early return below and must already be unique by
+  // then. Two dongles out of the box both called gotek-dongle.local, both
+  // broadcasting "Gotek-Dongle", is the mDNS coin flip twice over: the last
+  // two MAC octets make every device distinct, and anything the user ever
+  // saved simply overrides these through the reads below.
+  {
+    char suf[6];
+    snprintf(suf, sizeof(suf), "%04X",
+             (unsigned)((ESP.getEfuseMac() >> 32) & 0xFFFF));
+    cfg_mdns_name = "gotek-" + String(suf);
+    cfg_wifi_ssid = "Gotek-Dongle-" + String(suf);
+  }
+
   if (!prefs.begin(CFG_NS, true)) {   // read-only; absent on a fresh chip
     dlog("Config: nothing stored yet, using defaults");
     return;
@@ -126,6 +140,7 @@ void loadConfig() {
   cfg_wifi_client_pass    = prefs.getString("sta_pass", cfg_wifi_client_pass);
   cfg_wifi_tx_dbm = prefs.getInt("tx_dbm", cfg_wifi_tx_dbm);
   cfg_mdns_name   = prefs.getString("mdns", cfg_mdns_name);
+
   prefs.end();
   dlog("Config loaded from NVS");
 }
