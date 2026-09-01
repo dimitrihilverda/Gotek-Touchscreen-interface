@@ -89,6 +89,19 @@ static const char *resetReasonName(esp_reset_reason_t r) {
   }
 }
 static esp_reset_reason_t g_resetReason = ESP_RST_UNKNOWN;
+
+// ── SD access mode ─────────────────────────────────────────────────────────
+// A page button sets the magic and restarts; the next boot never becomes a
+// Gotek — it becomes a card reader. The raw SD goes over USB MSC to a PC, so
+// the library can be managed without pulling the card. Mez's firmware proved
+// the shape; the safety rule travels with it: in this mode NOTHING of ours
+// touches the filesystem — no LOG.TXT, no config writes, no scaffold — the
+// PC owns the card, and two writers on one FAT is how cards die.
+// Exit: tap the screen (restart), or just unplug.
+#define SDACCESS_MAGIC 0x5DACCE55u
+RTC_NOINIT_ATTR static uint32_t g_sdAccessMagic;
+
+
 static bool resetWasAbnormal(esp_reset_reason_t r) {
   // Crashes / watchdogs / brownouts are interesting; power-on / external reset
   // / clean restart are routine. Include ESP_RST_SW too — a self-triggered
@@ -574,6 +587,11 @@ String theme_path = "/THEMES/DEFAULT";  // resolved path to active theme
 // label on the loading screen; set right before drawThemedLoadingScreen.
 enum LoadSource { LOADSRC_SD = 0, LOADSRC_DAV = 1, LOADSRC_FTP = 2 };
 LoadSource g_loadSource = LOADSRC_SD;
+// True while a DAV-origin load is being served from its SD mirror, so the
+// loading screen can say "FROM SD CACHE" instead of a plain SD read — the
+// user asked why a WebDAV insert suddenly looked like an SD load. One-shot:
+// cleared by the next drawThemedLoadingScreen.
+bool g_loadFromMirror = false;
 vector<String> theme_list;              // available theme names
 
 // Disk mode
@@ -2547,10 +2565,12 @@ void drawThemedLoadingScreen(const String &filename) {
   gfx_setTextColor(WB_ORANGE, TFT_BLACK);
   gfx_setTextSize(2);
   String srcLabel = "[ READING FROM SD ]";
+  if (g_loadFromMirror)                 srcLabel = "[ LOADING FROM SD CACHE ]";
   if (g_loadSource == LOADSRC_DAV)      srcLabel = "[ LOADING FROM WEBDAV ]";
   else if (g_loadSource == LOADSRC_FTP) srcLabel = "[ LOADING FROM FTP ]";
   gfx_setCursor((gW - gfx_textWidth(srcLabel)) / 2, 110);
   gfx_print(srcLabel);
+  g_loadFromMirror = false;   // one-shot, consumed by this paint
 
   // Progress bar frame (Amiga 3D bevel)
   int barX = 40, barY = 160, barW = gW - 80, barH = 26;
@@ -5971,6 +5991,7 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
     for (int i = 0; i < (int)file_list.size(); i++) {
       if (file_list[i] == mirrorA || file_list[i] == mirrorD) {
         sdLog("DAV load: serving " + mFile + " from the SD mirror");
+        g_loadFromMirror = true;
         const size_t n = loadFileToRam(i);
         if (n > 0) {
           selected_index = i;   // keep the SD list coherent with what is in
@@ -6111,6 +6132,93 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
 #include "webserver.h"
 #include "power_save.h"
 
+static int32_t onReadSD(uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize) {
+  // The host reads in whole sectors; an offset would mean a partial one.
+  static uint8_t sec[512];
+  uint8_t *out = (uint8_t *)buffer;
+  uint32_t done = 0;
+  while (done < bufsize) {
+    const uint32_t s = lba + (offset + done) / 512;
+    const uint32_t o = (offset + done) % 512;
+    uint32_t take = 512 - o;
+    if (take > bufsize - done) take = bufsize - done;
+    if (o == 0 && take == 512) {
+      if (!SD_MMC.readRAW(out + done, s)) return -1;
+    } else {
+      if (!SD_MMC.readRAW(sec, s)) return -1;
+      memcpy(out + done, sec + o, take);
+    }
+    done += take;
+  }
+  return (int32_t)bufsize;
+}
+
+static int32_t onWriteSD(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t bufsize) {
+  static uint8_t sec[512];
+  uint32_t done = 0;
+  while (done < bufsize) {
+    const uint32_t s = lba + (offset + done) / 512;
+    const uint32_t o = (offset + done) % 512;
+    uint32_t take = 512 - o;
+    if (take > bufsize - done) take = bufsize - done;
+    if (o == 0 && take == 512) {
+      if (!SD_MMC.writeRAW(buffer + done, s)) return -1;
+    } else {
+      if (!SD_MMC.readRAW(sec, s)) return -1;
+      memcpy(sec + o, buffer + done, take);
+      if (!SD_MMC.writeRAW(sec, s)) return -1;
+    }
+    done += take;
+  }
+  return (int32_t)bufsize;
+}
+
+// Never returns except through ESP.restart().
+static void runSDAccessMode() {
+  Serial.println("SD ACCESS MODE");
+  init_sd_card();
+  displayInit();
+  setBacklight(cfg_backlight);
+
+  gfx_fillScreen(TFT_BLACK);
+  gfx_setTextSize(3);
+  gfx_setTextColor(TFT_CYAN, TFT_BLACK);
+  gfx_setCursor(24, 60);  gfx_print("SD ACCESS MODE");
+  gfx_setTextSize(2);
+  gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+  gfx_setCursor(24, 120); gfx_print("The SD card is a USB drive now.");
+  gfx_setCursor(24, 150); gfx_print("Plug the USB into a computer.");
+  gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
+  gfx_setCursor(24, 210); gfx_print("Tap the screen to go back");
+  gfx_setCursor(24, 240); gfx_print("to normal operation.");
+  gfx_flush();
+
+  const uint32_t sectors = (uint32_t)SD_MMC.numSectors();
+  msc.vendorID("GOTEK");
+  msc.productID("SD-CARD");
+  msc.productRevision("1.0");
+  msc.onRead(onReadSD);
+  msc.onWrite(onWriteSD);
+  msc.mediaPresent(true);
+  msc.begin(sectors, 512);
+  USB.begin();
+  Serial.printf("SD over USB: %lu sectors\n", (unsigned long)sectors);
+
+  uint16_t px, py;
+  for (;;) {
+    if (touchRead(&px, &py)) {
+      // Give the host a heartbeat to finish an in-flight write, then leave.
+      gfx_fillScreen(TFT_BLACK);
+      gfx_setTextSize(2);
+      gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+      gfx_setCursor(24, 140); gfx_print("Rebooting...");
+      gfx_flush();
+      delay(800);
+      ESP.restart();
+    }
+    delay(30);
+  }
+}
 void setup() {
   // Capture the cause of the LAST reboot before anything else runs — useful
   // for diagnosing random restarts (PANIC vs TASK_WDT vs BROWNOUT). Stored in
@@ -6118,6 +6226,16 @@ void setup() {
   // SD log records it once mounted.
   g_resetReason = esp_reset_reason();
   rtcLogBegin();   // survivors stay readable until the replay below
+
+  // SD access mode: requested by the page, honoured before ANYTHING touches
+  // the card — the scaffold and the log writer below both write, and the
+  // whole point of this mode is that only the PC writes.
+  if (g_sdAccessMagic == SDACCESS_MAGIC) {
+    g_sdAccessMagic = 0;
+    Serial.begin(115200);
+    delay(200);
+    runSDAccessMode();   // never returns
+  }
 
   Serial.begin(115200);
   delay(500);

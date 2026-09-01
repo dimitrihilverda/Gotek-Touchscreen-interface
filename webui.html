@@ -498,6 +498,17 @@ textarea{min-height:80px;resize:vertical}
     </form>
   </div>
 
+  <div class="card needs-sd">
+    <h2>SD Card Access</h2>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+      Reboots the device into card-reader mode: the SD card appears as a USB
+      drive on whatever computer the device is plugged into &mdash; manage the
+      library without pulling the card. Tap the device's screen to return to
+      normal operation.
+    </p>
+    <button class="btn" onclick="sdAccessMode()">Enter SD access mode</button>
+  </div>
+
   <div class="card" id="ota-card" style="display:none">
     <h2>Firmware</h2>
     <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
@@ -1044,6 +1055,12 @@ async function loadConfig() {
       ).join('');
     } catch (_) { /* section is hidden on such devices anyway */ }
   }
+}
+
+async function sdAccessMode() {
+  if (!confirm('Reboot into SD access mode?' + String.fromCharCode(10,10) + 'The card becomes a USB drive on the computer the device is plugged into. The Gotek will not see a disk until you tap the device screen to return.')) return;
+  try { await fetch(API + '/api/system/sdaccess', { method: 'POST' }); } catch (_) {}
+  toast('Rebooting into SD access mode');
 }
 
 async function rebootDevice() {

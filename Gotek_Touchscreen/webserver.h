@@ -690,6 +690,18 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
+  // Reboot into SD access mode: the card becomes a USB drive on a PC.
+  if (req.path == "/api/system/sdaccess" && req.method == "POST") {
+    sendJSON(client, 200, "{\"status\":\"ok\"}");
+    client.flush();
+    delay(250);
+    client.stop();
+    delay(250);
+    g_sdAccessMagic = SDACCESS_MAGIC;
+    ESP.restart();
+    return;
+  }
+
   // Mirror a whole DAV game folder into the SD library. Queued; the worker in
   // loop() fetches one file per pass so this request returns immediately.
   if (req.path == "/api/dav/download" && req.method == "POST") {
