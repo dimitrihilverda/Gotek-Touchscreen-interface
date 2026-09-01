@@ -10,7 +10,7 @@
 <meta name="theme-color" content="#000000">
 <!-- Inline, because the device serves no other files and a missing manifest is
      a failed request on a board that answers everything itself. -->
-<link rel="manifest" href='data:application/manifest+json,{"name":"Gotek","short_name":"Gotek","start_url":"/","display":"standalone","background_color":"#000000","theme_color":"#000000"}'>
+<link rel="manifest" href='data:application/manifest+json,{"name":"Gotek","short_name":"Gotek","start_url":"/","display":"standalone","background_color":"%23000000","theme_color":"%23000000"}'>
 <title>Gotek Setup</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1021,12 +1021,17 @@ async function loadConfig() {
   document.getElementById('cfg-log-enabled').value =
     (cfg.LOG_ENABLED === '1' || cfg.LOG_ENABLED === 1 || cfg.LOG_ENABLED === true) ? '1' : '0';
 
-  // Load themes for dropdown
-  const themes = await api('/api/themes/list');
-  const sel = document.getElementById('cfg-theme');
-  sel.innerHTML = themes.themes.map(t =>
-    `<option value="${t}" ${t === cfg.THEME ? 'selected' : ''}>${t}</option>`
-  ).join('');
+  // Theme dropdown — only on a device that reports THEME at all, and never
+  // allowed to abort the rest of config loading if the endpoint is absent.
+  if (cfg.THEME !== undefined) {
+    try {
+      const themes = await api('/api/themes/list');
+      const sel = document.getElementById('cfg-theme');
+      sel.innerHTML = themes.themes.map(t =>
+        `<option value="${t}" ${t === cfg.THEME ? 'selected' : ''}>${t}</option>`
+      ).join('');
+    } catch (_) { /* section is hidden on such devices anyway */ }
+  }
 }
 
 async function rebootDevice() {
@@ -1826,6 +1831,7 @@ function applyThemeStyle(style) {
 // the built-in Workbench palette, which is what it looked like before.
 async function syncThemeStyle(name) {
   if (!name) return;
+  if (document.body.classList.contains('no-sd')) return;   // no card, no styles
   if (TE_PRESETS[name] && !teSaved[name]) { applyThemeStyle(TE_PRESETS[name]); }
   try {
     const st = await apiQuiet(`/api/themes/${encodeURIComponent(name)}/style`);
