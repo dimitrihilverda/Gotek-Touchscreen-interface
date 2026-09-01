@@ -1040,8 +1040,17 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const form = new FormData(e.target);
   const params = new URLSearchParams(form);
-  await fetch(API + '/api/config', { method: 'POST', body: params });
-  toast('Configuration saved! Reboot device for WiFi changes to take effect.');
+  const res = await fetch(API + '/api/config', { method: 'POST', body: params });
+  let j = {};
+  try { j = await res.json(); } catch (_) {}
+  if (j.reboot) {
+    // The device told us it is restarting to apply WiFi changes. Follow it.
+    toast('Saved \u2014 device is rebooting to join the network');
+    const fill = document.getElementById('ota-fill');
+    if (fill) waitForReboot();
+  } else {
+    toast('Configuration saved!');
+  }
 });
 
 // WiFi scan

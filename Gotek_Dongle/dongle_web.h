@@ -335,6 +335,23 @@ static void handleClient(WiFiClient &client) {
     }
   }
 
+  // The OS connectivity probes. Redirecting them is what makes the phone's
+  // captive sign-in sheet appear with our page in it the moment the AP is
+  // joined — the whole setup flow on a device with no screen and no card.
+  if (method == "GET" &&
+      (path == "/generate_204" || path == "/gen_204" ||
+       path == "/hotspot-detect.html" || path == "/library/test/success.html" ||
+       path == "/ncsi.txt" || path == "/connecttest.txt" ||
+       path == "/success.txt" || path == "/canonical.html" ||
+       path == "/redirect")) {
+    client.println("HTTP/1.1 302 Found");
+    client.println("Location: http://192.168.4.1/");
+    client.println("Connection: close");
+    client.println();
+    client.flush(); delay(2); client.stop();
+    return;
+  }
+
   if (method == "GET" && (path == "/" || path == "/index.html")) {
     // The identical gzipped page the touchscreen serves.
     client.println("HTTP/1.1 200 OK");
@@ -416,7 +433,16 @@ static void handleClient(WiFiClient &client) {
       }
       davApplyConfig();
       saveConfig();
-      sendJson(client, 200, "{\"status\":\"ok\"}");
+      // WiFi-client changes only take hold at boot. Announce the reboot in
+      // the answer so the page can wait for us instead of the user guessing,
+      // then schedule it for after this response has actually left.
+      const bool wifiChanged = body.indexOf("WIFI_CLIENT_SSID=") >= 0 ||
+                               body.indexOf("WIFI_CLIENT_PASS=") >= 0 ||
+                               body.indexOf("WIFI_CLIENT_ENABLED=") >= 0;
+      if (wifiChanged) g_rebootAtMs = millis() + 1500;
+      sendJson(client, 200, wifiChanged
+               ? "{\"status\":\"ok\",\"reboot\":true}"
+               : "{\"status\":\"ok\"}");
     } else {
       String j = "{\"THEME\":\"AMIGA_WB2\",\"DISPLAY\":\"" BOARD_NAME "\",";
       j += "\"WIFI_AP_SSID\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";

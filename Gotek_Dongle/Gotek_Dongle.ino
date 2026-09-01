@@ -35,6 +35,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <DNSServer.h>
 #include "USB.h"
 #include "USBMSC.h"
 
@@ -120,6 +121,17 @@ static String   g_nfoPath   = "";
 static String   g_nfoText   = "";
 
 WiFiServer httpServer(80);
+
+// Captive portal: on the AP we answer every DNS question with ourselves, so
+// the phone's connectivity probe lands on our web server, which answers it
+// with a redirect — and the OS pops its sign-in sheet showing the interface.
+// The point on a device with no screen: joining the AP IS the setup flow.
+DNSServer dnsServer;
+
+// Set by the config handler when WiFi-client settings changed: reboot after
+// the response has left, because applying a network change mid-request would
+// answer nobody. 0 = nothing pending.
+uint32_t g_rebootAtMs = 0;
 
 // ── State ────────────────────────────────────────────────────────────────
 static bool     g_mediaPresent = false;
@@ -272,6 +284,7 @@ void setup() {
                                                                         : AP_CHANNEL);
   delay(200);
   dlog("AP " + cfg_wifi_ssid + " at " + WiFi.softAPIP().toString());
+  dnsServer.start(53, "*", WiFi.softAPIP());   // captive portal: all names are us
 
   if (cfg_wifi_client_enabled && cfg_wifi_client_ssid.length()) {
     // Non-blocking: the page is reachable on the AP whether or not the network
@@ -375,6 +388,8 @@ static void serviceDavLoad() {
 }
 
 void loop() {
+  dnsServer.processNextRequest();
+  if (g_rebootAtMs && millis() > g_rebootAtMs) ESP.restart();
   WiFiClient client = httpServer.available();
   if (client) handleClient(client);
   serviceDavLoad();
