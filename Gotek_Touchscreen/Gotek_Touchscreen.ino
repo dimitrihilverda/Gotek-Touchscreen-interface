@@ -125,7 +125,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.045"
+#define FW_INTERNAL "release.047"
 
 using std::vector;
 using std::sort;

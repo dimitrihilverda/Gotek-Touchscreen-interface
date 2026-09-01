@@ -1247,8 +1247,10 @@ let activeAlpha = '';  // active letter filter, '' = all
 async function loadGames() {
   const data = await api('/api/games/list');
   lastGameData = data;
-  document.getElementById('game-search').value = '';
-  activeAlpha = '';  // filterGames auto-picks the first available letter
+  // Deliberately NOT clearing the search box or the letter filter here: every
+  // insert/eject refreshes this list, and resetting dumped the user back at
+  // 'A' each time (their words: "heel irritant"). filterGames still
+  // auto-picks the first letter when none was ever chosen.
 
   // Now Playing bar
   const npCard = document.getElementById('now-playing-card');
@@ -1435,13 +1437,18 @@ function renderGameList(games, mode) {
   document.getElementById('game-count').textContent = '(' + games.length + ' games)';
   const list = document.getElementById('game-list');
 
+  // The firmware's game routes only match lowercase mode segments, while the
+  // list API reports "ADF"/"DSK". The cover URL below always lowercased; the
+  // row's Insert/Disk buttons did not, so every SD row answered 404 while the
+  // modal (which lowercases in openGameDetail) worked fine. Normalise once.
+  const m = (mode || 'adf').toLowerCase();
   const rows = games.map(g => ({
     source: 'sd',
     key: g.name,
-    mode: mode,
+    mode: m,
     name: g.name,
     coverUrl: g.has_cover
-      ? `${API}/api/games/${mode.toLowerCase()}/${encodeURIComponent(g.name)}/cover` : '',
+      ? `${API}/api/games/${m}/${encodeURIComponent(g.name)}/cover` : '',
     playing: !!g.loaded,
     sourceLabel: '',              // the SD list needs no source badge; it is all SD
     disks: g.disks || 1,
