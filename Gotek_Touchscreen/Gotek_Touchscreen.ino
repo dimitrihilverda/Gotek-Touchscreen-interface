@@ -5952,6 +5952,37 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
         " psram " + String(ESP.getFreePsram()) +
         " maxblk " + String(ESP.getMaxAllocPsram()));
 
+  // Mirror first, for EVERY caller — the touchscreen INSERT, the disk-swap
+  // buttons and the web queue all land here. If this exact file was saved to
+  // the SD library (prefetch or Save-to-SD), load it as a plain SD game:
+  // instant, offline-proof, and saves write back to the mirrored file
+  // because from here on it IS an SD game. Without this check the panel kept
+  // pulling mirrored disks over TLS, which is exactly what the mirror was
+  // built to end.
+  {
+    String mFolder = remotePath;
+    String mFile   = remotePath;
+    const int mls = mFolder.lastIndexOf('/');
+    if (mls >= 0) { mFile = mFolder.substring(mls + 1); mFolder = mFolder.substring(0, mls); }
+    const int mps = mFolder.lastIndexOf('/');
+    if (mps >= 0) mFolder = mFolder.substring(mps + 1);
+    const String mirrorA = "/ADF/" + mFolder + "/" + mFile;
+    const String mirrorD = "/DSK/" + mFolder + "/" + mFile;
+    for (int i = 0; i < (int)file_list.size(); i++) {
+      if (file_list[i] == mirrorA || file_list[i] == mirrorD) {
+        sdLog("DAV load: serving " + mFile + " from the SD mirror");
+        const size_t n = loadFileToRam(i);
+        if (n > 0) {
+          selected_index = i;   // keep the SD list coherent with what is in
+          return n;
+        }
+        // A broken mirror (unreadable file) falls through to the network.
+        sdLog("DAV load: mirror unreadable, falling back to WebDAV");
+        break;
+      }
+    }
+  }
+
   // Dip the backlight for the entire duration of the DAV load. The prior
   // sequence of tud_disconnect + memset(1.44 MB PSRAM) + full LCD paint +
   // TLS handshake + sustained WiFi RX + tud_connect was the exact stack
