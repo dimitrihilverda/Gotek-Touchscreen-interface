@@ -5992,7 +5992,16 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
       if (file_list[i] == mirrorA || file_list[i] == mirrorD) {
         sdLog("DAV load: serving " + mFile + " from the SD mirror");
         g_loadFromMirror = true;
+        // The full USB dance, same as doLoadSelected: without the detach,
+        // revision bump and re-attach the RAM disk fills but the Gotek is
+        // never told the medium changed — 'LOADING FROM SD CACHE' on the
+        // panel and nothing on the drive, which is how this line got here.
+        tud_disconnect();
+        delay(50);
         const size_t n = loadFileToRam(i);
+        bumpInquiryRevision();
+        msc.mediaPresent(n > 0);
+        tud_connect();
         if (n > 0) {
           selected_index = i;   // keep the SD list coherent with what is in
           return n;
