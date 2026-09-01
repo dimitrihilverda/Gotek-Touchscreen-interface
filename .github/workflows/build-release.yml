@@ -63,7 +63,7 @@ jobs:
             label: "ESP32-S3 SuperMini dongle (screenless, 1 MB volume, DD only)"
             sketch: Gotek_Dongle
             board: BOARD_SUPERMINI
-            fqbn: "esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=4M,PartitionScheme=min_spiffs,USBMode=default,CDCOnBoot=cdc"
+            fqbn: "esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=4M,PartitionScheme=min_spiffs,USBMode=default,CDCOnBoot=default"
             extra_libs: ""
             allow_failure: false
           - variant: xiao
@@ -71,7 +71,7 @@ jobs:
             label: "Seeed XIAO ESP32S3 dongle (screenless, 2 MB volume, HD capable)"
             sketch: Gotek_Dongle
             board: BOARD_XIAO
-            fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=min_spiffs,USBMode=default,CDCOnBoot=cdc"
+            fqbn: "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=8M,PartitionScheme=min_spiffs,USBMode=default,CDCOnBoot=default"
             extra_libs: ""
             allow_failure: false
 
