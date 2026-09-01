@@ -179,6 +179,10 @@ textarea{min-height:80px;resize:vertical}
   <div class="card">
     <h2>Device Configuration</h2>
     <form id="config-form">
+      <!-- Each section names the config key(s) that prove the device supports
+           it; populate hides (and disables, so Save skips them) the rest.
+           Data-driven on purpose: no device list to keep in sync. -->
+      <div class="cfg-sec" data-probe="THEME,SAVES,LASTMODE">
       <div class="needs-display">
         <label>Display Type</label>
         <select name="DISPLAY" id="cfg-display">
@@ -240,6 +244,8 @@ textarea{min-height:80px;resize:vertical}
         competing with the list text.
       </p>
 
+      </div>
+      <div class="cfg-sec" data-probe="WIFI_SSID,WIFI_AP_SSID,WIFI_TX_DBM">
       <h2 style="margin-top:16px">WiFi Access Point</h2>
       <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Direct connection hotspot — always active for setup</p>
 
@@ -282,6 +288,8 @@ textarea{min-height:80px;resize:vertical}
       <label>AP Channel (1-13)</label>
       <input type="number" name="WIFI_CHANNEL" id="cfg-wifi-channel" min="1" max="13">
 
+      </div>
+      <div class="cfg-sec" data-probe="WIFI_CLIENT_SSID">
       <h2 style="margin-top:16px">WiFi Client (Internet)</h2>
       <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Connect to your home network for cover art downloads</p>
 
@@ -303,6 +311,8 @@ textarea{min-height:80px;resize:vertical}
 
       <div id="wifi-status-box" style="margin-top:10px;padding:8px;background:var(--light);border:1px inset var(--line);font-size:13px;display:none"></div>
 
+      </div>
+      <div class="cfg-sec" data-probe="FTP_HOST">
       <h2 style="margin-top:16px">FTP Network Source</h2>
       <p style="font-size:12px;color:var(--muted);margin-bottom:4px">Browse and download games from your NAS via FTP (requires WiFi Client)</p>
       <p style="font-size:11px;color:var(--red);margin-bottom:8px;font-weight:600">Note: plain FTP only — SFTP (SSH) is not supported. Use WebDAV for secure connections.</p>
@@ -328,6 +338,8 @@ textarea{min-height:80px;resize:vertical}
       <label>FTP Base Path</label>
       <input type="text" name="FTP_PATH" id="cfg-ftp-path" placeholder="/" value="/">
 
+      </div>
+      <div class="cfg-sec" data-probe="DAV_HOST">
       <h2 style="margin-top:16px">WebDAV Network Source</h2>
       <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Browse and download games via WebDAV (Stackstorage, Nextcloud, etc.)</p>
 
@@ -357,6 +369,119 @@ textarea{min-height:80px;resize:vertical}
 
       <label>WebDAV Base Path</label>
       <input type="text" name="DAV_PATH" id="cfg-dav-path" placeholder="/remote.php/webdav/" value="/remote.php/webdav/">
+
+      </div>
+
+      <!-- Settings of the mesarim panel firmware (the joint tree). Values are
+           written back to CONFIG.TXT; most take effect at the next boot. -->
+      <div class="cfg-sec" data-probe="CAROUSEL">
+      <h2 style="margin-top:16px">Panel Options</h2>
+      <p style="font-size:12px;color:var(--muted);margin:4px 0 8px">
+        Saved to CONFIG.TXT on the card. Most of these apply at the next boot
+        &mdash; use the Reboot button below after saving.
+      </p>
+
+      <label>Boot view</label>
+      <select name="CAROUSEL" id="cfg-p-carousel">
+        <option value="OFF">Game list</option>
+        <option value="ON">Cover carousel</option>
+        <option value="LAST">Remember last view</option>
+      </select>
+
+      <label>Screensaver</label>
+      <select name="SCREENSAVER" id="cfg-p-screensaver">
+        <option value="ON">On</option><option value="OFF">Off</option>
+      </select>
+
+      <label>Screensaver style</label>
+      <select name="SSMODE" id="cfg-p-ssmode">
+        <option value="SLIDES">Slideshow</option>
+        <option value="BOUNCE">Bouncing logo</option>
+        <option value="MATRIX">Matrix rain</option>
+      </select>
+
+      <label>Seconds per slide (2-120)</label>
+      <input type="number" name="SSTIME" id="cfg-p-sstime" min="2" max="120" value="6">
+
+      <label>Slideshow includes favourited covers</label>
+      <select name="SSFAV" id="cfg-p-ssfav">
+        <option value="ON">Yes</option><option value="OFF">No</option>
+      </select>
+
+      <label>Language</label>
+      <select name="LANG" id="cfg-p-lang">
+        <option>EN</option><option>FR</option><option>IT</option>
+        <option>ES</option><option>DE</option>
+      </select>
+
+      <label>Font size</label>
+      <select name="FONT" id="cfg-p-font">
+        <option value="SMALL">Small</option>
+        <option value="NORMAL">Normal</option>
+        <option value="LARGE">Large</option>
+      </select>
+
+      <label>Screen rotation</label>
+      <select name="ROTATE" id="cfg-p-rotate">
+        <option value="0">0&deg;</option><option value="90">90&deg;</option>
+        <option value="180">180&deg;</option><option value="270">270&deg;</option>
+      </select>
+
+      <label>Compact list (collapse cover art)</label>
+      <select name="COMPACT" id="cfg-p-compact">
+        <option value="OFF">Off</option><option value="ON">On</option>
+      </select>
+
+      <label>Reel button style</label>
+      <select name="BTNSTYLE" id="cfg-p-btnstyle">
+        <option value="PILL">Pill</option><option value="FLAT">Flat</option>
+      </select>
+
+      <label>Tap the selected row to load it</label>
+      <select name="TAPLOAD" id="cfg-p-tapload">
+        <option value="OFF">Off</option><option value="ON">On</option>
+      </select>
+
+      <label>Hot-swap disks with one tap</label>
+      <select name="HOTSWAP" id="cfg-p-hotswap">
+        <option value="OFF">Off</option><option value="ON">On</option>
+      </select>
+
+      <label>Force-swap (skip USB re-attach)</label>
+      <select name="FORCESWAP" id="cfg-p-forceswap">
+        <option value="OFF">Off</option><option value="ON">On</option>
+      </select>
+
+      <label>Category browsing</label>
+      <select name="CATEGORIES" id="cfg-p-categories">
+        <option value="OFF">Off</option><option value="ON">On</option>
+      </select>
+
+      <label>Nested categories</label>
+      <select name="NESTING" id="cfg-p-nesting">
+        <option value="OFF">Off</option><option value="ON">On</option>
+      </select>
+
+      <label>Hivemind (FLING to every paired dongle)</label>
+      <select name="HIVEMIND" id="cfg-p-hivemind">
+        <option value="ON">On</option><option value="OFF">Off</option>
+      </select>
+
+      <label>Max wireless dongles (1-64)</label>
+      <input type="number" name="CAP" id="cfg-p-cap" min="1" max="64" value="32">
+
+      <label>Boot cracktro (0 = random, 1-8 = fixed)</label>
+      <input type="number" name="CRACKTRO" id="cfg-p-cracktro" min="0" max="8" value="0">
+
+      <label>Loop cracktro until tapped</label>
+      <select name="LOOP" id="cfg-p-loop">
+        <option value="0">No</option><option value="1">Yes</option>
+      </select>
+
+      <div style="margin-top:10px">
+        <button type="button" class="btn btn-danger" onclick="rebootDevice()">Reboot device</button>
+      </div>
+      </div>
 
       <div style="margin-top:16px">
         <button type="submit" class="btn btn-primary">Save Configuration</button>
@@ -863,6 +988,25 @@ async function loadConfig() {
   document.getElementById('cfg-dav-pass').value = cfg.DAV_PASS || '';
   document.getElementById('cfg-dav-path').value = cfg.DAV_PATH || '/remote.php/webdav/';
 
+  // Panel Options (the mesarim tree): fill whatever the device reports.
+  ['CAROUSEL','SCREENSAVER','SSMODE','SSTIME','SSFAV','LANG','FONT','ROTATE',
+   'COMPACT','BTNSTYLE','TAPLOAD','HOTSWAP','FORCESWAP','CATEGORIES','NESTING',
+   'HIVEMIND','CAP','CRACKTRO','LOOP'].forEach(k => {
+    const el = document.getElementById('cfg-p-' + k.toLowerCase());
+    if (el && cfg[k] !== undefined && cfg[k] !== '') el.value = cfg[k];
+  });
+
+  // A section only exists on a device whose /api/config carries its keys.
+  // Hide the rest, and disable their fields so Save does not post empty
+  // values into settings the device never showed. Data-driven: adding a
+  // device means answering with the right keys, not editing this page.
+  document.querySelectorAll('.cfg-sec').forEach(sec => {
+    const present = (sec.dataset.probe || '').split(',')
+      .some(k => cfg[k] !== undefined);
+    sec.style.display = present ? '' : 'none';
+    sec.querySelectorAll('input,select,button').forEach(el => { el.disabled = !present; });
+  });
+
   // Backdrop strength. Defaults to 20 when the key is absent, matching the
   // firmware default rather than showing 0 and implying it is off.
   const wp = (cfg.WALLPAPER_PCT === undefined || cfg.WALLPAPER_PCT === '')
@@ -883,6 +1027,13 @@ async function loadConfig() {
   sel.innerHTML = themes.themes.map(t =>
     `<option value="${t}" ${t === cfg.THEME ? 'selected' : ''}>${t}</option>`
   ).join('');
+}
+
+async function rebootDevice() {
+  if (!confirm('Reboot the device now? Saved options apply after it comes back.')) return;
+  try { await fetch(API + '/api/system/reboot', { method: 'POST' }); } catch (_) {}
+  toast('Rebooting \u2014 the page reconnects when it is back');
+  if (typeof waitForReboot === 'function') waitForReboot();
 }
 
 document.getElementById('config-form').addEventListener('submit', async (e) => {
