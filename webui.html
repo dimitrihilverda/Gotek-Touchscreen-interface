@@ -268,6 +268,14 @@ textarea{min-height:80px;resize:vertical}
       <label>AP SSID</label>
       <input type="text" name="WIFI_SSID" id="cfg-wifi-ssid">
 
+      <label>Device name on the network</label>
+      <input type="text" name="MDNS_NAME" id="cfg-mdns-name" placeholder="gotek">
+      <p style="font-size:12px;color:var(--muted);margin:4px 0 8px">
+        Reachable as <strong><span id="cfg-mdns-preview">gotek</span>.local</strong>.
+        Give every Gotek its own name (gotek1, gotek2, ...) &mdash; two devices
+        with the same name fight over it and only one wins.
+      </p>
+
       <label>AP Password</label>
       <input type="text" name="WIFI_PASS" id="cfg-wifi-pass">
 
@@ -827,6 +835,15 @@ async function loadConfig() {
   document.getElementById('cfg-lastmode').value = cfg.LASTMODE || 'ADF';
   document.getElementById('cfg-wifi-enabled').value = cfg.WIFI_ENABLED || '1';
   document.getElementById('cfg-wifi-ssid').value = cfg.WIFI_SSID || '';
+  const mdns = cfg.MDNS_NAME || 'gotek';
+  const mdnsEl = document.getElementById('cfg-mdns-name');
+  if (mdnsEl) {
+    mdnsEl.value = mdns;
+    document.getElementById('cfg-mdns-preview').textContent = mdns;
+    mdnsEl.oninput = () => {
+      document.getElementById('cfg-mdns-preview').textContent = mdnsEl.value.trim() || 'gotek';
+    };
+  }
   document.getElementById('cfg-wifi-pass').value = cfg.WIFI_PASS || '';
   document.getElementById('cfg-wifi-channel').value = cfg.WIFI_CHANNEL || '6';
   document.getElementById('cfg-wifi-client-enabled').value = cfg.WIFI_CLIENT_ENABLED || '0';

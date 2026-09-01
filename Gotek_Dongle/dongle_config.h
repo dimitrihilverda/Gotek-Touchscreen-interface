@@ -97,6 +97,12 @@ String  cfg_wifi_client_pass = "";
 // There is no backlight to dim on a dongle, so this is the only lever left.
 int     cfg_wifi_tx_dbm = 15;
 
+// LAN name, as <name>.local. Deliberately NOT "gotek": that is the
+// touchscreen's default, and a dongle and a panel on one network both
+// claiming it made which-device-answers a coin flip. Set gotek1/gotek2/...
+// when running several dongles.
+String  cfg_mdns_name = "gotek-dongle";
+
 static Preferences prefs;
 #define CFG_NS "gotek"
 
@@ -119,6 +125,7 @@ void loadConfig() {
   cfg_wifi_client_ssid    = prefs.getString("sta_ssid", cfg_wifi_client_ssid);
   cfg_wifi_client_pass    = prefs.getString("sta_pass", cfg_wifi_client_pass);
   cfg_wifi_tx_dbm = prefs.getInt("tx_dbm", cfg_wifi_tx_dbm);
+  cfg_mdns_name   = prefs.getString("mdns", cfg_mdns_name);
   prefs.end();
   dlog("Config loaded from NVS");
 }
@@ -142,6 +149,7 @@ void saveConfig() {
   prefs.putString("sta_ssid", cfg_wifi_client_ssid);
   prefs.putString("sta_pass", cfg_wifi_client_pass);
   prefs.putInt   ("tx_dbm",   cfg_wifi_tx_dbm);
+  prefs.putString("mdns",     cfg_mdns_name);
   prefs.end();
   dlog("Config saved to NVS");
 }

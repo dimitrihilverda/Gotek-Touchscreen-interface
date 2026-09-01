@@ -49,6 +49,20 @@
 #include "../Gotek_Touchscreen/perf.h"
 #include "../Gotek_Touchscreen/webdav_client.h"
 
+// This product's settings become the client's settings. Called at boot and
+// from the config handler in dongle_web.h; the client itself reads nothing.
+static void davApplyConfig() {
+  DavConfig c;
+  c.host     = cfg_dav_host;
+  c.port     = cfg_dav_port;
+  c.https    = cfg_dav_https;
+  c.user     = cfg_dav_user;
+  c.pass     = cfg_dav_pass;
+  c.basePath = cfg_dav_path;
+  c.enabled  = cfg_dav_enabled;
+  davClient.configure(c, dlog);
+}
+
 #if HAS_DISPLAY
 #error "Gotek_Dongle is the screenless build - pick BOARD_XIAO or BOARD_SUPERMINI"
 #endif
@@ -203,6 +217,7 @@ void setup() {
   // above it — which is the whole point of keeping the log in RTC memory.
   dlog("--- boot: " + String(resetReasonName()) + " ---");
   loadConfig();
+  davApplyConfig();
 
   const size_t psram = ESP.getPsramSize();
   char bootSsid[32];
@@ -276,11 +291,12 @@ void setup() {
   USB.begin();
   dlog("USB mass storage up");
 
-  // gotek.local, the same name the touchscreen answers to. Worth more here
-  // than there: a dongle has no screen to show you its address.
-  if (MDNS.begin("gotek")) {
+  // Its own name, not the touchscreen's: both products on one LAN claiming
+  // "gotek" made which-device-answers a coin flip. Worth more here than on a
+  // panel: a dongle has no screen to show you its address.
+  if (MDNS.begin(cfg_mdns_name.c_str())) {
     MDNS.addService("http", "tcp", 80);
-    dlog("Reachable at gotek.local");
+    dlog("Reachable at " + cfg_mdns_name + ".local");
   } else {
     dlog("mDNS failed; use the IP address");
   }

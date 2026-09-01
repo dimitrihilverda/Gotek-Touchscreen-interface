@@ -506,6 +506,12 @@ uint8_t cfg_backlight = 140;
 // see power_save.h. Off unless asked for, because the detection is unverified.
 uint8_t cfg_power_save = 0;
 
+// The name this device answers to on the LAN, as <name>.local. Configurable
+// because two Goteks on one network otherwise both claim "gotek" and mDNS
+// silently picks a winner — which one answered changed between requests on
+// Dimmy's bench. Set MDNS_NAME=gotek1 (2, 3...) per device to tell them apart.
+String cfg_mdns_name = "gotek";
+
 // Last time the web server served anything. Power save reads it so browsing
 // from a phone does not get the radio switched off underneath it.
 uint32_t g_lastWebActivityMs = 0;
@@ -610,6 +616,22 @@ void sdLog(const String &msg);
 // FTP and WebDAV clients (included here so types are available for state vars below)
 #include "ftp_client.h"
 #include "webdav_client.h"
+
+// The one place this product's settings become the client's settings. Called
+// at boot and after every edit; forgetting a call site means the client keeps
+// talking to the old server, so keep them countable: loadConfig() and the two
+// API handlers that mutate cfg_dav_*.
+void davApplyConfig() {
+  DavConfig c;
+  c.host     = cfg_dav_host;
+  c.port     = (uint16_t)cfg_dav_port;
+  c.https    = cfg_dav_https;
+  c.user     = cfg_dav_user;
+  c.pass     = cfg_dav_pass;
+  c.basePath = cfg_dav_path;
+  c.enabled  = cfg_dav_enabled;
+  davClient.configure(c, sdLog);
+}
 
 // Explicit prototypes for functions whose signatures reference DAVFileEntry.
 // Arduino's auto-prototype generator would insert these at the very top of the
@@ -1452,6 +1474,10 @@ void loadConfig() {
       cfg_display_flip = (val == "1" || val == "true");
     } else if (key == "POWER_SAVE") {
       cfg_power_save = (val == "1" || val == "true") ? 1 : 0;
+    } else if (key == "MDNS_NAME") {
+      val.trim();
+      val.replace(" ", "-");
+      if (val.length() > 0) cfg_mdns_name = val;
     }
   }
   f.close();
@@ -1459,6 +1485,8 @@ void loadConfig() {
   // Resolve theme path
   if (cfg_theme.length() == 0) cfg_theme = "DEFAULT";
   theme_path = "/THEMES/" + cfg_theme;
+
+  davApplyConfig();
 }
 
 void saveConfig() {
@@ -1478,6 +1506,7 @@ void saveConfig() {
   f.println("BACKLIGHT=" + String(cfg_backlight));
   f.println("DISPLAY_FLIP=" + String(cfg_display_flip ? "1" : "0"));
   f.println("POWER_SAVE=" + String(cfg_power_save ? "1" : "0"));
+  f.println("MDNS_NAME=" + cfg_mdns_name);
 
   // WiFi settings
   f.println("WIFI_ENABLED=" + String(cfg_wifi_enabled ? "1" : "0"));

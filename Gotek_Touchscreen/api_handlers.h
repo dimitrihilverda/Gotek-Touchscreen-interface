@@ -397,6 +397,7 @@ void handleConfigGet(WiFiClient &client) {
                                                                       : "COPY") + "\",";
   json += "\"WIFI_TX_DBM\":\"" + String(cfg_wifi_tx_dbm) + "\",";
   json += "\"POWER_SAVE\":\"" + String(cfg_power_save ? "1" : "0") + "\",";
+  json += "\"MDNS_NAME\":\"" + jsonEscape(cfg_mdns_name) + "\",";
   json += "\"LOG_ENABLED\":\"" + String(cfg_log_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_ENABLED\":\"" + String(cfg_wifi_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_SSID\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
@@ -442,6 +443,16 @@ void handleConfigPost(WiFiClient &client, const String &body) {
   if (body.indexOf("POWER_SAVE=") >= 0) {
     String v = getFormValue(body, "POWER_SAVE");
     cfg_power_save = (v == "1" || v == "true") ? 1 : 0;
+  }
+
+  if (body.indexOf("MDNS_NAME=") >= 0) {
+    String v = getFormValue(body, "MDNS_NAME");
+    v.trim();
+    v.replace(" ", "-");
+    if (v.length() > 0 && v != cfg_mdns_name) {
+      cfg_mdns_name = v;
+      wifiStartMDNS();   // takes effect immediately, not at next boot
+    }
   }
 
   if (body.indexOf("WALLPAPER_PCT=") >= 0) {
@@ -563,6 +574,7 @@ void handleConfigPost(WiFiClient &client, const String &body) {
     cfg_dav_https = (val == "1" || val == "true");
   }
 
+  davApplyConfig();
   saveConfig();
   sendJSON(client, 200, "{\"status\":\"ok\"}");
 }

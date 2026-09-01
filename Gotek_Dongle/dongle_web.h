@@ -397,10 +397,24 @@ static void handleClient(WiFiClient &client) {
         cfg_wifi_client_enabled = (formValue(body, "WIFI_CLIENT_ENABLED") == "1");
       if (body.indexOf("WIFI_CLIENT_SSID=") >= 0) cfg_wifi_client_ssid = formValue(body, "WIFI_CLIENT_SSID");
       if (body.indexOf("WIFI_CLIENT_PASS=") >= 0) cfg_wifi_client_pass = formValue(body, "WIFI_CLIENT_PASS");
+      if (body.indexOf("MDNS_NAME=") >= 0) {
+        String v = formValue(body, "MDNS_NAME");
+        v.trim();
+        v.replace(" ", "-");
+        if (v.length() > 0 && v != cfg_mdns_name) {
+          cfg_mdns_name = v;
+          MDNS.end();
+          if (MDNS.begin(cfg_mdns_name.c_str())) {
+            MDNS.addService("http", "tcp", 80);
+            dlog("Reachable at " + cfg_mdns_name + ".local");
+          }
+        }
+      }
       if (body.indexOf("WIFI_TX_DBM=") >= 0) {
         int v = formValue(body, "WIFI_TX_DBM").toInt();
         cfg_wifi_tx_dbm = (v < 2) ? 2 : (v > 20 ? 20 : v);
       }
+      davApplyConfig();
       saveConfig();
       sendJson(client, 200, "{\"status\":\"ok\"}");
     } else {
@@ -411,6 +425,7 @@ static void handleClient(WiFiClient &client) {
       j += "\"WIFI_CLIENT_SSID\":\"" + jsonEscape(cfg_wifi_client_ssid) + "\",";
       j += "\"WIFI_CLIENT_PASS\":\"" + jsonEscape(cfg_wifi_client_pass) + "\",";
       j += "\"WIFI_TX_DBM\":\"" + String(cfg_wifi_tx_dbm) + "\",";
+      j += "\"MDNS_NAME\":\"" + jsonEscape(cfg_mdns_name) + "\",";
       j += "\"DAV_ENABLED\":\"" + String(cfg_dav_enabled ? "1" : "0") + "\",";
       j += "\"DAV_HOST\":\"" + jsonEscape(cfg_dav_host) + "\",";
       j += "\"DAV_PORT\":\"" + String(cfg_dav_port) + "\",";

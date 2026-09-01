@@ -26,7 +26,7 @@ struct WifiScanEntry {
 static std::vector<WifiScanEntry> g_scan_results;
 static int g_scan_scroll = 0;       // top item index of the visible window
 
-static const char *MDNS_HOSTNAME = "gotek";
+extern String cfg_mdns_name;   // defined in the .ino, set via CONFIG.TXT
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -47,10 +47,10 @@ static void wifiScanSortDedupe() {
 // Bring mDNS up — safe to call multiple times.
 static void wifiStartMDNS() {
   MDNS.end();
-  if (MDNS.begin(MDNS_HOSTNAME)) {
+  if (MDNS.begin(cfg_mdns_name.c_str())) {
     MDNS.addService("http", "tcp", 80);
     Serial.print("mDNS started: http://");
-    Serial.print(MDNS_HOSTNAME);
+    Serial.print(cfg_mdns_name);
     Serial.println(".local/");
   } else {
     Serial.println("mDNS failed to start");
@@ -200,7 +200,7 @@ static void wifiDrawSuccess(const String &ssid, const String &ip) {
   gfx_setCursor(contentX, y); gfx_print("Also reachable as:");
   y += labelH;
   gfx_setTextSize(2); gfx_setTextColor(TFT_CYAN, TFT_BLACK);
-  gfx_setCursor(contentX, y); gfx_print("http://" + String(MDNS_HOSTNAME) + ".local/");
+  gfx_setCursor(contentX, y); gfx_print("http://" + cfg_mdns_name + ".local/");
 
   // Done button — its own row at the bottom-right, well below the URLs.
   int btnW = 110, btnH = 30;

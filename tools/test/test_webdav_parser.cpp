@@ -16,14 +16,8 @@
 #include "stubs/WiFi.h"
 #include "stubs/SD_MMC.h"
 
-// Config globals the client reads. Declared before the header pulls them in.
-String   cfg_dav_host = "example.com";
-int      cfg_dav_port = 443;
-String   cfg_dav_user = "u";
-String   cfg_dav_pass = "p";
-String   cfg_dav_path = "/remote.php/dav/files/u/Games";
-bool     cfg_dav_https = true;
-bool     cfg_dav_enabled = true;
+// The client no longer reads globals: settings arrive through configure().
+// See davTestConfig() below, called wherever a test constructs a GotekDAV.
 
 // The parser internals under test are private; opening them up is the least
 // invasive way to test the real code rather than a copy of it.
@@ -38,6 +32,16 @@ bool     cfg_dav_enabled = true;
 #include <functional>
 
 static int g_pass = 0, g_fail = 0;
+
+// The same settings the old globals carried, handed over the new way.
+static void davTestConfig(GotekDAV &dav) {
+  DavConfig c;
+  c.host = "example.com";  c.port = 443;  c.https = true;
+  c.user = "u";            c.pass = "p";
+  c.basePath = "/remote.php/dav/files/u/Games";
+  c.enabled = true;
+  dav.configure(c, nullptr);
+}
 static std::string g_currentTest;
 
 static void check(bool cond, const std::string &what) {
@@ -135,6 +139,7 @@ static std::string httpChunked(const std::string &body, size_t chunkBytes, int s
 // with the fake socket handing over at most `sockChunk` bytes per read.
 static DAVEntryList runParse(const std::string &httpResponse, size_t sockChunk) {
   GotekDAV dav;
+  davTestConfig(dav);
   WiFiClient sock;
   sock.feed(httpResponse);
   sock.chunkSize = sockChunk;
@@ -374,6 +379,7 @@ static void test_emptyCollection() {
 static void test_httpError() {
   g_currentTest = "http-401";
   GotekDAV dav;
+  davTestConfig(dav);
   WiFiClient sock;
   sock.feed("HTTP/1.1 401 Unauthorized\r\nContent-Length: 13\r\n\r\nAccess denied");
   long cl = -1; bool ch = false;

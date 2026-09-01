@@ -200,11 +200,11 @@ void checkWiFiClient() {
       wifi_sta_connected = true;
       wifi_sta_ip = WiFi.localIP().toString();
       Serial.println("Connected to " + cfg_wifi_client_ssid + " @ " + wifi_sta_ip);
-      // Start mDNS so the device is reachable as gotek.local on the LAN.
+      // Start mDNS so the device is reachable as <name>.local on the LAN.
       MDNS.end();
-      if (MDNS.begin("gotek")) {
+      if (MDNS.begin(cfg_mdns_name.c_str())) {
         MDNS.addService("http", "tcp", 80);
-        Serial.println("mDNS: http://gotek.local/");
+        Serial.println("mDNS: http://" + cfg_mdns_name + ".local/");
       }
     }
   } else {

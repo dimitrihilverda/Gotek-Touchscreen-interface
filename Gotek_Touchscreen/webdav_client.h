@@ -15,8 +15,32 @@
 #include <string.h>
 #include <ctype.h>
 
-// WebDAV config variables are defined in the main .ino file:
-// cfg_dav_enabled, cfg_dav_host, cfg_dav_port, cfg_dav_user, cfg_dav_pass, cfg_dav_path, cfg_dav_https
+// ============================================================================
+// Configuration surface
+// ============================================================================
+//
+// This file used to read seven cfg_dav_* globals owned by whichever sketch
+// included it, and log through a free function called sdLog(). That worked
+// with two consumers and became the porting cost with five: every new board
+// had to define the exact globals with the exact names. Now the sketch hands
+// over a struct and a log callback once, via configure(), and this file
+// touches nothing it was not given. That is the entire contract.
+struct DavConfig {
+  String   host;                 // bare hostname; configure() strips scheme/path
+  uint16_t port     = 443;
+  bool     https    = true;
+  String   user;
+  String   pass;
+  String   basePath = "/";       // remote root every path is joined to
+  bool     enabled  = false;
+};
+
+using DavLogFn = void (*)(const String &msg);
+
+// Module-level, not a class member, because PsramAlloc below logs allocation
+// failures and lives outside the class. Set by GotekDAV::configure().
+static DavLogFn g_davLog = nullptr;
+static inline void davLogLine(const String &m) { if (g_davLog) g_davLog(m); }
 
 // ============================================================================
 // WebDAV Types
@@ -86,9 +110,9 @@ struct PsramAlloc {
     void *p = ps_malloc(bytes);
     if (!p) p = malloc(bytes);   // no PSRAM (or exhausted) — try internal
     if (!p) {
-      sdLog("DAV: alloc FAILED " + String((unsigned)bytes) +
-            " B (psram=" + String(ESP.getFreePsram()) +
-            " heap=" + String(ESP.getFreeHeap()) + ")");
+      davLogLine("DAV: alloc FAILED " + String((unsigned)bytes) +
+                 " B (psram=" + String(ESP.getFreePsram()) +
+                 " heap=" + String(ESP.getFreeHeap()) + ")");
       throw std::bad_alloc();
     }
     return (T *)p;
@@ -151,7 +175,7 @@ public:
   // and the ~50 KB comes back. The next operation pays one handshake.
   void dropIdle(uint32_t idleMs = 15000) {
     if (_pool && millis() - _poolLastUseMs > idleMs) {
-      sdLog("DAV: pooled connection idle, releasing its ~50 KB");
+      _log("DAV: pooled connection idle, releasing its ~50 KB");
       _dropPool();
     }
   }
@@ -171,10 +195,27 @@ public:
   using ByteProgressCb = void (*)(size_t received, size_t total);
   void setProgressCallback(ByteProgressCb cb) { _byteProgressCb = cb; }
 
+  // Hand over settings and a logger. Call at boot and again after the user
+  // edits the DAV settings; a change of server or credentials also drops the
+  // pooled connection, which would otherwise keep talking to the old one.
+  void configure(const DavConfig &c, DavLogFn logFn) {
+    _cfg = c;
+    g_davLog = logFn;
+    // Accept what people paste: full URLs. Store what the code needs: a host.
+    if (_cfg.host.startsWith("https://")) _cfg.host = _cfg.host.substring(8);
+    if (_cfg.host.startsWith("http://"))  _cfg.host = _cfg.host.substring(7);
+    const int slash = _cfg.host.indexOf('/');
+    if (slash > 0) _cfg.host = _cfg.host.substring(0, slash);
+    _cfg.host.trim();
+    _dropPool();
+    _connected = false;
+  }
+  const DavConfig &config() const { return _cfg; }
+
   // Connect to WebDAV server (just validate connectivity)
   bool connect() {
     _lastError = "";
-    if (cfg_dav_host.length() == 0) {
+    if (_cfg.host.length() == 0) {
       _lastError = "No WebDAV host configured";
       _log("DAV connect: " + _lastError);
       return false;
@@ -185,15 +226,8 @@ public:
       return false;
     }
 
-    // Sanitize host: strip protocol prefix and trailing path/slash
-    if (cfg_dav_host.startsWith("https://")) cfg_dav_host = cfg_dav_host.substring(8);
-    if (cfg_dav_host.startsWith("http://"))  cfg_dav_host = cfg_dav_host.substring(7);
-    int slashPos = cfg_dav_host.indexOf('/');
-    if (slashPos > 0) cfg_dav_host = cfg_dav_host.substring(0, slashPos);
-    cfg_dav_host.trim();
-
-    _log("DAV: testing connection to " + String(cfg_dav_https ? "https://" : "http://") +
-         cfg_dav_host + ":" + String(cfg_dav_port));
+    _log("DAV: testing connection to " + String(_cfg.https ? "https://" : "http://") +
+         _cfg.host + ":" + String(_cfg.port));
 
     // Test with a PROPFIND on the base path
     DAVEntryList test;
@@ -218,7 +252,7 @@ public:
     _lastError = "";
 
     // Build full path
-    String fullPath = cfg_dav_path;
+    String fullPath = _cfg.basePath;
     if (!fullPath.endsWith("/")) fullPath += "/";
     if (path.length() > 0 && path != "/") {
       if (path.startsWith("/")) fullPath += path.substring(1);
@@ -240,19 +274,19 @@ public:
     if (!tcp) return false;
 
     // Build PROPFIND request
-    String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
+    String auth = _basicAuth(_cfg.user, _cfg.pass);
     String body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
                   "<D:propfind xmlns:D=\"DAV:\">"
                   "<D:prop><D:resourcetype/><D:getcontentlength/><D:displayname/></D:prop>"
                   "</D:propfind>";
 
-    _log("DAV: -> PROPFIND " + encodedPath + " Host: " + cfg_dav_host);
+    _log("DAV: -> PROPFIND " + encodedPath + " Host: " + _cfg.host);
 
     long contentLength = -1;
     bool chunked = false;
     for (int attempt = 0; ; attempt++) {
     tcp->println("PROPFIND " + encodedPath + " HTTP/1.1");
-    tcp->println("Host: " + cfg_dav_host);
+    tcp->println("Host: " + _cfg.host);
     tcp->println("Authorization: Basic " + auth);
     tcp->println("Depth: 1");
     tcp->println("Content-Type: application/xml");
@@ -346,7 +380,7 @@ public:
     }
 
     // Build full remote path
-    String fullRemote = cfg_dav_path;
+    String fullRemote = _cfg.basePath;
     if (!fullRemote.endsWith("/")) fullRemote += "/";
     if (remotePath.startsWith("/")) fullRemote += remotePath.substring(1);
     else fullRemote += remotePath;
@@ -362,10 +396,10 @@ public:
     WiFiClient *tcp = _acquire(false, 30000, reused);
     if (!tcp) return -1;
 
-    String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
+    String auth = _basicAuth(_cfg.user, _cfg.pass);
 
     tcp->println("GET " + encodedPath + " HTTP/1.1");
-    tcp->println("Host: " + cfg_dav_host);
+    tcp->println("Host: " + _cfg.host);
     tcp->println("Authorization: Basic " + auth);
     tcp->println("Connection: keep-alive");
     tcp->println();
@@ -428,7 +462,7 @@ public:
     _lastError = "";
 
     // Build full remote path
-    String fullRemote = cfg_dav_path;
+    String fullRemote = _cfg.basePath;
     if (!fullRemote.endsWith("/")) fullRemote += "/";
     if (remotePath.startsWith("/")) fullRemote += remotePath.substring(1);
     else fullRemote += remotePath;
@@ -443,13 +477,13 @@ public:
     WiFiClient *tcp = _acquire(!allowReuse, 30000, reused);
     if (!tcp) return -1;
 
-    String auth = _basicAuth(cfg_dav_user, cfg_dav_pass);
+    String auth = _basicAuth(_cfg.user, _cfg.pass);
 
     long contentLength = -1;
     bool chunked = false;
     for (int attempt = 0; ; attempt++) {
     tcp->println("GET " + encodedPath + " HTTP/1.1");
-    tcp->println("Host: " + cfg_dav_host);
+    tcp->println("Host: " + _cfg.host);
     tcp->println("Authorization: Basic " + auth);
     tcp->println("Connection: keep-alive");
     tcp->println();
@@ -528,14 +562,15 @@ private:
   // And it always falls back: a pooled connection that turns out to be dead
   // costs one wasted attempt, after which the request is retried on a fresh
   // one. The worst case is exactly the old behaviour.
+  DavConfig _cfg;
   WiFiClient *_pool = nullptr;
   uint32_t _poolLastUseMs = 0;   // for dropIdle(): when the pool last earned its keep
   bool _connSecure = false;   // what _newConnection() actually allocated
 
   WiFiClient *_newConnection() {
     WiFiClient *tcp = nullptr;
-    _connSecure = cfg_dav_https;
-    if (cfg_dav_https) {
+    _connSecure = _cfg.https;
+    if (_cfg.https) {
       WiFiClientSecure *secure = new WiFiClientSecure();
       if (!secure) { _lastError = "Out of memory"; return nullptr; }
       secure->setInsecure();   // no CA store on an ESP32
@@ -550,8 +585,8 @@ private:
     }
     // Explicit connect timeout: setTimeout() bounds reads only, and a session
     // log once showed a handshake blocking the loop task for 362 seconds.
-    if (!tcp->connect(cfg_dav_host.c_str(), cfg_dav_port, 10000)) {
-      _lastError = "TCP connect failed to " + cfg_dav_host + ":" + String(cfg_dav_port);
+    if (!tcp->connect(_cfg.host.c_str(), _cfg.port, 10000)) {
+      _lastError = "TCP connect failed to " + _cfg.host + ":" + String(_cfg.port);
       _log("DAV: " + _lastError);
       delete tcp;
       return nullptr;
@@ -590,7 +625,7 @@ private:
   // context it owns. Delete through the type we actually allocated.
   //
   // One flag covers it: every connection is made by _newConnection() from the
-  // same cfg_dav_https, and changing that setting drops the pool.
+  // same _cfg.https, and changing that setting drops the pool.
   void _destroy(WiFiClient *tcp) {
     if (!tcp) return;
     tcp->stop();
@@ -649,8 +684,7 @@ private:
     if (_debugLog.length() > 2048) {
       _debugLog = _debugLog.substring(_debugLog.length() - 1500);
     }
-    // Also write to SD card log file (if logging enabled)
-    sdLog(msg);
+    davLogLine(msg);
   }
 
   // Base64 encode for HTTP Basic Auth
