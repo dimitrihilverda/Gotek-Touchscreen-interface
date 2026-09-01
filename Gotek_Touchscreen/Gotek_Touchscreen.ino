@@ -6130,6 +6130,23 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
   msc.mediaPresent(true);
   tud_connect();
 
+  // Prefetch: this load came over the network (a mirror hit returned long
+  // ago), so while this disk spins on the Amiga, quietly mirror the whole
+  // set — disks first, notes and cover after — to the card. Lives HERE so
+  // the touchscreen INSERT, the disk-swap buttons and the web path all
+  // trigger it; the first version only wired the web and Dimmy noticed the
+  // touchscreen made no caches within the hour.
+  if (cfg_dav_prefetch && totalRead > 0 && g_davDlFolder.length() == 0) {
+    String pfFolder = remotePath;
+    const int pfs = pfFolder.lastIndexOf('/');
+    if (pfs > 0) {
+      pfFolder = pfFolder.substring(0, pfs);
+      g_davDlFolder = pfFolder;
+      g_davDlListed = false;
+      sdLog("DAV mirror: prefetch queued for " + pfFolder);
+    }
+  }
+
   // Caller is responsible for screen transitions
   return totalRead;
 }
@@ -6844,20 +6861,6 @@ void loop() {
       }
 
       dav_pending_detail_nav = nowPlaying.davFolderIndex;
-
-      // Prefetch: while disk 1 spins on the Amiga, quietly mirror the whole
-      // set (plus notes and cover) to the card. The next disk swap of this
-      // game loads from SD, and the game survives the server going away.
-      if (cfg_dav_prefetch && g_davDlFolder.length() == 0) {
-        String folder = remotePath;
-        const int fsl = folder.lastIndexOf('/');
-        if (fsl > 0) {
-          folder = folder.substring(0, fsl);
-          g_davDlFolder = folder;
-          g_davDlListed = false;
-          sdLog("DAV mirror: prefetch queued for " + folder);
-        }
-      }
     }
   }
 
