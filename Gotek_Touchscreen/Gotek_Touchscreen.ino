@@ -6457,6 +6457,11 @@ void loop() {
           g_davDlRemote.push_back(base + nm);
           g_davDlLocal.push_back(dst);
         }
+        // The queue is popped from the back, which would reverse the listing.
+        // Reverse it here so disks download in numeric order — the very next
+        // disk the player will ask for lands on the card first.
+        std::reverse(g_davDlRemote.begin(), g_davDlRemote.end());
+        std::reverse(g_davDlLocal.begin(),  g_davDlLocal.end());
         g_davDlTotal = (int)g_davDlRemote.size();
         g_davDlDone = 0;
         g_davDlError = "";
@@ -6472,7 +6477,13 @@ void loop() {
       g_davDlRemote.pop_back();
       g_davDlLocal.pop_back();
       g_davDlCurrent = filenameOnly(dst);
-      BacklightDip _dip;   // same 5V courtesy every transfer pays
+      // Named, because a dip without a label reads as a fault — the panel
+      // goes dark and stops responding and nothing says why. Dimmy reported
+      // exactly that within an hour of the worker existing; the struct's own
+      // comment had warned about it all along.
+      String dipLabel = "SAVING TO SD " + String(g_davDlDone + 1) + "/" +
+                        String(g_davDlTotal) + ": " + g_davDlCurrent;
+      BacklightDip _dip(dipLabel.c_str());
       const long got = davClient.downloadFile(remote, dst);
       if (got <= 0) {
         g_davDlError = g_davDlCurrent + ": " + davClient.lastError();
