@@ -474,6 +474,11 @@ static void handleClient(WiFiClient &client) {
     String j = "{\"loaded\":" + String(g_mountBytes > 0 ? "true" : "false") + ",";
     j += "\"file\":\"" + g_mountLabel + "\",\"path\":\"\",";
     j += "\"game\":\"" + g_mountLabel + "\",";
+    // USB truth, live: is a host holding us configured, and when did it last
+    // read a sector. A day of guessing at three different Goteks taught us
+    // this is the first question, so now every port answers it.
+    j += "\"usb_host\":" + String(tud_mounted() ? "true" : "false") + ",";
+    j += "\"last_host_read_ms_ago\":" + String(g_lastHostReadMs ? (millis() - g_lastHostReadMs) : 0) + ",";
     j += "\"disk_num\":" + String(g_mountBytes > 0 ? 1 : 0) + ",";
     j += "\"disk_total\":" + String(g_mountBytes > 0 ? 1 : 0) + ",";
     j += "\"source\":\"" + String(g_mountBytes > 0 ? "SD" : "") + "\",";
