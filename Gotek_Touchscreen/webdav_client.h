@@ -10,6 +10,12 @@
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+// The SD download path pulls its own dependency rather than assuming the
+// sketch already included it — this header must work in any include order.
+#if !defined(HAS_SD) || HAS_SD
+  #include <FS.h>
+  #include <SD_MMC.h>
+#endif
 #include <vector>
 #include <stdlib.h>
 #include <string.h>
