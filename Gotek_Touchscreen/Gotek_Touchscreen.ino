@@ -672,6 +672,24 @@ int dav_detail_pending_full = -1;
 // ── Pending web-triggered loads (deferred to main loop) ────────────────
 int web_pending_sd_load = -1;       // file_list index to load from SD (set by HTTP handler)
 String web_pending_dav_path = "";   // DAV remote path to load (set by HTTP handler)
+
+// ── DAV -> SD mirror worker ────────────────────────────────────────────────
+// Downloads a whole DAV game folder (disks, .nfo, cover) into the SD library.
+// Queued by the web "Save to SD" button and by the prefetch below; executed
+// from loop(), ONE FILE PER PASS, so the web server and the touchscreen stay
+// alive between files — the same non-blocking rule every transfer here obeys.
+String g_davDlFolder  = "";     // remote folder queued ("" = idle)
+bool   g_davDlListed  = false;  // folder listing done, queue filled
+std::vector<String> g_davDlRemote;   // remote paths still to fetch
+std::vector<String> g_davDlLocal;    // matching SD destinations
+String g_davDlCurrent = "";     // file in flight, for the status endpoint
+int    g_davDlDone = 0, g_davDlTotal = 0;
+String g_davDlError   = "";
+uint32_t g_davDlBytes = 0;
+
+// Prefetch: after a DAV insert from a multi-disk folder, mirror the rest of
+// the set while disk 1 plays — the next swap then comes off the card.
+bool cfg_dav_prefetch = true;   // DAV_PREFETCH=0 switches it off
 String web_pending_dav_name = "";   // DAV display name for loading screen
 
 // ── Global "Now Playing" state ──────────────────────────────────────────
@@ -1474,6 +1492,8 @@ void loadConfig() {
       cfg_display_flip = (val == "1" || val == "true");
     } else if (key == "POWER_SAVE") {
       cfg_power_save = (val == "1" || val == "true") ? 1 : 0;
+    } else if (key == "DAV_PREFETCH") {
+      cfg_dav_prefetch = !(val == "0" || val == "OFF" || val == "false");
     } else if (key == "MDNS_NAME") {
       val.trim();
       val.replace(" ", "-");
@@ -1507,6 +1527,7 @@ void saveConfig() {
   f.println("DISPLAY_FLIP=" + String(cfg_display_flip ? "1" : "0"));
   f.println("POWER_SAVE=" + String(cfg_power_save ? "1" : "0"));
   f.println("MDNS_NAME=" + cfg_mdns_name);
+  f.println("DAV_PREFETCH=" + String(cfg_dav_prefetch ? "1" : "0"));
 
   // WiFi settings
   f.println("WIFI_ENABLED=" + String(cfg_wifi_enabled ? "1" : "0"));
@@ -6387,6 +6408,92 @@ void loop() {
   // Let a quiet DAV pool give its ~50 KB of internal heap back; see dropIdle().
   davClient.dropIdle();
 
+  // ── DAV -> SD mirror worker: one step per pass ──
+  // Never runs while an insert is queued: the game the user is waiting for
+  // always wins from the game the card is merely collecting.
+  if (g_davDlFolder.length() > 0 && web_pending_dav_path.length() == 0 &&
+      web_pending_sd_load < 0) {
+    if (!g_davDlListed) {
+      // First pass: list the folder once and build the fetch queue.
+      DAVEntryList entries;
+      bool ok = false;
+      try { ok = davClient.listDir(g_davDlFolder, entries); }
+      catch (const std::bad_alloc &) { entries.clear(); }
+      if (!ok) {
+        g_davDlError = "listing failed: " + davClient.lastError();
+        sdLog("DAV mirror: " + g_davDlError);
+        g_davDlFolder = "";
+      } else {
+        String folderName = g_davDlFolder;
+        if (folderName.endsWith("/")) folderName = folderName.substring(0, folderName.length() - 1);
+        const int sl = folderName.lastIndexOf('/');
+        if (sl >= 0) folderName = folderName.substring(sl + 1);
+
+        // Destination library follows the disks found, not the current mode:
+        // mirroring a DSK game while browsing in ADF mode must not misfile it.
+        String modeDir = (g_mode == MODE_ADF) ? "/ADF" : "/DSK";
+        for (size_t i = 0; i < entries.size(); i++) {
+          String nm = entries[i].name();
+          String low = nm; low.toLowerCase();
+          if (low.endsWith(".adf")) { modeDir = "/ADF"; break; }
+          if (low.endsWith(".dsk")) { modeDir = "/DSK"; break; }
+        }
+
+        g_davDlRemote.clear(); g_davDlLocal.clear();
+        String base = g_davDlFolder;
+        if (!base.endsWith("/")) base += "/";
+        for (size_t i = 0; i < entries.size(); i++) {
+          if (entries[i].isDir) continue;
+          if (entries[i].size > 4UL * 1024 * 1024) continue;   // nothing in a game folder is this big
+          const String nm = entries[i].name();
+          const String dst = modeDir + "/" + folderName + "/" + nm;
+          // Resume-friendly: an SD copy of the right size is already done.
+          File ex = SD_MMC.open(dst.c_str(), FILE_READ);
+          if (ex) {
+            const bool same = ((uint32_t)ex.size() == entries[i].size);
+            ex.close();
+            if (same) continue;
+          }
+          g_davDlRemote.push_back(base + nm);
+          g_davDlLocal.push_back(dst);
+        }
+        g_davDlTotal = (int)g_davDlRemote.size();
+        g_davDlDone = 0;
+        g_davDlError = "";
+        g_davDlListed = true;
+        sdLog("DAV mirror: " + folderName + " -> " + modeDir + ", " +
+              String(g_davDlTotal) + " file(s) to fetch");
+        if (g_davDlTotal == 0) { g_davDlFolder = ""; g_davDlListed = false; }
+      }
+    } else if (!g_davDlRemote.empty()) {
+      // Fetch exactly one file, then hand the loop back.
+      const String remote = g_davDlRemote.back();
+      const String dst  = g_davDlLocal.back();
+      g_davDlRemote.pop_back();
+      g_davDlLocal.pop_back();
+      g_davDlCurrent = filenameOnly(dst);
+      BacklightDip _dip;   // same 5V courtesy every transfer pays
+      const long got = davClient.downloadFile(remote, dst);
+      if (got <= 0) {
+        g_davDlError = g_davDlCurrent + ": " + davClient.lastError();
+        sdLog("DAV mirror: FAILED " + g_davDlError);
+      } else {
+        g_davDlDone++;
+        g_davDlBytes += (uint32_t)got;
+        sdLog("DAV mirror: " + g_davDlCurrent + " (" + String(got / 1024) + " KB, " +
+              String(g_davDlDone) + "/" + String(g_davDlTotal) + ")");
+      }
+      g_davDlCurrent = "";
+      if (g_davDlRemote.empty()) {
+        // Done: the game now exists in the SD library like any other.
+        g_davDlFolder = "";
+        g_davDlListed = false;
+        refreshGameList();
+        sdLog("DAV mirror: complete, library rescanned");
+      }
+    }
+  }
+
   // ── Periodic heap / PSRAM trace ──
   // Random reboots are usually caused by either a watchdog (loop blocked) or
   // an OOM crash from a slow leak. Logging the free heap + PSRAM once a
@@ -6512,6 +6619,20 @@ void loop() {
       }
 
       dav_pending_detail_nav = nowPlaying.davFolderIndex;
+
+      // Prefetch: while disk 1 spins on the Amiga, quietly mirror the whole
+      // set (plus notes and cover) to the card. The next disk swap of this
+      // game loads from SD, and the game survives the server going away.
+      if (cfg_dav_prefetch && g_davDlFolder.length() == 0) {
+        String folder = remotePath;
+        const int fsl = folder.lastIndexOf('/');
+        if (fsl > 0) {
+          folder = folder.substring(0, fsl);
+          g_davDlFolder = folder;
+          g_davDlListed = false;
+          sdLog("DAV mirror: prefetch queued for " + folder);
+        }
+      }
     }
   }
 

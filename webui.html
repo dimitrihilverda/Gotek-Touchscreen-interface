@@ -370,6 +370,14 @@ textarea{min-height:80px;resize:vertical}
       <label>WebDAV Base Path</label>
       <input type="text" name="DAV_PATH" id="cfg-dav-path" placeholder="/remote.php/webdav/" value="/remote.php/webdav/">
 
+      <div class="needs-sd">
+      <label>Prefetch multi-disk games to SD</label>
+      <select name="DAV_PREFETCH" id="cfg-dav-prefetch">
+        <option value="1">On &mdash; mirror the rest of the set while disk 1 plays</option>
+        <option value="0">Off</option>
+      </select>
+      </div>
+
       </div>
 
       <!-- Settings of the mesarim panel firmware (the joint tree). Values are
@@ -626,7 +634,9 @@ textarea{min-height:80px;resize:vertical}
     </div>
     <div id="dav-modal-disks" style="margin-bottom:8px"></div>
     <div id="dav-modal-nfo" style="margin-bottom:8px"></div>
+    <div id="dav-mirror-status" style="font-size:12px;color:var(--muted);margin-bottom:6px"></div>
     <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-primary needs-sd" onclick="davSaveToSd()" title="Download every disk, the notes and the cover of this game into the SD library">Save to SD</button>
       <button class="btn" onclick="davCloseFolderModal()">Close</button>
     </div>
   </div>
@@ -987,6 +997,8 @@ async function loadConfig() {
   document.getElementById('cfg-dav-user').value = cfg.DAV_USER || '';
   document.getElementById('cfg-dav-pass').value = cfg.DAV_PASS || '';
   document.getElementById('cfg-dav-path').value = cfg.DAV_PATH || '/remote.php/webdav/';
+  const pf = document.getElementById('cfg-dav-prefetch');
+  if (pf) pf.value = (cfg.DAV_PREFETCH === '0') ? '0' : '1';
 
   // Panel Options (the mesarim tree): fill whatever the device reports.
   ['CAROUSEL','SCREENSAVER','SSMODE','SSTIME','SSFAV','LANG','FONT','ROTATE',
@@ -1057,6 +1069,105 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
     toast('Configuration saved!');
   }
 });
+
+// ── Browser-side DAV cache ────────────────────────────────────────────────
+// The dongles have no SD card, so every NFO and cover normally costs a TLS
+// round trip through the device. The browser, however, has plenty of storage:
+// NFO texts and the last dozen covers live in localStorage, keyed by remote
+// path. A device with a card benefits too — reopening a game is instant.
+const DAV_NFO_TTL = 7 * 24 * 3600 * 1000;   // notes rarely change
+
+function davNfoCached(path) {
+  try {
+    const raw = localStorage.getItem('davnfo:' + path);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (Date.now() - o.ts > DAV_NFO_TTL) return null;
+    return o.t;
+  } catch (_) { return null; }
+}
+function davNfoStore(path, text) {
+  try { localStorage.setItem('davnfo:' + path, JSON.stringify({ t: text, ts: Date.now() })); }
+  catch (_) { /* storage full or blocked — caching is a bonus, never a failure */ }
+}
+
+// Covers: fetch once, keep as a data-URL, evict oldest beyond a dozen. A
+// 60 KB JPEG is ~80 KB base64; a dozen stays well under the 5 MB budget.
+async function davCoverInto(imgEl, url, key) {
+  const k = 'davcov:' + key;
+  try {
+    const hit = localStorage.getItem(k);
+    if (hit) {
+      const o = JSON.parse(hit);
+      imgEl.src = o.d;
+      try { o.ts = Date.now(); localStorage.setItem(k, JSON.stringify(o)); } catch (_) {}
+      return;
+    }
+  } catch (_) {}
+  try {
+    const r = await fetch(url);
+    if (!r.ok) { imgEl.dispatchEvent(new Event('error')); return; }
+    const blob = await r.blob();
+    const dataUrl = await new Promise(res => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.readAsDataURL(blob);
+    });
+    imgEl.src = dataUrl;
+    if (dataUrl.length < 260000) {
+      try {
+        localStorage.setItem(k, JSON.stringify({ d: dataUrl, ts: Date.now() }));
+        // LRU: keep the twelve most recently seen covers.
+        const covers = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const kk = localStorage.key(i);
+          if (kk && kk.startsWith('davcov:')) {
+            try { covers.push({ k: kk, ts: JSON.parse(localStorage.getItem(kk)).ts || 0 }); }
+            catch (_) { covers.push({ k: kk, ts: 0 }); }
+          }
+        }
+        covers.sort((a, b) => b.ts - a.ts).slice(12).forEach(c => localStorage.removeItem(c.k));
+      } catch (_) {}
+    }
+  } catch (_) { imgEl.dispatchEvent(new Event('error')); }
+}
+
+// ── DAV -> SD mirror: button + progress ──────────────────────────────────
+let davMirrorTimer = null;
+async function davSaveToSd() {
+  const path = window.davDetailFolderPath || '';
+  if (!path) return;
+  try {
+    const r = await fetch(API + '/api/dav/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'path=' + encodeURIComponent(path)
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(j.error || 'Could not start the download', 'error'); return; }
+    toast('Saving to SD in the background');
+    davMirrorWatch();
+  } catch (e) { toast('Could not start the download', 'error'); }
+}
+
+function davMirrorWatch() {
+  const el = document.getElementById('dav-mirror-status');
+  if (davMirrorTimer) clearInterval(davMirrorTimer);
+  davMirrorTimer = setInterval(async () => {
+    try {
+      const st = await api('/api/dav/download/status');
+      if (st.active) {
+        if (el) el.textContent = 'Saving to SD: ' + st.done + '/' + st.total +
+                                 (st.current ? ' \u2014 ' + st.current : '');
+      } else {
+        clearInterval(davMirrorTimer);
+        davMirrorTimer = null;
+        if (el) el.textContent = st.error ? ('Save to SD: ' + st.error) : '';
+        if (!st.error && st.total > 0) toast('Game saved to the SD library');
+      }
+    } catch (_) { /* device busy; try again next tick */ }
+  }, 2000);
+}
 
 // WiFi scan
 async function scanNetworks() {
@@ -2966,10 +3077,13 @@ async function davRenderNowPlaying() {
   const cover = document.createElement('img');
   cover.className = 'game-cover';
   cover.loading = 'lazy';
-  cover.src = API + '/api/dav/cover?path=' +
-              encodeURIComponent(folderPath + '/' + folderName + '.jpg');
-  // The device keeps only the mounted game's art; a miss just hides it.
+  // The device keeps only the mounted game's art; a miss just hides it. The
+  // browser cache means a previously seen cover shows even when the device
+  // no longer holds it — which on a dongle is every game but the current one.
   cover.addEventListener('error', () => cover.remove());
+  davCoverInto(cover, API + '/api/dav/cover?path=' +
+               encodeURIComponent(folderPath + '/' + folderName + '.jpg'),
+               folderPath + '/' + folderName + '.jpg');
   head.appendChild(cover);
 
   const label = document.createElement('div');
@@ -3039,8 +3153,9 @@ async function davOpenFolder(folderPath, folderName) {
   // Cover
   const coverImg = document.getElementById('dav-modal-cover');
   let coverUrl = API + '/api/dav/cover?path=' + encodeURIComponent(folderPath + '/' + folderName + '.jpg');
-  coverImg.src = coverUrl;
   coverImg.style.display = 'block';
+  window.davDetailFolderPath = folderPath;   // for the Save-to-SD button
+  davCoverInto(coverImg, coverUrl, folderPath + '/' + folderName + '.jpg');
   // No .png retry: the device resolves the extension itself, so a 404 here
   // genuinely means there is no cover yet.
   coverImg.onerror = function() { this.style.display = 'none'; };
@@ -3114,7 +3229,12 @@ async function davOpenFolder(folderPath, folderName) {
     const nfoEl = document.getElementById('dav-modal-nfo');
     if (nfoFile) {
       try {
-        const nfoData = await api('/api/dav/nfo?path=' + encodeURIComponent(folderPath + '/' + nfoFile.name));
+        const nfoPath = folderPath + '/' + nfoFile.name;
+        const cachedNfo = davNfoCached(nfoPath);
+        const nfoData = cachedNfo !== null
+          ? { nfo: cachedNfo }
+          : await api('/api/dav/nfo?path=' + encodeURIComponent(nfoPath));
+        if (cachedNfo === null && nfoData && typeof nfoData.nfo === 'string') davNfoStore(nfoPath, nfoData.nfo);
         if (myToken !== davDetailToken) return;   // superseded while fetching
         // The endpoint returns {"nfo": "..."}. This read .content, so DAV
         // notes were silently blank in the web UI no matter what the file said.

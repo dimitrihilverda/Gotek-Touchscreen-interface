@@ -690,6 +690,38 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
+  // Mirror a whole DAV game folder into the SD library. Queued; the worker in
+  // loop() fetches one file per pass so this request returns immediately.
+  if (req.path == "/api/dav/download" && req.method == "POST") {
+    const String folder = getFormValue(req.body, "path");
+    if (folder.length() == 0) {
+      sendJSON(client, 400, "{\"error\":\"No path given\"}");
+    } else if (g_davDlFolder.length() > 0) {
+      sendJSON(client, 409, "{\"error\":\"Already mirroring " +
+                            jsonEscape(g_davDlFolder) + "\"}");
+    } else {
+      g_davDlFolder = folder;
+      g_davDlListed = false;
+      g_davDlError = "";
+      sdLog("DAV mirror: queued by web: " + folder);
+      sendJSON(client, 200, "{\"status\":\"ok\"}");
+    }
+    return;
+  }
+
+  if (req.path == "/api/dav/download/status" && req.method == "GET") {
+    String j = "{\"active\":" + String(g_davDlFolder.length() > 0 ? "true" : "false");
+    j += ",\"folder\":\"" + jsonEscape(g_davDlFolder) + "\"";
+    j += ",\"current\":\"" + jsonEscape(g_davDlCurrent) + "\"";
+    j += ",\"done\":" + String(g_davDlDone);
+    j += ",\"total\":" + String(g_davDlTotal);
+    j += ",\"bytes\":" + String(g_davDlBytes);
+    if (g_davDlError.length() > 0) j += ",\"error\":\"" + jsonEscape(g_davDlError) + "\"";
+    j += "}";
+    sendJSON(client, 200, j);
+    return;
+  }
+
   if (req.path == "/api/upload/progress" && req.method == "GET") {
     handleUploadProgress(client);
     return;

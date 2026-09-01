@@ -398,6 +398,7 @@ void handleConfigGet(WiFiClient &client) {
   json += "\"WIFI_TX_DBM\":\"" + String(cfg_wifi_tx_dbm) + "\",";
   json += "\"POWER_SAVE\":\"" + String(cfg_power_save ? "1" : "0") + "\",";
   json += "\"MDNS_NAME\":\"" + jsonEscape(cfg_mdns_name) + "\",";
+  json += "\"DAV_PREFETCH\":\"" + String(cfg_dav_prefetch ? "1" : "0") + "\",";
   json += "\"LOG_ENABLED\":\"" + String(cfg_log_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_ENABLED\":\"" + String(cfg_wifi_enabled ? "1" : "0") + "\",";
   json += "\"WIFI_SSID\":\"" + jsonEscape(cfg_wifi_ssid) + "\",";
@@ -443,6 +444,11 @@ void handleConfigPost(WiFiClient &client, const String &body) {
   if (body.indexOf("POWER_SAVE=") >= 0) {
     String v = getFormValue(body, "POWER_SAVE");
     cfg_power_save = (v == "1" || v == "true") ? 1 : 0;
+  }
+
+  if (body.indexOf("DAV_PREFETCH=") >= 0) {
+    String v = getFormValue(body, "DAV_PREFETCH");
+    cfg_dav_prefetch = !(v == "0" || v == "OFF" || v == "false");
   }
 
   if (body.indexOf("MDNS_NAME=") >= 0) {
@@ -2018,6 +2024,31 @@ void handleDAVLoad(WiFiClient &client, const String &body) {
   if (lastSlash >= 0) displayName = displayName.substring(lastSlash + 1);
   int dotIdx = displayName.lastIndexOf('.');
   if (dotIdx > 0) displayName = displayName.substring(0, dotIdx);
+
+  // Mirror first: if this exact file was already saved to the SD library
+  // (by the prefetch worker or the Save-to-SD button), load it as a plain SD
+  // game — instant, offline-proof, and with full save-writeback semantics,
+  // because from here on it IS a plain SD game. The remote path maps to
+  // /<mode>/<folder>/<file>, which is exactly where the mirror worker put it.
+  {
+    String folder = remotePath;
+    String fname  = remotePath;
+    const int ls = folder.lastIndexOf('/');
+    if (ls >= 0) { fname = folder.substring(ls + 1); folder = folder.substring(0, ls); }
+    const int ps = folder.lastIndexOf('/');
+    if (ps >= 0) folder = folder.substring(ps + 1);
+    const String mirror1 = "/ADF/" + folder + "/" + fname;
+    const String mirror2 = "/DSK/" + folder + "/" + fname;
+    for (int i = 0; i < (int)file_list.size(); i++) {
+      if (file_list[i] == mirror1 || file_list[i] == mirror2) {
+        web_pending_sd_load = i;
+        sdLog("DAV load: serving " + fname + " from the SD mirror");
+        sendJSON(client, 200, "{\"status\":\"ok\",\"name\":\"" + jsonEscape(displayName) +
+                              "\",\"file\":\"" + jsonEscape(fname) + "\",\"source\":\"sd-mirror\"}");
+        return;
+      }
+    }
+  }
 
   Serial.println("Web DAV load (deferred): " + remotePath);
 
