@@ -697,6 +697,11 @@ void handleHttpRequest(WiFiClient &client) {
     delay(250);
     client.stop();
     delay(250);
+    // Both mechanisms: the RTC magic covers a plain restart (already on the
+    // PC), the marker file covers the cable moving to the PC — power loss
+    // wipes RTC memory, and moving the cable is the normal flow.
+    File req = SD_MMC.open("/SDACCESS.REQ", "w");
+    if (req) { req.print("1"); req.close(); }
     g_sdAccessMagic = SDACCESS_MAGIC;
     ESP.restart();
     return;

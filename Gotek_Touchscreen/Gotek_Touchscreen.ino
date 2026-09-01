@@ -6132,6 +6132,21 @@ size_t loadFileFromDAV(const String &remotePath, const String &displayName) {
 #include "webserver.h"
 #include "power_save.h"
 
+static bool sdReadRetry(uint8_t *buf, uint32_t sector) {
+  for (int t = 0; t < 4; t++) {
+    if (SD_MMC.readRAW(buf, sector)) return true;
+    delay(5 + t * 10);
+  }
+  return false;
+}
+static bool sdWriteRetry(uint8_t *buf, uint32_t sector) {
+  for (int t = 0; t < 4; t++) {
+    if (SD_MMC.writeRAW(buf, sector)) return true;
+    delay(5 + t * 10);
+  }
+  return false;
+}
+
 static int32_t onReadSD(uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize) {
   // The host reads in whole sectors; an offset would mean a partial one.
   static uint8_t sec[512];
@@ -6143,9 +6158,9 @@ static int32_t onReadSD(uint32_t lba, uint32_t offset, void *buffer, uint32_t bu
     uint32_t take = 512 - o;
     if (take > bufsize - done) take = bufsize - done;
     if (o == 0 && take == 512) {
-      if (!SD_MMC.readRAW(out + done, s)) return -1;
+      if (!sdReadRetry(out + done, s)) return -1;
     } else {
-      if (!SD_MMC.readRAW(sec, s)) return -1;
+      if (!sdReadRetry(sec, s)) return -1;
       memcpy(out + done, sec + o, take);
     }
     done += take;
@@ -6162,11 +6177,11 @@ static int32_t onWriteSD(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_
     uint32_t take = 512 - o;
     if (take > bufsize - done) take = bufsize - done;
     if (o == 0 && take == 512) {
-      if (!SD_MMC.writeRAW(buffer + done, s)) return -1;
+      if (!sdWriteRetry(buffer + done, s)) return -1;
     } else {
-      if (!SD_MMC.readRAW(sec, s)) return -1;
+      if (!sdReadRetry(sec, s)) return -1;
       memcpy(sec + o, buffer + done, take);
-      if (!SD_MMC.writeRAW(sec, s)) return -1;
+      if (!sdWriteRetry(sec, s)) return -1;
     }
     done += take;
   }
@@ -6174,9 +6189,13 @@ static int32_t onWriteSD(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_
 }
 
 // Never returns except through ESP.restart().
-static void runSDAccessMode() {
+static void runSDAccessMode(bool sdReady) {
   Serial.println("SD ACCESS MODE");
-  init_sd_card();
+  if (!sdReady) init_sd_card();
+  // Read-only, and exactly why it happens BEFORE the display: without it the
+  // screen ignores DISPLAY_FLIP and greets a flipped panel upside-down —
+  // which is how Dimmy first saw this screen.
+  loadConfig();
   displayInit();
   setBacklight(cfg_backlight);
 
@@ -6187,7 +6206,8 @@ static void runSDAccessMode() {
   gfx_setTextSize(2);
   gfx_setTextColor(TFT_WHITE, TFT_BLACK);
   gfx_setCursor(24, 120); gfx_print("The SD card is a USB drive now.");
-  gfx_setCursor(24, 150); gfx_print("Plug the USB into a computer.");
+  gfx_setCursor(24, 150); gfx_print("Not on a computer? Unplug and move");
+  gfx_setCursor(24, 175); gfx_print("the cable - the mode survives it.");
   gfx_setTextColor(TFT_YELLOW, TFT_BLACK);
   gfx_setCursor(24, 210); gfx_print("Tap the screen to go back");
   gfx_setCursor(24, 240); gfx_print("to normal operation.");
@@ -6199,13 +6219,40 @@ static void runSDAccessMode() {
   msc.productRevision("1.0");
   msc.onRead(onReadSD);
   msc.onWrite(onWriteSD);
+  // "Safely remove hardware" on the PC is an exit too — an eject restarts
+  // the panel. Belt and braces: the first field test ended with a tap that
+  // did nothing and no way to tell whether the loop or the touch was dead.
+  static volatile bool s_sdaEject = false;
+  msc.onStartStop([](uint8_t, bool start, bool load_eject) -> bool {
+    if (load_eject && !start) s_sdaEject = true;
+    return true;
+  });
   msc.mediaPresent(true);
   msc.begin(sectors, 512);
   USB.begin();
   Serial.printf("SD over USB: %lu sectors\n", (unsigned long)sectors);
 
   uint16_t px, py;
+  uint32_t lastBeat = 0;
+  bool beatOn = false;
   for (;;) {
+    // A visibly blinking dot: proof the loop is alive, so a dead tap can
+    // never again masquerade as a dead device.
+    if (millis() - lastBeat > 700) {
+      lastBeat = millis();
+      beatOn = !beatOn;
+      gfx_fillRect(8, 8, 10, 10, beatOn ? TFT_GREEN : TFT_BLACK);
+      gfx_flush();
+    }
+    if (s_sdaEject) {
+      gfx_fillScreen(TFT_BLACK);
+      gfx_setTextSize(2);
+      gfx_setTextColor(TFT_WHITE, TFT_BLACK);
+      gfx_setCursor(24, 140); gfx_print("Ejected - rebooting...");
+      gfx_flush();
+      delay(500);
+      ESP.restart();
+    }
     if (touchRead(&px, &py)) {
       // Give the host a heartbeat to finish an in-flight write, then leave.
       gfx_fillScreen(TFT_BLACK);
@@ -6234,7 +6281,7 @@ void setup() {
     g_sdAccessMagic = 0;
     Serial.begin(115200);
     delay(200);
-    runSDAccessMode();   // never returns
+    runSDAccessMode(false);   // never returns
   }
 
   Serial.begin(115200);
@@ -6248,6 +6295,15 @@ void setup() {
   // a flipped display would render the splash upside-down.
   init_sd_card();
   Serial.println("SD card initialized");
+
+  // SD access requested before a power move: the web button writes this
+  // marker precisely because RTC memory dies with the cable swap. Removed
+  // here, before USB starts — we still own the card at this point.
+  if (SD_MMC.exists("/SDACCESS.REQ")) {
+    SD_MMC.remove("/SDACCESS.REQ");
+    runSDAccessMode(true);   // never returns
+  }
+
   firstBootScaffold();
   ensureAmiCrushInstalled();  // idempotent — reaches pre-v0.11.2 SDs too
   ensureDefaultThemeStyle();  // idempotent — makes the shipped theme editable
