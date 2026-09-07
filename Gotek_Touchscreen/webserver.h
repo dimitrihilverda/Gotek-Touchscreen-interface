@@ -707,6 +707,39 @@ void handleHttpRequest(WiFiClient &client) {
     return;
   }
 
+  // ── Wireless fleet: Webby dongles heard on UDP 51703 (see fleet.h) ──
+  if (req.path == "/api/fleet" && req.method == "GET") {
+    const bool busy = g_fleetBusy || g_fleetSendIp.length() > 0 || g_fleetCmdIp.length() > 0;
+    sendJSON(client, 200, fleetRosterJson(cfg_mdns_name, busy, g_fleetLastTarget, g_fleetLastResult));
+    return;
+  }
+  if (req.path == "/api/fleet/send" && req.method == "POST") {
+    const String ip = getFormValue(req.body, "ip");
+    const long   tp = getFormValue(req.body, "tcp").toInt();
+    if (ip.length() == 0) { sendJSON(client, 400, "{\"error\":\"No ip given\"}"); return; }
+    if (g_fleetBusy || g_fleetSendIp.length() > 0 || g_fleetCmdIp.length() > 0) {
+      sendJSON(client, 409, "{\"error\":\"Fleet operation already running\"}");
+      return;
+    }
+    g_fleetSendTcp = (tp > 0 && tp < 65536) ? (uint16_t)tp : FLEET_TCP_PORT;
+    g_fleetSendIp  = ip;   // set last: loop() triggers on it
+    sendJSON(client, 200, "{\"status\":\"queued\"}");
+    return;
+  }
+  if (req.path == "/api/fleet/cmd" && req.method == "POST") {
+    const String ip  = getFormValue(req.body, "ip");
+    const long   cmd = getFormValue(req.body, "cmd").toInt();
+    if (ip.length() == 0 || cmd < 1 || cmd > 4) { sendJSON(client, 400, "{\"error\":\"Need ip and cmd 1-4\"}"); return; }
+    if (g_fleetBusy || g_fleetSendIp.length() > 0 || g_fleetCmdIp.length() > 0) {
+      sendJSON(client, 409, "{\"error\":\"Fleet operation already running\"}");
+      return;
+    }
+    g_fleetCmd   = (uint8_t)cmd;
+    g_fleetCmdIp = ip;
+    sendJSON(client, 200, "{\"status\":\"queued\"}");
+    return;
+  }
+
   // Mirror a whole DAV game folder into the SD library. Queued; the worker in
   // loop() fetches one file per pass so this request returns immediately.
   if (req.path == "/api/dav/download" && req.method == "POST") {
@@ -931,10 +964,6 @@ void handleHttpRequest(WiFiClient &client) {
       prefix = urlDecode(prefix);
     }
     handleDAVRowMeta(client, prefix);
-    return;
-  }
-  if (req.path == "/api/dav/download" && req.method == "POST") {
-    handleDAVDownload(client, req.body);
     return;
   }
   if (req.path == "/api/dav/load" && req.method == "POST") {

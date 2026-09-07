@@ -172,6 +172,15 @@ textarea{min-height:80px;resize:vertical}
     </p>
     <button class="btn btn-primary" id="install-btn">Add to Home Screen</button>
   </div>
+
+  <div class="card" id="fleet-card" style="display:none">
+    <h2>Wireless Fleet</h2>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+      Webby dongles heard on this network. Fling pushes the disk currently in
+      this panel's drive to a dongle over the LAN.
+    </p>
+    <div id="fleet-list"></div>
+  </div>
 </div>
 
 <!-- CONFIG -->
@@ -819,7 +828,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById('view-' + tab.dataset.view).classList.remove('hidden');
 
-    if (tab.dataset.view === 'dashboard') loadDashboard();
+    if (tab.dataset.view === 'dashboard') { loadDashboard(); fleetPoll(); }
     if (tab.dataset.view === 'config') loadConfig();
     if (tab.dataset.view === 'games') loadGames();
     if (tab.dataset.view === 'ftp') ftpLoadStatus();
@@ -910,6 +919,66 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ═══════════════ DASHBOARD ═══════════════
+
+// ── Wireless fleet (dashboard card) ──
+// The card only appears when /api/fleet answers AND has heard a dongle, so
+// dongles serving this same shared page (their firmware has no /api/fleet)
+// and lonely panels both stay clean.
+async function fleetPoll() {
+  let d;
+  try { d = await api('/api/fleet'); } catch (_) { return; }
+  const card = document.getElementById('fleet-card');
+  const host = document.getElementById('fleet-list');
+  if (!d.devices || d.devices.length === 0) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  host.innerHTML = d.devices.map(p =>
+    `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+       <div style="flex:1;min-width:180px">
+         <strong>${esc(p.name || p.id)}</strong>
+         <span style="color:var(--muted);font-size:12px"> ${esc(p.board || '')} · ${esc(p.fw || '')} · ${esc(p.ip)}</span><br>
+         <span style="font-size:12px;color:${p.loaded ? 'var(--green)' : 'var(--muted)'}">${p.loaded ? '● ' + esc(p.disk || 'disk loaded') : 'empty drive'}</span>
+       </div>
+       <button class="btn btn-sm" ${d.busy ? 'disabled' : ''} onclick="fleetFling('${esc(p.ip)}',${p.tcp || 3333},'${esc(p.name || p.ip)}')">Fling disk</button>
+       <button class="btn btn-sm" ${d.busy || !p.loaded ? 'disabled' : ''} onclick="fleetEject('${esc(p.ip)}','${esc(p.name || p.ip)}')">Eject</button>
+       <a class="btn btn-sm" href="http://${esc(p.ip)}" target="_blank" rel="noopener">Open</a>
+     </div>`).join('');
+}
+
+async function fleetWait(ip, verb) {
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    let d;
+    try { d = await api('/api/fleet'); } catch (_) { continue; }
+    if (!d.busy && d.last_target === ip) {
+      toast(d.last_result === 'ok' ? verb + ' done' : verb + ' failed: ' + d.last_result);
+      fleetPoll();
+      return;
+    }
+  }
+  toast(verb + ': no result after 40 s');
+}
+
+async function fleetFling(ip, tcp, name) {
+  if (!confirm('Fling the currently loaded disk to ' + name + '?')) return;
+  const params = new URLSearchParams({ ip: ip, tcp: String(tcp) });
+  try { await api('/api/fleet/send', { method: 'POST', body: params }); }
+  catch (e) { toast('Fling refused: ' + (e.message || 'error')); return; }
+  toast('Flinging to ' + name + '…');
+  fleetWait(ip, 'Fling');
+}
+
+async function fleetEject(ip, name) {
+  const params = new URLSearchParams({ ip: ip, cmd: '3' });
+  try { await api('/api/fleet/cmd', { method: 'POST', body: params }); }
+  catch (e) { toast('Eject refused: ' + (e.message || 'error')); return; }
+  fleetWait(ip, 'Eject');
+}
+
+setInterval(() => {
+  const v = document.getElementById('view-dashboard');
+  if (v && !v.classList.contains('hidden')) fleetPoll();
+}, 15000);
+fleetPoll();
 
 async function loadDashboard() {
   const d = await api('/api/system/info');

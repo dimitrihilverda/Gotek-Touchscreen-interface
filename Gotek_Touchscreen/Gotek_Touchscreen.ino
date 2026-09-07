@@ -125,7 +125,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.047"
+#define FW_INTERNAL "release.048"
 
 using std::vector;
 using std::sort;
@@ -634,6 +634,7 @@ void sdLog(const String &msg);
 // FTP and WebDAV clients (included here so types are available for state vars below)
 #include "ftp_client.h"
 #include "webdav_client.h"
+#include "fleet.h"
 
 // The one place this product's settings become the client's settings. Called
 // at boot and after every edit; forgetting a call site means the client keeps
@@ -6639,6 +6640,9 @@ void loop() {
   // Let a quiet DAV pool give its ~50 KB of internal heap back; see dropIdle().
   davClient.dropIdle();
 
+  // Hear Webby dongle beacons (UDP 51703) so /api/fleet has a roster.
+  fleetService();
+
   // ── DAV -> SD mirror worker: one step per pass ──
   // Never runs while an insert is queued: the game the user is waiting for
   // always wins from the game the card is merely collecting.
@@ -6769,6 +6773,40 @@ void loop() {
 
   // ── Deferred web-triggered SD load ──
   // HTTP handler sets the index, main loop does the actual work
+  // Fleet worker: one queued FLING or command per pass, executed here per
+  // the non-blocking rule. The labeled dip keeps the background work visible
+  // on the panel (the no-dark-unresponsive-screen rule).
+  if (g_fleetCmdIp.length() > 0) {
+    const String  ip  = g_fleetCmdIp;  g_fleetCmdIp = "";
+    const uint8_t cmd = g_fleetCmd;    g_fleetCmd   = 0;
+    g_fleetBusy = true;
+    String err;
+    const bool ok = fleetSendCommand(ip, FLEET_TCP_PORT, cmd, err);
+    g_fleetLastTarget = ip;
+    g_fleetLastResult = ok ? "ok" : err;
+    g_fleetBusy = false;
+    sdLog("FLEET: cmd 0x" + String(cmd, HEX) + " to " + ip + " -> " + g_fleetLastResult);
+  }
+  if (g_fleetSendIp.length() > 0) {
+    const String   ip = g_fleetSendIp;  g_fleetSendIp = "";
+    const uint16_t tp = g_fleetSendTcp;
+    g_fleetBusy = true;
+    if (g_mountBytes == 0 || ram_disk == NULL) {
+      g_fleetLastTarget = ip;
+      g_fleetLastResult = "no disk loaded";
+    } else {
+      String dipLabel = "FLING TO " + ip;
+      BacklightDip _dip(dipLabel.c_str());
+      String err;
+      const bool ok = fleetSendDisk(ip, tp, ram_disk + DATA_OFFSET, g_mountBytes, err);
+      g_fleetLastTarget = ip;
+      g_fleetLastResult = ok ? "ok" : err;
+      sdLog("FLEET: fling " + g_mountFilename + " (" + String(g_mountBytes) +
+            "B) to " + ip + " -> " + g_fleetLastResult);
+    }
+    g_fleetBusy = false;
+  }
+
   if (web_pending_sd_load >= 0) {
     int targetIdx = web_pending_sd_load;
     web_pending_sd_load = -1;
