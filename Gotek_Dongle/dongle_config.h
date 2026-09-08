@@ -86,8 +86,8 @@ String  cfg_dav_pass    = "";
 String  cfg_dav_path    = "/";
 bool    cfg_dav_enabled = false;
 
-String  cfg_wifi_ssid   = "Gotek-Dongle";
-String  cfg_wifi_pass   = "retrogaming";
+String  cfg_wifi_ssid   = "GotekOMEGA";   // unified default (issue #12); uniquifier below appends -xx
+String  cfg_wifi_pass   = "gotek1234";
 bool    cfg_wifi_client_enabled = false;
 String  cfg_wifi_client_ssid = "";
 String  cfg_wifi_client_pass = "";
@@ -110,7 +110,7 @@ void loadConfig() {
   // Factory-unique defaults, derived before NVS is even opened — a truly
   // fresh chip takes the early return below and must already be unique by
   // then. Two dongles out of the box both called gotek-dongle.local, both
-  // broadcasting "Gotek-Dongle", is the mDNS coin flip twice over: the last
+  // broadcasting "GotekOMEGA", is the mDNS coin flip twice over: the last
   // two MAC octets make every device distinct, and anything the user ever
   // saved simply overrides these through the reads below.
   {
@@ -118,7 +118,7 @@ void loadConfig() {
     snprintf(suf, sizeof(suf), "%04X",
              (unsigned)((ESP.getEfuseMac() >> 32) & 0xFFFF));
     cfg_mdns_name = "gotek-" + String(suf);
-    cfg_wifi_ssid = "Gotek-Dongle-" + String(suf);
+    cfg_wifi_ssid = "GotekOMEGA-" + String(suf);
   }
 
   if (!prefs.begin(CFG_NS, true)) {   // read-only; absent on a fresh chip

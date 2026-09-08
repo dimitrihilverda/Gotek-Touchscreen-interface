@@ -12,7 +12,7 @@ A minimal WiFi-to-USB dongle that plugs into a Gotek's USB port. Send disk image
  └──────────────┘            └─────────────────────┘          └─────────┘
 ```
 
-1. The dongle creates a WiFi network (`Gotek-Dongle`, password `retrogaming`)
+1. The dongle creates a WiFi network (`GotekOMEGA`, password `gotek1234`)
 2. Connect your phone and open `http://192.168.4.1`
 3. Tap to select or drag & drop an ADF/DSK/IMG file
 4. The file streams directly into PSRAM (8MB available, floppy max 1.44MB)

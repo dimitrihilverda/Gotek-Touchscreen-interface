@@ -71,7 +71,7 @@ Preferences prefs;
 
 // WiFi AP config
 String cfg_wifi_ssid     = "Gotek-Dongle";
-String cfg_wifi_pass     = "retrogaming";
+String cfg_wifi_pass     = "gotek1234";
 uint8_t cfg_wifi_channel = 6;
 
 // WiFi Client (STA) config — connect to existing network
@@ -105,7 +105,7 @@ String wifi_sta_ip = "";
 void loadConfig() {
   prefs.begin("gotek", true);  // read-only
   cfg_wifi_ssid     = prefs.getString("ap_ssid", "Gotek-Dongle");
-  cfg_wifi_pass     = prefs.getString("ap_pass", "retrogaming");
+  cfg_wifi_pass     = prefs.getString("ap_pass", "gotek1234");
   cfg_wifi_channel  = prefs.getUChar("ap_chan", 6);
 
   cfg_wifi_client_enabled = prefs.getBool("sta_en", false);

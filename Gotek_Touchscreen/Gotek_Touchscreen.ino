@@ -120,12 +120,12 @@ static bool resetWasAbnormal(esp_reset_reason_t r) {
 // 16 KB costs 8 KB of internal RAM and removes a whole class of crash.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
-#define FW_VERSION "v0.25.3"
+#define FW_VERSION "v0.25.4"
 
 // Internal build tag — bumped every time the firmware is changed so you can
 // confirm you flashed the latest commit. Format mirrors the active branch name
 // (or "release" once a tag is cut).
-#define FW_INTERNAL "release.049"
+#define FW_INTERNAL "release.050"
 
 using std::vector;
 using std::sort;
@@ -474,8 +474,8 @@ String cfg_theme = "DEFAULT";   // active theme folder name
 
 // WiFi config — AP (always-on hotspot)
 bool   cfg_wifi_enabled = true;
-String cfg_wifi_ssid    = "Gotek-Setup";
-String cfg_wifi_pass    = "retrogaming";
+String cfg_wifi_ssid    = "GotekOMEGA";     // unified with the mesarim tree (issue #12): one brand, one login
+String cfg_wifi_pass    = "gotek1234";
 uint8_t cfg_wifi_channel = 6;
 
 // WiFi config — Client (connect to home network for internet)
@@ -564,7 +564,7 @@ bool boot_skip_wifi = false;
 // Remote dongle config — send disk images to a WiFi Dongle instead of local USB
 bool   cfg_remote_enabled  = false;
 String cfg_remote_ssid     = "Gotek-Dongle";   // dongle's WiFi AP name
-String cfg_remote_pass     = "retrogaming";     // dongle's WiFi password
+String cfg_remote_pass     = "gotek1234";     // dongle's WiFi password
 String cfg_remote_host     = "192.168.4.1";     // dongle's IP (default AP gateway)
 int    cfg_remote_port     = 80;
 

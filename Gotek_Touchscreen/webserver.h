@@ -7,7 +7,7 @@
   Pure WiFiServer implementation — zero external dependencies.
   Creates a WiFi AP for browser-based configuration and game management.
 
-  Default AP: SSID "Gotek-Setup", password "retrogaming", channel 6
+  Default AP: SSID "GotekOMEGA", password "gotek1234", channel 6 (unified with mesarim, issue #12)
   Web UI served from PROGMEM at http://192.168.4.1/
 */
 
