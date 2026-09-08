@@ -23,8 +23,8 @@ To enable remote mode, add these lines to `CONFIG.TXT` on the Touchscreen's SD c
 
 ```ini
 REMOTE_ENABLED=1
-REMOTE_SSID=Gotek-Dongle
-REMOTE_PASS=retrogaming
+REMOTE_SSID=GotekOMEGA
+REMOTE_PASS=gotek1234
 REMOTE_HOST=192.168.4.1
 ```
 
@@ -170,7 +170,7 @@ See the included `CONFIG.TXT` for all available options and documentation.
 The firmware includes a built-in WiFi Access Point that serves a browser-based management interface. When enabled (default), the ESP32 creates a WiFi network you can connect to from your phone or laptop.
 
 **Quick Start:**
-1. Connect to WiFi network `Gotek-Setup` (password: `retrogaming`)
+1. Connect to WiFi network `GotekOMEGA` (password: `gotek1234`)
 2. Open `http://192.168.4.1` in your browser
 3. You'll see a dashboard with four tabs: Dashboard, Config, Games, and Themes
 
@@ -183,8 +183,8 @@ The firmware includes a built-in WiFi Access Point that serves a browser-based m
 **WiFi Settings in CONFIG.TXT:**
 ```ini
 WIFI_ENABLED=1
-WIFI_SSID=Gotek-Setup
-WIFI_PASS=retrogaming
+WIFI_SSID=GotekOMEGA
+WIFI_PASS=gotek1234
 WIFI_CHANNEL=6
 ```
 
@@ -193,8 +193,8 @@ Set `WIFI_ENABLED=0` to disable the WiFi AP and save power/memory.
 **Remote Dongle Settings in CONFIG.TXT:**
 ```ini
 REMOTE_ENABLED=1
-REMOTE_SSID=Gotek-Dongle
-REMOTE_PASS=retrogaming
+REMOTE_SSID=GotekOMEGA
+REMOTE_PASS=gotek1234
 REMOTE_HOST=192.168.4.1
 REMOTE_PORT=80
 ```
