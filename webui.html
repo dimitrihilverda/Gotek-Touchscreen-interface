@@ -529,7 +529,8 @@ textarea{min-height:80px;resize:vertical}
     <div class="upload-zone" id="ota-zone">
       <strong>Drop a .bin firmware here</strong>
       <p>or click to browse &mdash; takes about a minute, do not remove power</p>
-      <input type="file" id="ota-input" accept=".bin" style="display:none">
+      <!-- no accept attr: iOS Safari ghosts all files on unknown extensions -->
+      <input type="file" id="ota-input" style="display:none">
     </div>
     <div class="progress-bar" id="ota-progress">
       <div class="progress-fill" id="ota-fill">0%</div>
@@ -544,7 +545,7 @@ textarea{min-height:80px;resize:vertical}
     <div class="upload-zone" id="upload-zone">
       <strong>Drop ADF/DSK files here</strong>
       <p>or click to browse — supports multiple disk images + JPG cover + NFO</p>
-      <input type="file" id="upload-input" multiple accept=".adf,.dsk,.img,.jpg,.jpeg,.png,.nfo" style="display:none">
+      <input type="file" id="upload-input" multiple style="display:none">
     </div>
     <div class="progress-bar" id="upload-progress">
       <div class="progress-fill" id="upload-fill">0%</div>
@@ -773,7 +774,7 @@ textarea{min-height:80px;resize:vertical}
     <div style="margin-top:8px">
       <label>Upload Cover Art</label>
       <div class="net-row">
-        <input type="file" id="modal-cover-input" accept=".jpg,.jpeg,.png" style="flex:1">
+        <input type="file" id="modal-cover-input" accept="image/*" style="flex:1">
         <button type="button" class="btn btn-sm btn-primary" id="modal-cover-upload-btn" disabled>Upload</button>
       </div>
       <div id="cover-upload-status" style="font-size:12px;color:var(--muted);margin-top:4px"></div>
@@ -1902,6 +1903,15 @@ function waitForReboot() {
 }
 
 async function handleUploadFiles(files) {
+  if (!files.length) return;
+
+  // The picker no longer filters (the accept attr made iOS ghost every
+  // file), so filter here and say what was skipped.
+  const ok = [], skipped = [];
+  for (const f of files)
+    (/\.(adf|dsk|img|jpg|jpeg|png|nfo)$/i.test(f.name) ? ok : skipped).push(f.name);
+  if (skipped.length) toast('Skipped (not .adf/.dsk/.img/.jpg/.png/.nfo): ' + skipped.join(', '));
+  files = Array.from(files).filter(f => /\.(adf|dsk|img|jpg|jpeg|png|nfo)$/i.test(f.name));
   if (!files.length) return;
 
   const progressBar = document.getElementById('upload-progress');
