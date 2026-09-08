@@ -79,7 +79,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 static const uint8_t AP_CHANNEL = 6;
 
 // Tracks the repo tag: two products, one number to quote.
-#define DONGLE_VERSION "v0.25.2"
+#define DONGLE_VERSION "v0.25.3"
 
 static wifi_power_t txPowerLevel(int dbm) {
   if (dbm <= 2)  return WIFI_POWER_2dBm;
